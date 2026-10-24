@@ -137,3 +137,16 @@ token 只在 Host 的 gh 子进程环境；前端只收发 `repo/number/query`�
 | 大 diff 拖慢渲染（75k 字符 / 24 文件） | 文件级懒渲染 + 默认折叠超长文件；patch 截断上限；虚拟滚动不做（先测量再决定） |
 | slot 组件异常导致面板空白 | 顶层 ErrorBoundary（React class component）+ 全链路 catch |
 | 安装需重启 Host | 新 bundle 走 HMR 激活；若必须重启，明确告知用户（会中断会话） |
+
+## 13. 实现回填：与初版设计的差异（2026-10-24 实测后修正）
+
+实现过程中被真实 DSH/LLM 行为推翻或补强的点，均已落到代码与 `plugin/CONTRACT.md`：
+
+1. **LLM 调用必须过 prepared-call 缝**：直接 `ctx.llm.stream({maxTokens: 4096})` 会被 `opencode-go` 路由拒绝（缺少 `x-opencode-session`），且推理模型会把输出预算全花在隐藏 reasoning 上（finish=`max-tokens`、可见输出 0 字）。
+   现行实现：`prepareCall` + `configure` 回调里按 id 优先级选模型支持的最低推理档（`low` → `high` → `max`，不依赖 `efforts[0]` 顺序）；默认不传 `maxTokens`（`maxOutputTokens: 0`），让适配器物化模型自己的输出上限；`sessionId` 用每个 review job 的合成 id。
+2. **分块并发**：串行 9 块 × 约 100s 不可接受 → 有界并发（`reviewConcurrency`，默认 3），24 文件/70k patch 的 #129 从 ~15 分钟降到约 3–5 分钟。
+3. **partial 语义**：单分块失败（超时/传输错误/不可解析）记 `partial + partialReasons`，不毁掉整个 job；只有全部分块硬失败才 `error`。诊断文案带 `finish.kind / 可见输出字数 / 推理字数 / usage`。
+4. **调试路由** `/codex-review/llm-info`：返回当前 selection、模型可用推理档、实际选中的 effort、传输方式、provider 下模型清单，用于排障与换模型。
+5. **配置默认值**（用于 `cordis.patch.yml` 覆盖）：`reviewChunkChars=9000`、`maxChunks=9`、`reviewConcurrency=3`、`maxOutputTokens=0`（适配器默认）、单次调用超时 180s。
+6. **List 行的 head/base ref 为空**：`search/issues` 不返回 ref（详情接口有），客户端只在详情头显示分支，列表不依赖。
+

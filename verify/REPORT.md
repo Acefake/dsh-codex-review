@@ -1,223 +1,225 @@
 # dsh-codex-review · 端到端验收报告
 
-> **状态：模板（待执行填充）**
-> 插件安装完成后，按 §附录 A 依次运行命令，把真实输出/退出码/截图路径填入
-> §1–§7，最后给出 §9 结论。JSON 证据字段名与本模板一一对应，可直接摘录。
->
-> 填完后删除本「模板」提示，并把「状态」改为 `PASS` / `FAIL`。
+> **状态：PASS（最终验收通过，2026-10-24 16:05 复跑）**
+> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–16:05（Asia/Shanghai）
+> 插件安装/重载与 AI 审查修复由 Lead 执行；本文档所有数字均来自真实 DSH Web GUI 与真实路由，
+> 复跑证据：`api-probe-final.json`（43/43）、`ai-review-ui.json`、`page-check-final.json`、`click-panel-final.json`。
 
-- 生成时间：`{{待填：YYYY-MM-DD HH:mm}}`
-- 执行人：`{{待填：verifier / lead}}`
-- 装置版本：`verify/`（README 同目录，2026-10-24）
-- 插件路径：`C:\Users\10228\dsh-codex-review\plugin`
-- 插件版本：`{{待填：package.json version}}`
-- 安装方式：`{{待填：plugin_manager install_bundle <spec>，application/生效信息}}`
-- DSH Web GUI：`http://127.0.0.1:2632`（profile：desktop）
-- 宿主是否重启：`{{待填：未重启 / 已重启（原因）}}`
-- 认证方式：`{{待填：local-credentials / launch-token}}`
-- 模型（AI 审查）：`{{待填：provider / model}}`
+## 0. 元信息
 
----
+| 项 | 值 |
+|---|---|
+| 插件 | `dsh-codex-review` v0.1.0（`C:\Users\10228\dsh-codex-review\plugin`） |
+| 安装 | `plugin_manager install_bundle`，返回 application=applied、已 enabled |
+| 安装形态 | desktop profile `node_modules/dsh-codex-review` → 符号链接到 plugin 目录（改文件后 disable→enable 重载生效） |
+| Host 进程 | 未重启（PID 9356，启动于 14:02:58，全程未变） |
+| GUI | `http://127.0.0.1:2632`（profile: desktop） |
+| OS / Node / Edge | Windows 11 10.0.26200 / Node v24.21.0 / Edge 155.0.4283.62 |
+| gh | gh 2.102.0，已登录 `Acefake`（scopes: gist, read:org, repo, workflow） |
+| 认证 | 本机凭据只读（`$DSH_HOME/.credentials.yaml` 的 browser-session 签名密钥 mint 1h cookie）；也支持 `--token` |
+| 模型 | `opencode-go / deepseek-v4.1-flash`，reasoningEffort=`low`（llm-info 实测），transport=prepared |
+| 视口 | 1600×1100（CDP device metrics） |
 
 ## 1. 结论摘要
 
 | # | 验收项 | 期望 | 实际 | 证据 | 判定 |
 |---|---|---|---|---|---|
-| 1 | 插件安装生效 | 插件管理器出现「代码审查」，左栏出现入口 | `{{待填}}` | `{{截图/安装返回}}` | `{{PASS/FAIL}}` |
-| 2 | `api-probe.mjs` 全量 | 退出码 0，全部断言通过 | `{{退出码、通过数/总数}}` | `{{report 路径}}` | `{{}}` |
-| 3 | `health` | `ok:true`，gh/llm/version 合法 | `{{gh=? llm=? version=?}}` | `report.routes.health` | `{{}}` |
-| 4 | `prs` | ≥20 条且字段形状合法 | `{{count=? totalCount=?}}` | `report.routes.prs` | `{{}}` |
-| 5 | `pr` Acefake/yingbox#129 | 24 文件、body 非空、stack 含 #117 | `{{files=? bodyLen=? chain=?}}` | `report.routes.pr` | `{{}}` |
-| 6 | AI 审查 | `review-start`→`review-status` 终态 `done`，findings schema 合法 | `{{jobId=? 耗时=? findings=?}}` | `report.routes.review` | `{{}}` |
-| 7 | `review-cancel` | 合法信封，`cancelled` 布尔 | `{{cancelled=?}}` | `report.routes.reviewCancel` | `{{}}` |
-| 8 | 页面检查 | 无 console.error / pageerror | `{{consoleErrors=? pageErrors=?}}` | `baseline/或 out/…page-check*.json` | `{{}}` |
-| 9 | 点击左栏入口 | 找到「代码审查」并点击成功 | `{{入口文本、坐标、targetSource}}` | `click-panel-*.json` | `{{}}` |
-| 10 | 三栏工作台 | 列带 ≥3 / AI 审查文案命中 | `{{threeColumns=? bands=?}}` | `click-after-*.png` | `{{}}` |
-| 11 | 视觉人工核对 | 对照 `recon/ui-spec.md`，无空白/错位/溢出 | `{{描述}}` | 截图 | `{{}}` |
+| 1 | 插件安装生效 | 插件管理器出现，左栏出现「代码审查」 | 侧栏 button `aria-label=代码审查` @ (14,158) 252×36 | `out/click-before-final.png`、page-check sidebar | **PASS** |
+| 2 | 路由就绪 | `/codex-review/*` 返回 JSON 信封 | 200 + `{ok:true,value}` | `out/api-probe-final-skip-ai.json` | **PASS** |
+| 3 | health | gh/llm/version 合法 | `{gh:"ok", llm:"ok", version:"0.1.0"}` | 同上 | **PASS** |
+| 4 | prs | ≥20 条、字段形状合法 | 25 条（totalCount=25） | 同上 | **PASS** |
+| 5 | pr #129 | 24 文件、body、stack 含 #117 | 24 文件、body 3671 字符、chain=[117] basePr=117 | 同上 | **PASS** |
+| 6 | 信任围栏/响应头 | 拒绝跨站/伪造头/非 JSON；200 均 json+no-store | 403/403/415；全部 json+no-store | 同上 | **PASS** |
+| 7 | 页面无 JS 错误 | console.error=0、pageerror=0 | 0 / 0（failedRequests=0，warnings=0） | `out/page-check-final.json`、`out/gui-final.png` | **PASS** |
+| 8 | 点击左栏入口 → 三栏工作台 | 真实点击成功、三栏渲染、无 slot crash | 点击 (140,176)；列带 280,880→280,518,1280；threeColumns=true；console=0；slotCrashed=false | `out/click-panel-final.json`、`click-before-final.png`、`click-after-final.png` | **PASS** |
+| 9 | AI 审查端到端 | review-start→status 终态 done 且 **partial≠true**、findings schema 合法 | `jobId=rv-mvm3ca0u-1`：done、partial=false、**findings=19**、job 耗时 239386ms、缓存轮询 7ms；43 项断言全过 | `out/api-probe-final.json` | **PASS** |
+| 10 | UI AI 审查 | 点「用 AI 审查」→ 完成态卡片（19 个问题/P2 徽章、无 partial、console=0） | 缓存命中 3.1s；页面显示 `完成 · 239s · 24 files · 建议合并：没有 P0/P1 问题`、`P0 0 / P1 0 / P2 19`、`共 19 个问题：P2 ×19` + 逐条 findings 卡片；无「部分结果」、无 `[data-review-partial]`；console/pageerror=0 | `out/ai-review-done.png`、`out/ai-review-ui.json` | **PASS** |
 
-**总体判定：`{{PASS / FAIL}}`**
+**总体判定：`PASS`（10/10 项通过；43/43 路由断言通过；未发现 slot crash / 未解释 console error）**
 
----
-
-## 2. 环境与命令
-
-### 2.1 环境
-
-| 项 | 值 |
-|---|---|
-| OS | Windows（`{{版本}}`） |
-| Node | `{{node --version}}` |
-| Edge | `{{msedge --version / Browser 字段}}` |
-| gh | `{{gh --version / gh auth status 摘要}}` |
-| 页面标题 | `{{page-check report.title}}` |
-| 视口 | `{{width×height}}`（默认 1600×1100） |
-
-### 2.2 执行命令与退出码
+## 2. 环境与执行命令
 
 ```powershell
 $V = 'C:\Users\10228\dsh-codex-review\verify'
 
-# A1 页面基线 / 插件安装后页面检查
-node $V\page-check.mjs --out-dir $V\out --shot gui-after-install.png --report page-check-after-install.json
-# A2 插件路由契约（真实 AI 审查一次）
-node $V\api-probe.mjs --report $V\out\api-probe.json
-# A3 点击左栏入口 + 三栏工作台
-node $V\click-panel.mjs --out-dir $V\out --before click-before.png --after click-after.png --report click-panel.json
+# 1) 页面检查（console/pageerror/截图）
+node $V\page-check.mjs --out-dir $V\out --report page-check-final.json --shot gui-final.png
+# 2) 左栏入口点击 + 三栏工作台
+node $V\click-panel.mjs --target 代码审查 --out-dir $V\out --before click-before-final.png --after click-after-final.png --report click-panel-final.json
+# 3) 路由契约（只读部分；含 llm-info）
+node $V\api-probe.mjs --skip-ai --out-dir $V\out --report api-probe-final-skip-ai.json
+# 4) 全量（含真实 AI 审查；最终复跑）
+node $V\api-probe.mjs --out-dir $V\out --report api-probe-final.json
+# 5) UI 端到端 AI 审查（点「用 AI 审查」→ 到终态 → 截图）
+node $V\ai-review-ui.mjs --select 自动检测片头片尾 --out-dir $V\out
 ```
 
-| 步骤 | 退出码 | 备注 |
+| 步骤 | 命令 | 退出码 | 结果 |
+|---|---|---|---|
+| 页面检查 | `page-check.mjs` | 0 | consoleErrors=0 / pageErrors=0 / warnings=0 / failedRequests=0 |
+| 左栏点击 | `click-panel.mjs` | 0 | 三栏渲染、8/8 检查通过 |
+| 只读路由 | `api-probe.mjs --skip-ai` | 0 | 29/29 断言通过 |
+| 全量路由（含 AI） | `api-probe.mjs` | 0 | **43/43 断言通过**，review done + partial=false + findings=19 |
+| UI AI 审查 | `ai-review-ui.mjs --select 自动检测片头片尾` | 0 | 缓存 3.1s 完成、显示 19 个问题、0 console error |
+
+退出码约定：0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪。
+
+## 3. API 契约结果（`out/api-probe-final.json`，43/43 通过）
+
+| 项 | 值 |
+|---|---|
+| routesReady | true |
+| 断言 | **43 通过 / 0 失败**（只读子集 `--skip-ai`：29/29） |
+| prs | 25 条（≥20 门槛），字段形状合法 |
+| pr #129 | 24 files；body 3671 字符；stack: chain=[117]、basePr=117、declaredBase=`feat/skip-intro` |
+| review-start | jobId=`rv-mvm3ca0u-1`，headSha=`f31cec5c…`，`cached=true`（命中原 job，10ms） |
+| review-status | **state=done、partial=false、findings=19**、overview=`共 19 个问题：P2 ×19`、filesDone 24/24、job elapsedMs=239386、model=opencode-go/deepseek-v4.1-flash；轮询 1 次 7ms |
+| findings schema | 19/19 合法：severity∈{P0,P1,P2}（全部 P2）、file/line/title/why/fix/category/id 齐全 |
+| review-cancel | 终态后调用 → `{ok:true, value:{cancelled:false}}`；未知 jobId → 合法错误/成功信封 |
+| comments/checks | total=0；checks.state=`none`（数据实际状态） |
+| 信任围栏 | 跨站 Origin → HTTP 403；`x-forwarded-for` → HTTP 403；`content-type: text/plain` → HTTP 415 |
+| 响应头 | 所有 200：`application/json; charset=utf-8` + `cache-control: no-store`（health/prs/pr/review-start/review-cancel 实测） |
+| llm-info | 200，`{selection:{provider:"opencode-go",model:"deepseek-v4.1-flash"}, reasoningEffort:"low", efforts:["low","high","max"], transport:"prepared", pluginConfig:{maxOutputTokens:0, reviewChunkChars:9000, maxChunks:9}}`，另含 provider 可用模型列表（30 个）；原始证据 `out/llm-info-final.json` |
+
+> `prs` 的 `headRefName/baseRefName` 返回空字符串：列表数据来自 GitHub search API（不含 ref 字段，CONTRACT §1.4 归一化现实），客户端列表不使用；按 `string` 类型断言通过，作为低风险观察项（§7 D3）。
+> 全量 probe 命中缓存 job（`cached=true`）因此 **不产生额外模型调用**；job 的真实耗时来自 `progress.elapsedMs=239386ms`。
+
+## 4. 页面检查（`out/page-check-final.json`）
+
+| 项 | 值 |
+|---|---|
+| title | `DeepSeek Harness` |
+| console.error / pageerror / warning | **0 / 0 / 0** |
+| 失败请求 | 0（network requestCount=51，top host 127.0.0.1:2632、static.deepseek.com） |
+| 模态框 | 无（首次「预览版说明」此前已关闭；装置两种状态都处理） |
+| 左侧栏 | 含 `<button aria-label="代码审查">`，共 13 个可交互元素 |
+| 良性噪音 | `/api/experimental-inspector/bootstrap` 404 仅出现在浏览器网络日志（`logProblems`），不是 console.error |
+
+## 5. 点击入口与三栏工作台（`out/click-panel-final.json`）
+
+| 项 | 值 |
+|---|---|
+| 模态框 | 无（by=none） |
+| 命中入口 | `button` aria-label=`代码审查` text=`代码审查` @ (14,158) 252×36（按侧栏容器文本匹配，不依赖 aria 猜测） |
+| 点击 | 真实 CDP 鼠标事件 @ (140,176) |
+| 点击后页面变化 | bodyText 218→3649 字符；列带 `[280,880]` → `[280,518,1280]` |
+| 三栏判定 | threeColumns=true（3 条列带）+ 文案信号 Summary/Changes/files/`用 AI 审查`=true |
+| console/pageerror | 0 / 0 |
+| slot entry crashed | **false** |
+| 检查项 | 8/8 通过（模态框清除、找到入口、点击派发、页面变化、三栏渲染、无 pageerror、无 console.error、无 slot crash） |
+| 截图 | `click-before-final.png`、`click-after-final.png` |
+
+人工核对（对照 `recon/ui-spec.md` 与用户 Codex 截图）：侧栏入口顺序（插件 → 代码审查 → 自动化任务）正确；
+点开后左列 PR 列表（搜索 `is:open author:@me` + 真实 25 条数据）、中列 PR 头/Summary-Changes/正文、
+右列 Changes/Stack/Comments/Reviewers/Checks 与 AI 审查卡三栏结构完整；无空白/错位；深色主题与 token 配色正常。
+右侧「用 AI 审查」「合并」按钮、底部「就此 Pull Request 提问」输入框均在位（合并/提问为 v1 只读占位）。
+
+## 6. AI 审查端到端（重点，含修复前后证据）
+
+### 6.1 修复前的真实故障证据（P1 阻塞，已确认必须修）
+
+| jobId | 现象 | 证据 |
 |---|---|---|
-| A1 page-check | `{{}}` | `{{}}` |
-| A2 api-probe | `{{}}` | `{{}}` |
-| A3 click-panel | `{{}}` | `{{}}` |
+| `rv-mvm2a1e8-1` | done + **partial=true**，486s，findings=[]，overview「部分内容未能完成审查（4 个文件块失败）」；4 块 partialReasons 均 `no-json-object` + `模型返回 max-tokens，可见输出 0 字`；`truncatedCalls=8` | `out/api-probe-partial-before-fix.json`（同源 job 状态） |
+| — | UI 缓存态卡片如实显示：`Codex 审查 · 完成 · 486s · 24 files · deepseek-v4.1-flash · 部分结果`、`P0 0 P1 0 P2 0`、partial 原因与「8 次模型输出被截断」 | `out/ai-review-done.png`、`out/ai-review-ui.json` |
+| `rv-mvm34iby-1` | 并发版第一次：23/24 文件后最后一个分块 120s 超时 → 整个 job `REVIEW_TIMEOUT`（单块失败拖垮整 job 的设计缺陷） | Lead 独立复现并修复 |
 
----
+根因链：`sessionId` 缺失（最早 `MissingSessionID`，已修）→ reasoning 把输出预算吃光（max-tokens、可见 0 字）
+→ `efforts[0]` 取档不可靠 / maxOutputTokens 固定 4096 偏小 → 单块超时毁整 job。
+装置侧同步加固：api-probe 轮询默认 600s、**绝不对运行中 job 调 review-cancel**、`partial===true` 记为失败断言；
+新增 `/codex-review/llm-info` 证据采集。
 
-## 3. API 契约结果（`verify/out/api-probe.json`）
+### 6.2 修复内容（Lead 三次迭代，均有独立实测确认）
 
-### 3.1 关键数字
+1. `sessionId=job.id` 传给 `ctx.llm.stream`（opencode-go 的 `x-opencode-session` 必需）；
+2. 改走 `ctx.llm.prepareCall` + 按 id 优先级选最低 reasoning 档（`low`），`maxOutputTokens=0` 让适配器物化模型默认上限，分块 18000→9000、maxChunks 9、并发 3；
+3. 单块失败（超时/传输/解析）不再拖垮 job，只记 partial 原因；单次调用超时 120s→180s；partialReasons 带「可见输出 N 字，推理 M 字」诊断。
 
-| 项 | 值 |
-|---|---|
-| `routesReady` | `{{true/false}}` |
-| 断言总数 / 通过 | `{{n}} / {{m}}` |
-| prs 条数（期望 ≥20） | `{{}}` |
-| pr 文件数（期望 24） | `{{}}` |
-| pr body 长度 | `{{}}` |
-| stack 链 PR 编号 | `{{[117, ...]}}` |
-| 审查 jobId / headSha | `{{}} / {{}}` |
-| 审查终态 / 耗时 / 轮询次数 | `{{done}} / {{ms}} / {{n}}` |
-| findings 数量 / overview | `{{}} / {{}}` |
-| 模型 | `{{provider / model}}` |
-| cancel 返回 | `{{cancelled:false}}` |
-| 信任围栏 3 项 | `{{通过/失败}}` |
+llm-info 实测（修复后）：`transport=prepared`、`reasoningEffort=low`、`efforts=[low,high,max]`、`maxOutputTokens=0`。
 
-### 3.2 断言明细
-
-粘贴 `api-probe.mjs` stdout 的逐条 `✓/✗` 列表（或从 report `checks[]` 摘录）：
-
-```
-{{粘贴}}
-```
-
-失败断言及分析：`{{无 / 逐条说明}}`
-
----
-
-## 4. 页面检查（`verify/out/page-check-after-install.json`）
+### 6.3 修复后复跑结果（最终，本报告结论来源）
 
 | 项 | 值 |
 |---|---|
-| 标题 | `{{}}` |
-| console.error 数 | `{{}}` |
-| console.warning 数 | `{{}}` |
-| pageerror 数 | `{{}}` |
-| 失败请求数 | `{{}}` |
-| 模态框 | `{{有无、如何关闭}}` |
-| 左栏是否含「代码审查」 | `{{是/否，见 dom.sidebar}}` |
-| 良性噪音 | `/api/experimental-inspector/bootstrap` 404（如仍出现，说明为 web profile 预期） |
+| jobId / headSha | `rv-mvm3ca0u-1` / `f31cec5c712d88c5f26bb0e6fcbf2e09e3954585` |
+| 终态 | **done** |
+| partial | **false**（`partialReasons` 为空、无 truncatedCalls） |
+| findings | **19 条**，overview=`共 19 个问题：P2 ×19`；schema 19/19 合法 |
+| 进度 | phase=done，filesDone 24/24 |
+| 耗时 | job `progress.elapsedMs=239386ms`（≈3 分 59 秒；并发 3、9 块） |
+| 模型 | `opencode-go / deepseek-v4.1-flash`，reasoningEffort=low，transport=prepared |
+| 缓存 | review-start `cached=true`（10ms），review-status 轮询 1 次 7ms 到终态（无额外模型调用） |
+| 断言 | api-probe **43/43 通过**，其中「review-status: 非 partial」通过 |
 
-console.error / pageerror 原文（若有，逐条给出并解释）：
+findings 示例（前 3 条，均为 P2）：
+1. `src/main/intro-detect/detector.ts:55` 候选错位快路径不可取消、不让出事件循环（concurrency）
+2. `src/main/intro-detect/detector.ts:104` analyzed<2 提前返回未上报完成进度（correctness）
+3. `src/main/intro-detect/ffmpeg.ts:144-153` clipPrint 时长解析与 head/tail 窗口裁剪缺单测（test）
 
-```
-{{粘贴}}
-```
-
----
-
-## 5. 点击入口与三栏工作台（`verify/out/click-panel.json`）
+### 6.4 UI 端到端（「用 AI 审查」按钮）
 
 | 项 | 值 |
 |---|---|
-| 模态框清除方式 | `{{button/escape/backdrop/none}}` |
-| 入口来源 | `{{sidebar-text / left-region-scan}}` |
-| 命中元素 | `{{tag / aria / title / text}}` |
-| 点击坐标 | `{{x, y}}` |
-| 点击后页面变化 | `{{bodyText a→b；列带 before→after}}` |
-| 三栏列带 | `{{bands}}` |
-| AI 审查文案命中 | `{{true/false}}` |
-| slot entry crashed | `{{false}}` |
-| 截图 | `click-before.png` / `click-after.png` |
+| 触发按钮 | 工作台头部「用 AI 审查」（zh；en 为 Review with AI），`disabled=false` |
+| 选中 PR | 通过列表文本「自动检测片头片尾」选中 #129（`selection.found=true`） |
+| 点击到终态 | **缓存命中 3.1s** 返回 done（无额外模型调用） |
+| 终态卡片 | `Codex 审查 · 完成 · 239s · 24 files · deepseek-v4.1-flash`；`建议合并：没有 P0/P1 问题`；`P0 0 / P1 0 / P2 19`；`共 19 个问题：P2 ×19`；逐条 finding（severity 徽章 / category / file:line / 为什么 / 怎么改 / 定位到 diff） |
+| partial 断言 | 页面无「部分结果」文案，`[data-review-partial]` 不存在 |
+| console/pageerror | 0 / 0 |
+| 截图 | `ai-review-before.png`（工作台）、`ai-review-running.png`（进度帧）、`ai-review-done.png`（19 findings 完成态） |
 
-人工核对（对照 `recon/ui-spec.md` 与用户提供的 Codex 截图）：
+## 7. 缺陷清单（按严重度）
 
-- 左栏列表：`{{搜索框/PR 条目/选中态}}`
-- 中间：`{{Summary/Changes、PR 头、diff 渲染}}`
-- 右栏：`{{Changes/Stack/Comments/Reviewers/Checks/AI 审查}}`
-- 与规格差异/缺陷：`{{逐条}}`
+| # | 严重度 | 状态 | 描述 |
+|---|---|---|---|
+| D1 | **P1（已修复并验证）** | ✅ 已修复 | AI 审查因 reasoning 预算耗尽产生 partial（max-tokens/可见 0 字），findings 恒空；叠加单块超时拖垮整个 job。修复：sessionId + effort=low + 模型默认输出上限（maxOutputTokens=0）+ 并发 3/分块 9000/9 块 + 单块失败降级 partial + 超时 180s。**复跑实证：done、partial=false、19 findings、239s** |
+| D2 | P2（已修） | ✅ 已修复 | 插件 reload（disable→enable）窗口内路由短暂 404/405，会被误判「插件未安装」——api-probe 已加 3 次重试并提示重载窗口 |
+| D3 | P3（观察） | 保留 | `prs` 条目的 `headRefName/baseRefName` 为空字符串（search API 无此字段；客户端列表不依赖）。建议 CONTRACT 注明列表值为空 |
+| D4 | P3（观察） | 保留 | 详情 `review.state='error'` 时页面正确显示错误卡片（预期行为，非缺陷） |
+| D5 | P3（装置） | 保留 | 认证依赖本机 browser-session 签名密钥（只读）。若 DSH 升级改格式，改用 `--token <启动 URL token>` |
+| D6 | P3（耗时/体验） | 观察项 | 24 文件全量审查实测 239s（并发 3）；首次触发仍会让用户等约 4 分钟，UI 有进度与阶段展示，暂无超时/取消体验缺陷 |
+| D7 | P3（质量） | 观察项 | 本次 19 条 findings 全部为 P2（0 P0/P1）；属模型判断而非引擎缺陷，报告标注以便用户预期管理 |
 
----
+**未发现**：左栏入口缺失/错位、三栏不渲染、`slot entry crashed`、客户端未捕获 JS 异常、console.error。
 
-## 6. AI 审查端到端证据
+## 8. 截图证据清单
 
-| 项 | 值 |
+| 文件 | 说明 |
 |---|---|
-| 触发按钮 | 右栏「用 AI 审查」`{{成功/未测}}` |
-| 进度阶段可见 | `{{preparing→reviewing→done}}` |
-| 终态 | `{{done}}` |
-| findings 渲染 | `{{0 条 / N 条；截图}}` |
-| finding 点击定位 diff | `{{成功/未测}}` |
-| 取消按钮 | `{{未测/成功}}` |
-| 截图 | `{{ai-review-done.png}}` |
+| `verify/baseline/baseline-gui.png` | 插件安装前基线（装置自证：0 console error、检测到预览弹窗） |
+| `out/gui-final.png` | 安装后页面，左栏含「代码审查」入口 |
+| `out/click-before-final.png` | 点击前（入口可见） |
+| `out/click-after-final.png` | 点击后三栏工作台（真实 25 条 PR 数据、24 文件 diff、右栏 AI 审查卡） |
+| `out/ai-review-before.png` | UI AI 审查点击前（工作台 + 「用 AI 审查」按钮） |
+| `out/ai-review-running.png` | 审查进度帧 |
+| `out/ai-review-done.png` | 终态卡片：完成 · 239s · P0 0/P1 0/P2 19 · 共 19 个问题 + finding 详情 |
+| `out/preview-changes.png` | 插件 dev 预览（装置早期校准用，非验收证据） |
 
----
+## 9. 已知限制
 
-## 7. 截图证据清单
+- AI 审查结果与耗时非确定性（取决于模型）；断言校验终态与 schema，并额外要求 `partial!=true`。
+- 目标 PR #129 本身无 comments、无 CI checks（数据实际状态）。
+- 三栏判定为几何列带 + 文案启发式；视觉正确性已人工核对截图。
+- 每次运行 Edge 使用 `verify/out/.tmp/` 下一次性 profile，结束自动删除；不触碰用户浏览器 profile。
+- 装置依赖 GUI zh 文案（入口「代码审查」、按钮「用 AI 审查」）；可用 `--target` / `--select` 覆盖。
 
-| 文件 | 说明 | 人工检查 |
-|---|---|---|
-| `verify/baseline/baseline-gui.png` | 插件安装前基线（装置自证） | 已核对 |
-| `verify/out/gui-after-install.png` | 安装后页面 + 左栏入口 | `{{}}` |
-| `verify/out/click-before.png` | 点击前（入口可见） | `{{}}` |
-| `verify/out/click-after.png` | 点击后三栏工作台 | `{{}}` |
-| `verify/out/{{ai-review-done.png}}` | AI 审查结果态 | `{{}}` |
-| `verify/out/{{changes-view.png}}` | Changes diff 态 | `{{}}` |
+## 10. 最终结论
 
----
+**总体 PASS。** 插件 `dsh-codex-review` v0.1.0 已安装并在真实 DSH Web GUI（`http://127.0.0.1:2632`）中可用：
 
-## 8. 已知限制与风险
+- 左栏出现「代码审查」入口，点击后三栏 PR 审查工作台正常渲染（真实 GitHub 数据 25 条 PR、#129 24 文件 diff），
+  全程 0 console.error / 0 pageerror / 0 slot crash；
+- `/codex-review/*` 全部路由契约通过（43/43 断言），health/prs/pr/stack/围栏/响应头均符合 CONTRACT；
+- AI 审查端到端跑通：`done`、`partial=false`、19 条 P2 findings、耗时 239s；UI 点「用 AI 审查」缓存命中 3.1s，
+  卡片正确显示计数/严重度/原因与定位入口。
 
-- **AI 审查非确定性**：同一 PR 可能返回不同 findings，甚至 0 条；断言只校验 schema 与终态。
-- **一次模型调用成本**：`api-probe` 默认执行一次；只读场景用 `--skip-ai`。
-- **三栏判定是启发式**：列带 + 文案信号，视觉正确性仍需人眼核对截图。
-- **无 CI checks / 无评论**：目标 PR 可能本来就没有 checks、comments，属数据实际状态。
-- **GUI 文案依赖**：入口按文本「代码审查」（别名含 `Code Review`）匹配；若本地化文案不同，用 `--target` 指定。
-- **认证依赖本机凭据**：cookie 由 `client-connection/browser-session` 签名密钥 mint（只读）；若 DSH 升级改变该格式，需改用 `--token`。
-- `{{其它本次发现的问题}}`
+修复前证据（partial 故障）保留在 §6.1；P1 缺陷 D1 已修复并经本轮复跑验证。
+用户可见变化：刷新 `http://127.0.0.1:2632` 后，左栏「插件」下方出现「代码审查」；点开即三栏 PR 审查工作台，
+真实数据来自 `Acefake/yingbox`；右栏/头部「用 AI 审查」可发起审查并显示完成、发现、部分结果与错误状态。
+遗留风险见 §7（P3 观察项：列表 ref 为空、审查耗时约 4 分钟、findings 全为 P2、认证依赖本机凭据）。
 
----
+## 附录 A · 复跑命令（同 §2）与判定速查
 
-## 9. 最终结论
-
-- **判定：`{{PASS / FAIL}}`**
-- **用户可见变化**：刷新 `http://127.0.0.1:2632` 后，左栏（「新会话」下方）出现「代码审查」；
-  点开后中间为三栏 PR 审查工作台，真实数据来自 `Acefake/yingbox`，右栏可发起 AI 审查。
-- 未解决的问题 / 需要用户操作：`{{无 / 如需重启宿主：…}}`
-
----
-
-## 附录 A · 执行顺序（复制即用）
-
-```powershell
-$V = 'C:\Users\10228\dsh-codex-review\verify'
-
-# 0) 确认插件已安装：插件管理器出现「代码审查」；路由就绪探测（不跑 AI）
-node $V\api-probe.mjs --skip-ai --out-dir $V\out
-
-# 1) 全量契约（含一次 AI 审查）
-node $V\api-probe.mjs --out-dir $V\out --report api-probe.json
-
-# 2) 页面检查（安装后）
-node $V\page-check.mjs --out-dir $V\out --shot gui-after-install.png --report page-check-after-install.json
-
-# 3) 点击入口 + 三栏
-node $V\click-panel.mjs --out-dir $V\out --before click-before.png --after click-after.png --report click-panel.json
-```
-
-## 附录 B · 判读速查
-
-- 退出码 `3`：插件未装/未加载（路由 405/404）→ 先安装，再重跑；
-- 退出码 `2`：装置/认证/浏览器问题 → 看 stderr，尝试 `--token`；
-- `api-probe` 失败项看 `checks[]` 中 `pass:false` 的 `name/detail`；
-- `click-panel` 找不到入口：看 stdout 左栏候选按钮（text/aria/title/rect）；
-- 三栏未检出但截图正常：属启发式误判，人工确认后记录在 §5。
+- 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
+- AI 终态关键字段：`review-status.state==="done"`、`partial!==true`、`findings[]` 每条 schema 合法；
+  UI 卡片不得出现「部分结果」「审查失败」。

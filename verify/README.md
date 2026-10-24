@@ -126,13 +126,17 @@ node $V\shot.mjs --url http://127.0.0.1:2632 --out $V\out\gui.png
 | `/codex-review/pr` | 信封合法；`summary.repo/number` 与请求一致；`body` 字符串；`files` **= 24 个**（`--expect-files`）且 FilePatch 字段合法；`stack` 链路**含 #117**（`--stack-ref`）；`review` 状态对象合法 |
 | `/codex-review/review-start` | 信封合法且 `ok:true`；`jobId`/`headSha` 非空；`cached` 布尔 |
 | `/codex-review/review-status` | 轮询到终态（`done/error/cancelled`）；ReviewStatus 形状合法（`progress.phase/filesDone/filesTotal/startedAt/elapsedMs`、`headSha`、`findings[]`）；终态必须 `done`；`Finding` 每条校验 `id/severity(P0-P2)/file/line 正整数/title/why/fix/category` |
-| `/codex-review/review-cancel` | 信封合法；`ok:true` 时 `cancelled` 为布尔；未知 `jobId` 也返回合法信封 |
+| `/codex-review/review-cancel` | 信封合法；`ok:true` 时 `cancelled` 为布尔；未知 `jobId` 也返回合法信封。**仅在审查到终态后**才 cancel 真实 job（终态返回 `cancelled:false`）；轮询超时不会去 cancel 运行中的 job，避免干扰 |
+| `/codex-review/llm-info`（调试路由，可选） | 若存在则校验信封并记录 `selection` / `reasoning efforts` / 实际 effort / `transport` / 插件配置；不存在只记录、不判失败 |
 | 响应头 | 所有 200 响应 `content-type: application/json` + `cache-control: no-store` |
 | 信任围栏（`--skip-security` 可跳过） | 跨站 `Origin`、`x-forwarded-for`、非 JSON `content-type` 必须被拒绝（HTTP ≥400 或 `ok:false`） |
 
 **未安装插件时**：POST 命中静态/SPA 处理器会返回 **HTTP 405**（GET 为 404，空响应体），
 脚本打印「路由未就绪」并以 **退出码 3** 结束，不会崩。
-`--skip-ai` 跳过一次真实模型调用（只跑只读路由）；`--review-timeout-ms` 默认 240000。
+`--skip-ai` 跳过一次真实模型调用（只跑只读路由）；`--review-timeout-ms` 默认 **600000**
+（分块越多、reasoning 越慢，按需加大；超时只报失败，不会取消运行中的 job）。
+`review-status.partial === true` 会作为**失败断言**（分块截断/解析失败导致的空 findings 不能当成
+「明确 0 问题」）。
 
 ### 4.4 `click-panel.mjs` — 点击左栏入口并验证三栏工作台
 
@@ -157,6 +161,26 @@ text / aria-label / title / 矩形，报告 `report.lookup.sidebarCandidates` �
 node $V\click-panel.mjs --target 插件 --expect click --out-dir $V\out\selftest
 ```
 
+### 4.5 `ai-review-ui.mjs` — （可选）UI 端到端 AI 审查
+
+打开 GUI → 点左栏「代码审查」→（`--select <文本>` 可在 PR 列表里选中指定 PR，
+默认用客户端自动选中的第一条）→ 等列表/详情真正加载、触发按钮可点击 → 点
+「Review with Codex」→ 轮询审查卡直到终态，抓三类截图 + console/pageerror：
+
+- `ai-review-before.png`：点击前工作台；
+- `ai-review-running.png`：能观察到「审查中…/准备中…/已分析 n/m 文件」时抓的进度帧
+  （命中缓存会跳过）；
+- `ai-review-done.png`：终态（`n 条发现` / `未发现 P0/P1 问题` / `审查失败` / `部分结果`）。
+
+判定：终态出现、非「审查失败」、无 pageerror/console.error。
+UI 文案来自客户端内置 locale（zh/en 都识别），报告保留 `bodyTextSample` 供人工核对。
+**注意**：点按钮会调用 `review-start`；对同一 `repo#number@headSha` 已有完成 job 时
+契约会命中缓存（`cached:true`，不产生额外模型调用）。
+
+```powershell
+node $V\ai-review-ui.mjs --select 自动检测片头片尾 --out-dir $V\out
+```
+
 ---
 
 ## 5. 退出码约定
@@ -176,6 +200,8 @@ node $V\click-panel.mjs --target 插件 --expect click --out-dir $V\out\selftest
 
 1. `api-probe.mjs` 退出码 0：health 正常、prs ≥20 条、#129 详情 24 文件 + body + stack 含 #117、
    AI 审查跑到 `done` 且 findings schema 合法、所有信封/响应头断言通过；
+   **并且** `review-status.partial` 不为 `true`（分块失败/截断会让 findings 为空，属于审查质量缺陷，
+   不能当作“明确 0 问题”通过）；
 2. `click-panel.mjs` 退出码 0：左栏能找到「代码审查」并点击，**三栏工作台**渲染，console/pageerror 为空；
 3. 人工看 `click-after-*.png`：三栏布局、PR 列表有真实数据、无空白/错位（工具只能证明“渲染了”，
    视觉好坏需人眼确认）；
@@ -216,6 +242,7 @@ verify/
 ├─ page-check.mjs       # 页面 + console 检查（JSON 报告）
 ├─ api-probe.mjs        # 插件路由契约断言
 ├─ click-panel.mjs      # 左栏入口点击 + 三栏验证
+├─ ai-review-ui.mjs     # （可选）UI 端到端 AI 审查：点触发按钮 → 轮询终态 → 截图
 ├─ lib/
 │  ├─ auth.mjs          # GUI 浏览器会话 cookie（token 交换 / 本机凭据只读计算）
 │  ├─ cdp.mjs           # headless Edge + CDP 最小驱动

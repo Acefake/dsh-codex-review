@@ -19,7 +19,8 @@
     "client.js",
     "cordis.patch.yml",
     "icon.svg",
-    "locale/*.json"
+    "locale/*.json",
+    "README.md"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
