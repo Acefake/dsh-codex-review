@@ -46,6 +46,23 @@ const MOCKS = {
 
 const reviewJobs = new Map()
 
+/** depth presets from CONTRACT.md §4.1; the mock echoes them like the Host does. */
+const DEPTH_PRESETS = {
+  fast: { depth: 'fast', chunkChars: 16000, maxChunks: 6, concurrency: 4 },
+  standard: { depth: 'standard', chunkChars: 9000, maxChunks: 9, concurrency: 3 },
+  deep: { depth: 'deep', chunkChars: 6000, maxChunks: 20, concurrency: 2 },
+}
+
+/** Resolve the optional review-start options into the echo the client renders. */
+function resolveOptions(payload) {
+  const raw = payload && typeof payload.options === 'object' && payload.options ? payload.options : {}
+  const preset = DEPTH_PRESETS[raw.depth] || DEPTH_PRESETS.standard
+  const threshold =
+    raw.severityThreshold === 'P0' || raw.severityThreshold === 'P1' ? raw.severityThreshold : 'P2'
+  const includeGuidelines = raw.includeGuidelines === undefined ? true : Boolean(raw.includeGuidelines)
+  return { ...preset, severityThreshold: threshold, includeGuidelines }
+}
+
 function readMock(name) {
   return JSON.parse(fs.readFileSync(path.join(mockDir, name), 'utf8'))
 }
@@ -114,7 +131,9 @@ function listPullRequests(payload) {
 
 function prDetail(payload) {
   const number = Number(payload.number)
-  const detail = readMock('pr-129.json')
+  const detail = readMock(
+    payload.mockScenario === 'comments' && number === 129 ? 'pr-129-comments.json' : 'pr-129.json',
+  )
   if (number === 129) return detail
   const generic = readMock('pr-generic.json')
   const list = readMock('prs.json')
@@ -136,11 +155,24 @@ function statusFor(job) {
             : 'review-done.json',
   )
   job.calls += 1
-  if (job.mode === 'running') return base
+  if (job.mode === 'running') return { ...base, options: job.options }
   if (job.calls <= 1) {
-    return { ...readMock('review-running.json'), jobId: job.id, progress: { ...readMock('review-running.json').progress, filesDone: Math.min(6, base.progress.filesTotal) } }
+    return {
+      ...readMock('review-running.json'),
+      jobId: job.id,
+      options: job.options,
+      progress: {
+        ...readMock('review-running.json').progress,
+        filesDone: Math.min(6, base.progress.filesTotal),
+      },
+    }
   }
-  return { ...base, jobId: job.id, progress: { ...base.progress, startedAt: Date.now() - Math.max(1200, base.progress.elapsedMs) } }
+  return {
+    ...base,
+    jobId: job.id,
+    options: job.options,
+    progress: { ...base.progress, startedAt: Date.now() - Math.max(1200, base.progress.elapsedMs) },
+  }
 }
 
 async function handleApi(req, res, pathname) {
@@ -170,9 +202,19 @@ async function handleApi(req, res, pathname) {
       return
     case '/codex-review/review-start': {
       const mode = typeof payload.mockMode === 'string' ? payload.mockMode : 'done'
+      const options = resolveOptions(payload)
+      const headSha = readMock('review-done.json').headSha
+      // cached=true when the same headSha + options + mock mode already finished
+      // (CONTRACT §4.1). mockMode is dev-only and keeps the scenes independent.
+      const key = `${payload.repo || ''}#${payload.number || ''}|${headSha}|${mode}|${JSON.stringify(options)}`
+      const existing = [...reviewJobs.values()].find((job) => job.key === key && job.calls > 1)
+      if (existing) {
+        ok(res, { jobId: existing.id, headSha, cached: true, options })
+        return
+      }
       const id = `mock-job-${reviewJobs.size + 1}-${mode}`
-      reviewJobs.set(id, { id, mode, calls: 0 })
-      ok(res, { jobId: id, headSha: readMock('pr-129.json').summary.headRefName, cached: false })
+      reviewJobs.set(id, { id, mode, calls: 0, key, options })
+      ok(res, { jobId: id, headSha, cached: false, options })
       return
     }
     case '/codex-review/review-status': {
@@ -188,6 +230,12 @@ async function handleApi(req, res, pathname) {
       const job = reviewJobs.get(String(payload.jobId))
       if (job) job.cancelled = true
       ok(res, { cancelled: true })
+      return
+    }
+    // dev-only: forget cached jobs so each screenshot/mock run starts clean
+    case '/codex-review/dev-reset': {
+      reviewJobs.clear()
+      ok(res, { reset: true })
       return
     }
     default:

@@ -290,3 +290,78 @@ ctx.slots.inject('main', () => ctx.slots.register(
 4. `POST /codex-review/review-start` + 轮询 → done，findings schema 合法（可 0 条）；
 5. 页面出现「代码审查」图标，点开后三栏渲染、无 console error、无 `slot entry crashed`；
 6. 运行中/错误/空态截图。
+
+## 4. v1.1 细化契约（2026-10-24 第二轮迭代）
+
+### 4.1 审查选项（review-start 请求体扩展）
+
+```ts
+type ReviewOptions = {
+  depth?: 'fast' | 'standard' | 'deep'        // 默认 'standard'
+  severityThreshold?: 'P0' | 'P1' | 'P2'      // 默认 'P2'（全部保留）；服务端据此过滤输出
+  includeGuidelines?: boolean                 // 默认 true：把仓库 AGENTS.md 作为审查指引注入 prompt
+}
+// POST /codex-review/review-start { repo, number, options?: ReviewOptions }
+// → { jobId, headSha, cached, options: ResolvedReviewOptions }   // cached=true 表示命中同 headSha+同选项的结果
+```
+
+`ResolvedReviewOptions = { depth, severityThreshold, includeGuidelines, chunkChars, maxChunks, concurrency }`（服务端把 depth 展开成具体预算，回显给 UI 展示）。
+
+depth 预设：
+
+| depth | chunkChars | maxChunks | concurrency | 额外行为 |
+|---|---|---|---|---|
+| fast | 16000 | 6 | 4 | 单遍审查 |
+| standard | 9000 | 9 | 3 | 单遍审查（默认） |
+| deep | 6000 | 20 | 2 | 单遍审查后加一轮「复核」模型调用：把每条 finding 连同对应 patch 行发回模型，仅保留它判定有 diff 证据的条目 |
+
+### 4.2 Finding 扩展
+
+```ts
+type Finding = {
+  // …既有字段不变…
+  evidence?: string   // ≤200 字：支持该结论的 diff 行原文（可含 ± 前缀），无则为空
+  confidence?: 'high' | 'medium' | 'low'   // 模型自评，可选
+}
+```
+
+`ReviewStatus` / `PrDetail.review` 增加：
+```ts
+options?: ResolvedReviewOptions
+guidelines?: { loaded: boolean, files: string[], chars: number }   // AGENTS.md 注入情况
+reusedFiles?: number        // 增量审查复用的文件数（命中文件级缓存）
+verdict?: 'block' | 'changes' | 'approve'   // P0>0 → block；P1>0 → changes；否则 approve
+```
+`findings` 依旧按 P0→P2、file/line 排序；`overview` 统计随 severityThreshold 过滤后的集合计算。
+
+### 4.3 增量审查（文件级缓存）
+
+- 文件级缓存 key：`repo#number|path|sha1(patch)`（进程内存 LRU ≤ 400 条，按 headSha 自然失效；切换 depth 不影响文件级结果）。
+- 一次审查只把**未命中缓存**的文件送模型；命中文件直接复用其历史 findings；`reusedFiles` 回报复用数量。
+- 若全部命中，直接 `done`（耗时 <1s），并置 `reusedFiles = filesTotal`。
+- findings 归属：模型返回的 `file` 落在本块文件内的才接受（沿用现有白名单校验），因此文件级复用是安全的。
+
+### 4.4 仓库审查指引（AGENTS.md）
+
+- `includeGuidelines !== false` 时，Host 依次尝试 `gh api repos/{o}/{r}/contents/AGENTS.md`、`.github/AGENTS.md`（raw 内容，各 ≤4000 字，repo 级缓存 10 分钟），命中后作为 system 之外的「## 仓库审查指引」段落注入每个分块 prompt。
+- 失败/不存在不阻塞审查：`guidelines: { loaded: false, files: [], chars: 0 }`。
+- 指引内容只作为审查偏好（例如该仓库特有的约束），不能覆盖「只报 diff 引入的真实缺陷」这条系统约束。
+
+### 4.5 客户端（client.js）细化项
+
+1. **diff 行内 finding 卡片**：命中 `finding.line` 的 diff 行渲染 gutter 圆点；点击圆点/卡片在行下方展开卡片（严重度、标题、为什么、怎么改、confidence、evidence、定位按钮）。同一行多条时折叠为「N 条」。
+2. **已有 GitHub 行内评论**：把 `PrDetail.comments.inline` 按 `path + line` 渲染为只读评论卡（作者、正文前 400 字、时间），与 finding 卡视觉区分（灰/蓝边 vs 严重度色）。
+3. **审查设置弹层**（齿轮）：depth（快/标准/深）、severityThreshold（P0 / P1 / P2+）、includeGuidelines（开关），存 `localStorage['codex-review:settings']`，审查时作为 `options` 传 `review-start`；弹层内说明「deep 多一轮复核、耗时更长」。
+4. **审查卡改版**：verdict 徽章（block 阻塞 / changes 需要修改 / approve 建议合并）+ P0/P1/P2 计数 + 本地过滤 chips（全部/P0/P1/P2，纯前端过滤，不重跑）+ reusedFiles/guidelines 状态行 + 重新审查（带当前设置）。
+5. **体验细节**：详情列 sticky；`j/k` 上下切 PR、`/` 聚焦搜索、`r` 触发审查、`Esc` 关弹层；所有可点元素有 focus-visible 与 aria-label；切换 Summary/Changes 保留滚动位置；右栏文件列表点击滚动到对应文件。
+6. 文案全部走 locale（zh/en），不新增硬编码英文。
+
+### 4.6 v1.1 验收补充
+
+1. `review-start` 带 `{depth:'fast'}` 与默认设置产生**不同 job key**，各自完成；同设置同 headSha 第二次调用 `cached=true`。
+2. 同一 PR 在 headSha 不变时把某文件 patch 改小（测试用 mock）→ `reusedFiles > 0` 且耗时显著下降（单元测试即可，不要求真实 PR）。
+3. `includeGuidelines: true` 且仓库存在 AGENTS.md 时，`guidelines.loaded=true`、prompt 中包含指引段落；不存在时 `loaded=false` 且审查正常。
+4. severityThreshold=`P0` 时输出 findings 全为 P0；`P2` 时保留全部。
+5. deep 复核轮次在单测中用 fake stream 验证：证据不足（模型返回空保留列表）的 finding 被丢弃。
+6. 页面：diff 内 finding 卡片可展开、已有评论可见、设置弹层改设置后审查请求带对应 options、`j/k/r//` 生效、console 0 error。
+

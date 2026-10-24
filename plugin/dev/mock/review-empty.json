@@ -8,12 +8,29 @@
   "findings": [],
   "overview": "未发现 P0/P1 问题",
   "partial": false,
+  "options": {
+    "depth": "standard",
+    "chunkChars": 9000,
+    "maxChunks": 9,
+    "concurrency": 3,
+    "severityThreshold": "P2",
+    "includeGuidelines": true
+  },
+  "guidelines": {
+    "loaded": true,
+    "files": [
+      "AGENTS.md"
+    ],
+    "chars": 3240
+  },
+  "reusedFiles": 3,
+  "verdict": "approve",
   "state": "done",
   "progress": {
     "phase": "done",
     "filesDone": 24,
     "filesTotal": 24,
-    "startedAt": 1792825357929,
+    "startedAt": 1792838743187,
     "elapsedMs": 21000
   }
 }

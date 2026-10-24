@@ -1,18 +1,19 @@
 # dsh-codex-review · 端到端验收报告
 
-> **状态：PASS（最终验收通过，2026-10-24 16:05 复跑）**
-> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–16:05（Asia/Shanghai）
-> 插件安装/重载与 AI 审查修复由 Lead 执行；本文档所有数字均来自真实 DSH Web GUI 与真实路由，
-> 复跑证据：`api-probe-final.json`（43/43）、`ai-review-ui.json`、`page-check-final.json`、`click-panel-final.json`。
+> **状态：PASS（v1 验收 2026-10-24 16:05；v1.1 验收 2026-10-24 19:10，Host v1.1 / health version=0.2.0）**
+> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–19:15（Asia/Shanghai）
+> 插件安装/重载与 AI 审查修复由 Lead 执行；本文档所有数字均来自真实 DSH Web GUI 与真实路由。
+> v1 证据：`api-probe-final.json`（43/43）、`ai-review-ui.json`、`page-check-final.json`、`click-panel-final.json`；
+> v1.1 证据：`api-probe-v11-final.json`（90/90）、`click-panel-v11.json`、`page-check-v11.json`、`v11-*.png`（见 §11）。
 
 ## 0. 元信息
 
 | 项 | 值 |
 |---|---|
-| 插件 | `dsh-codex-review` v0.1.0（`C:\Users\10228\dsh-codex-review\plugin`） |
+| 插件 | `dsh-codex-review` v0.1.0（v1 验收）→ **v0.2.0（v1.1 验收，health version=0.2.0）**（`C:\Users\10228\dsh-codex-review\plugin`） |
 | 安装 | `plugin_manager install_bundle`，返回 application=applied、已 enabled |
 | 安装形态 | desktop profile `node_modules/dsh-codex-review` → 符号链接到 plugin 目录（改文件后 disable→enable 重载生效） |
-| Host 进程 | 未重启（PID 9356，启动于 14:02:58，全程未变） |
+| Host 进程 | v1 验收期间未重启（PID 9356）；v1.1 由 Lead 重载插件生效（health version 0.1.0→0.2.0） |
 | GUI | `http://127.0.0.1:2632`（profile: desktop） |
 | OS / Node / Edge | Windows 11 10.0.26200 / Node v24.21.0 / Edge 155.0.4283.62 |
 | gh | gh 2.102.0，已登录 `Acefake`（scopes: gist, read:org, repo, workflow） |
@@ -214,11 +215,77 @@ findings 示例（前 3 条，均为 P2）：
   卡片正确显示计数/严重度/原因与定位入口。
 
 修复前证据（partial 故障）保留在 §6.1；P1 缺陷 D1 已修复并经本轮复跑验证。
+**v1.1（插件 v0.2.0）验收同样 PASS**：90/90 路由断言通过（options 回显 / verdict / severityThreshold 过滤 / 增量复用 24/24 / AGENTS.md 注入），
+页面端 diff 行内 finding 卡、已有 GitHub 行内评论、审查设置弹层、`j/k/r//` 键盘与 Esc 全部实测通过，0 console/pageerror（详见 §11）。
 用户可见变化：刷新 `http://127.0.0.1:2632` 后，左栏「插件」下方出现「代码审查」；点开即三栏 PR 审查工作台，
-真实数据来自 `Acefake/yingbox`；右栏/头部「用 AI 审查」可发起审查并显示完成、发现、部分结果与错误状态。
+真实数据来自 `Acefake/yingbox`；右栏/头部「用 AI 审查」可发起审查并显示完成、发现、部分结果与错误状态；
+v1.1 起支持审查深度/阈值/AGENTS.md 开关、verdict 徽章、diff 行内 finding 卡与键盘快捷操作。
 遗留风险见 §7（P3 观察项：列表 ref 为空、审查耗时约 4 分钟、findings 全为 P2、认证依赖本机凭据）。
 
-## 附录 A · 复跑命令（同 §2）与判定速查
+## 11. v1.1 验收章节（CONTRACT §4.6）— **PASS**
+
+> **状态：PASS（2026-10-24 19:10 最终复跑；Host v1.1 已生效，health version=0.2.0，client.js 已冻结）**
+> 证据：`api-probe-v11-final.json`（**90/90 断言通过**）、`click-panel-v11.json`（全部 PASS）、
+> `page-check-v11.json`（6/6 v1.1 断言 PASS）、截图 `verify/out/v11-*.png`。
+> 本轮真实审查探测**全部命中 Lead 预热的缓存组合**（default/fast/deep/fast+P0），未发起新的长审查、未调用 review-cancel。
+
+### 11.1 路由/数据断言（`api-probe --v11 --v11-ai --v11-threshold --v11-newjob`：90/90 PASS）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | `ReviewStatus`/`PrDetail.review` 新字段形状：`options`/`verdict`/`reusedFiles`/`guidelines` | PASS | `options={depth:standard,severityThreshold:P2,includeGuidelines:true,chunkChars:9000,maxChunks:9,concurrency:3}`；`verdict=changes` 与 findings 推导一致；`guidelines={loaded:true,files:[AGENTS.md],chars:4000}`；`reusedFiles=15` |
+| 2 | 默认设置返回 `ResolvedReviewOptions`（standard/P2/true） | PASS | 命中缓存 job `rv-mvm9ycdt-2`（16 findings，partial=false） |
+| 3 | `depth=fast` 与默认产生不同 job key，预算 16000/6/4 | PASS | `rv-mvm9wiz1-1` vs `rv-mvm9ycdt-2`，12 findings，partial=false |
+| 4 | 同设置同 headSha 二次 `review-start` → `cached=true` 且同 jobId | PASS | `cached=true`，jobId 同为 `rv-mvm9ycdt-2` |
+| 5 | `severityThreshold=P0` → findings 全 P0、verdict/overview 一致 | PASS | 命中缓存 `rv-mvma4tuf-4`：findings=0（空集全 P0 成立）、`verdict=approve`、`overview="共 0 个问题：AI 未发现明显问题"`、reusedFiles=24/24、elapsedMs=1 |
+| 6 | `includeGuidelines=true` 且仓库有 AGENTS.md → `guidelines.loaded=true` | PASS | `loaded=true`，`files=[AGENTS.md]`，`chars=4000`（源文件 26959B，按契约截断 ≤4000） |
+| 7 | 增量复用（文件级缓存） | PASS | deep+P2 `rv-mvma3j4h-3`：**reusedFiles=24/24、elapsedMs=0**；未缓存组合 fast+P1 `rv-mvmaey3w-5`：新 job key、reusedFiles=24/24、elapsedMs=1、findings=1(P1)、verdict=changes（**0 次模型调用**） |
+| 8 | 页面审查卡展示 verdict / resolved options / guidelines 状态 | PASS | 见 §11.2 #9 |
+
+审查 job 一览（全部 done、partial=false，均命中预热缓存）：
+
+| 组合 | jobId | findings | verdict | reusedFiles | elapsedMs |
+|---|---|---|---|---|---|
+| standard/P2/true（默认） | rv-mvm9ycdt-2 | 16 | changes | 15 | 138548 |
+| fast/P2/true | rv-mvm9wiz1-1 | 12 | changes | 0 | 122591 |
+| deep/P2/true | rv-mvma3j4h-3 | 16 | changes | 24 | 0 |
+| fast/P0/true（阈值过滤） | rv-mvma4tuf-4 | 0 | approve | 24 | 1 |
+| fast/P1/true（未缓存新组合） | rv-mvmaey3w-5 | 1 | changes | 24 | 1 |
+
+### 11.2 页面断言（`click-panel --v11` 全部 PASS；`page-check --v11` 6/6 PASS）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 左栏「代码审查」入口 / 工作台 `data-cr-root` / 「用 AI 审查」/ 设置按钮 | PASS | `page-check-v11.json` v11 checks 6/6 |
+| 2 | Changes diff 内 finding 圆点（`[data-inline-marker]`） | PASS：markerCount=16 | `v11-changes.png` |
+| 3 | 点击圆点展开行内 finding 卡（为什么/怎么改/严重度/confidence/evidence） | PASS：openLine=104，hasWhy/hasFix/hasSeverity=true，confidence=true，evidence=true | `v11-finding-card.png` |
+| 4 | 已有 GitHub 行内评论卡（`[data-inline-comment]`） | PASS：按 path+line 渲染只读评论卡（作者/正文/文件行），当前展开文件 2 张；右栏「4 条评论」汇总正常 | `v11-inline-comments.png` |
+| 5 | 设置弹层 depth 三档 / severityThreshold 三档 / includeGuidelines / deep 耗时说明 | PASS | `v11-settings.png` |
+| 6 | 改设置后 localStorage 持久化 | PASS：`{"depth":"fast","severityThreshold":"P0","includeGuidelines":true}` | 报告 `settings.storage` |
+| 7 | `Esc` 关闭设置弹层 | PASS（先聚焦 dialog 再按 Esc；焦点陷阱正常） | 报告 checks |
+| 8 | 键盘 `j/k` 切换 PR | PASS：list #129 → #18 → #129 | 报告 `keyboard` |
+| 9 | 审查卡展示 verdict / resolved options / guidelines / 无 partial | PASS：`需要修改` 徽章、`深度 标准 · 阈值 P0–P2（全部）`、`仓库指引：AGENTS.md（4,000 字）`、P0 0/P1 1/P2 15、复用 15 个文件 | `v11-finding-card.png` |
+| 10 | 键盘 `r` 触发 review-start 且请求体带当前 options | PASS：`{"repo":"Acefake/yingbox","number":129,"options":{"depth":"fast","severityThreshold":"P0","includeGuidelines":true}}`（命中 fast+P0 缓存，无新模型调用） | 报告 `keyboard.reviewRequest` |
+| 11 | 键盘 `/` 聚焦搜索框 | PASS | 报告 `keyboard` |
+| 12 | 页面流程期间 console.error / pageerror / slot crash | PASS：0 / 0 / 无 | 报告 `consoleErrors/pageErrors` |
+
+截图：`verify/out/v11-{workbench,changes,finding-card,inline-comments,settings,keyboard}.png`；
+页面检查截图 `verify/out/v11-page-check.png`。
+人工核对（对照 CONTRACT §4.5 与 Codex 视觉）：diff 行内卡严重度色/证据代码块/定位按钮齐全；行内评论卡与 finding 卡视觉可区分；
+verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置弹层三组控件与 deep 说明均符合契约；无错位/溢出。
+
+### 11.3 v1.1 观察项（无阻塞缺陷）
+
+| # | 严重度 | 说明 |
+|---|---|---|
+| O1 | P3（数据） | 验收期间真实 open PR 数从 25 降到 9（仓库活动合并/关闭）。`prs` 断言已数据感知：≥20 或 `items.length === totalCount && ≥5`，插件返回与 totalCount 一致，不误报 |
+| O2 | P3（展示） | PR #134 共 4 条 inline 评论，diff 仅对当前展开文件渲染评论卡（2 张），右栏汇总「4 条评论」正确——符合「按 path+line 渲染」契约，非缺陷 |
+| O3 | P3（交互） | `j/k` 按列表顺序切换（跨仓库时会切到其它 repo 的 PR，如 #18），符合契约「上下切 PR」；如产品希望同仓库内切换需另立需求 |
+| O4 | P3（验证边界） | deep 复核轮与并发上限的**模型侧行为**本轮用 Lead 预热结果 + 单测覆盖验证（CONTRACT §4.6 item5 允许单测）；装置未另起 deep 长跑 |
+
+**v1.1 判定：PASS（90/90 路由断言 + 页面 12 项全 PASS + 0 console/pageerror）。**
+
+## 附录 A · 复跑命令（同 §2 / README §4.6）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
 - AI 终态关键字段：`review-status.state==="done"`、`partial!==true`、`findings[]` 每条 schema 合法；

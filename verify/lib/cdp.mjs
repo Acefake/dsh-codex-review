@@ -452,6 +452,7 @@ export class PageSession {
         url: String(params.request?.url ?? ''),
         method: String(params.request?.method ?? 'GET'),
         resourceType: type,
+        postData: typeof params.request?.postData === 'string' ? params.request.postData : undefined,
         timestamp: Date.now(),
       })
       // WebSocket/EventSource handshakes never report loadingFinished.

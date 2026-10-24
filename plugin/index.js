@@ -12,7 +12,7 @@
 import { AppError, badRequest } from './lib/errors.js'
 import { Config, resolveConfig } from './lib/config.js'
 import { GitHubClient, REPO_RE } from './lib/github.js'
-import { ReviewEngine } from './lib/review.js'
+import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { ROUTE_PREFIX, createJsonRouteHandler } from './lib/http.js'
 
 /** Plugin id; equals the package name and the Client bundle id. */
@@ -22,7 +22,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -294,13 +294,25 @@ export function createRoutes(wiring) {
       return withReview(repo, number, detail)
     },
 
-    [PATHS.reviewStart]: async (payload) => {
+    [PATHS.reviewStart]: async (payload, context) => {
       const { repo, number } = requirePullRef(payload)
       if (!engine.available()) throw new AppError('LLM_UNAVAILABLE')
+      // Resolve the v1.1 options here as well so the guideline fetch happens
+      // only when requested; the engine resolves the same values internally.
+      const options = resolveReviewOptions(payload.options, config)
       const detail = await github.getPull(repo, number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')
-      return engine.start({
+      let guidelines
+      if (options.includeGuidelines && typeof github.getGuidelines === 'function') {
+        try {
+          guidelines = await github.getGuidelines(repo, { signal: context?.signal })
+        } catch {
+          // Guidelines are an enhancement: never let them block the review.
+          guidelines = undefined
+        }
+      }
+      const started = engine.start({
         repo,
         number,
         headSha,
@@ -309,7 +321,15 @@ export function createRoutes(wiring) {
         baseRefName: detail?.summary?.baseRefName,
         headRefName: detail?.summary?.headRefName,
         files: Array.isArray(detail?.files) ? detail.files : [],
+        options,
+        guidelines,
       })
+      return {
+        jobId: started.jobId,
+        headSha: started.headSha,
+        cached: started.cached,
+        options: started.options ?? options,
+      }
     },
 
     [PATHS.reviewStatus]: async (payload) => {

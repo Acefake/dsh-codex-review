@@ -46,6 +46,14 @@ const DETAIL_TTL_MS = 60_000
 const PATCH_TTL_MS = 30 * 60_000
 const CHECKS_TTL_MS = 30_000
 const HEALTH_TTL_MS = 30_000
+/** Repository-review guidelines (AGENTS.md) are repo-level and change rarely (CONTRACT §4.4). */
+const GUIDELINE_TTL_MS = 10 * 60_000
+
+/** Files read for repository review guidance, in injection order (CONTRACT §4.4). */
+export const GUIDELINE_PATHS = Object.freeze(['AGENTS.md', '.github/AGENTS.md'])
+
+/** Per-file character budget for injected guidelines (CONTRACT §4.4). */
+export const GUIDELINE_MAX_CHARS = 4_000
 
 /** File-list page budget: GitHub caps pull-request files at 3000; three pages of 100. */
 const FILES_PAGE_SIZE = 100
@@ -142,6 +150,31 @@ export function truncateText(value, maxChars) {
   const text = typeof value === 'string' ? value : ''
   if (text.length <= maxChars) return { text, truncated: false }
   return { text: text.slice(0, maxChars), truncated: true }
+}
+
+/**
+ * Decode one `repos/{o}/{r}/contents/{path}` payload into its text. The REST
+ * endpoint returns `{ encoding: 'base64', content }` for files (line-wrapped);
+ * directories and submodules carry no decodable content and yield ''.
+ * @param {any} payload - contents API body.
+ * @returns {string} decoded text, or '' when unusable.
+ */
+export function decodeContentsPayload(payload) {
+  if (payload === null || typeof payload !== 'object') return ''
+  if (typeof payload.type === 'string' && payload.type !== 'file') return ''
+  const content = typeof payload.content === 'string' ? payload.content : ''
+  if (content === '') return ''
+  const encoding = typeof payload.encoding === 'string' ? payload.encoding.toLowerCase() : ''
+  if (encoding === 'base64') {
+    try {
+      return Buffer.from(content.replace(/\s+/g, ''), 'base64').toString('utf8')
+    } catch {
+      return ''
+    }
+  }
+  // A plain-text payload (raw media type over a different transport) is already
+  // the file content.
+  return content
 }
 
 /**
@@ -790,6 +823,63 @@ export class GitHubClient {
       const detail = await this.loadPull(repo, number)
       this.cache.set(key, detail, DETAIL_TTL_MS, this.now())
       return detail
+    })
+  }
+
+  /**
+   * Read the repository's review guidelines (CONTRACT §4.4): `AGENTS.md` and
+   * `.github/AGENTS.md`, preferring the former and capping the injected text at
+   * {@link GUIDELINE_MAX_CHARS} characters in total (each file is read at that
+   * same cap, and the second file only fills the remaining budget). Cached per
+   * repository for ten minutes. Any failure (missing file, permissions,
+   * network) degrades to "no guidelines" and never blocks a review.
+   * @param {string} repo - `owner/name`.
+   * @param {{ signal?: AbortSignal }} [options] - request signal (route deadline).
+   * @returns {Promise<{ loaded: boolean, files: string[], chars: number, text: string }>} guidelines plus the text to inject.
+   */
+  async getGuidelines(repo, options = {}) {
+    const [owner, name] = splitRepo(repo)
+    const key = `guidelines:${repo}`
+    const cached = this.cache.get(key, this.now())
+    if (cached !== undefined) return cached
+    return this.once(key, async () => {
+      /** @type {string[]} */
+      const files = []
+      /** @type {string[]} */
+      const parts = []
+      let remaining = GUIDELINE_MAX_CHARS
+      for (const path of GUIDELINE_PATHS) {
+        if (remaining <= 0) break
+        const endpoint = path.split('/').map((segment) => encodeURIComponent(segment)).join('/')
+        /** @type {string} */
+        let text
+        try {
+          const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${endpoint}`, { signal: options.signal })
+          text = decodeContentsPayload(data)
+        } catch (error) {
+          // A repository without AGENTS.md answers 404: the normal case. Other
+          // failures are logged but equally non-blocking.
+          if (!(error instanceof AppError && error.code === 'GH_NOT_FOUND')) {
+            this.logger?.warn?.(`dsh-codex-review: could not read ${repo}/${path}: ${error?.message ?? error}`)
+          }
+          continue
+        }
+        const bounded = truncateText(text.trim(), Math.min(GUIDELINE_MAX_CHARS, remaining))
+        if (bounded.text === '') continue
+        files.push(path)
+        parts.push(bounded.text)
+        remaining -= bounded.text.length
+      }
+      const value = {
+        loaded: files.length > 0,
+        files,
+        chars: parts.reduce((sum, part) => sum + part.length, 0),
+        text: parts.join('\n\n'),
+      }
+      // A deadline-aborted lookup is not evidence that the repository has no
+      // guidelines: answer empty now but let the next call retry.
+      if (options.signal?.aborted !== true) this.cache.set(key, value, GUIDELINE_TTL_MS, this.now())
+      return value
     })
   }
 

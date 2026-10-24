@@ -107,10 +107,11 @@ const DETAIL = {
 
 /**
  * Build the fake GitHub client + fake review engine pair.
- * @returns {{ github: any, engine: any, started: any[] }} doubles.
+ * @returns {{ github: any, engine: any, started: any[], guidelineCalls: string[] }} doubles.
  */
 function createDoubles() {
   const started = []
+  const guidelineCalls = []
   let disposed = false
   const github = {
     async ghStatus() {
@@ -126,6 +127,10 @@ function createDoubles() {
     },
     async getPull() {
       return DETAIL
+    },
+    async getGuidelines(repo) {
+      guidelineCalls.push(repo)
+      return { loaded: true, files: ['AGENTS.md'], chars: 12, text: '仓库专属约定' }
     },
   }
   const engine = {
@@ -158,7 +163,7 @@ function createDoubles() {
       return disposed
     },
   }
-  return { github, engine, started }
+  return { github, engine, started, guidelineCalls }
 }
 
 /**
@@ -217,12 +222,70 @@ test('pr returns the detail with a review snapshot', async () => {
 test('review-start forwards the PR snapshot to the engine and answers the job reference', async () => {
   const { handler, doubles } = mount({ llmAvailable: true })
   const answer = await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
-  assert.deepEqual(answer.body, { ok: true, value: { jobId: 'job-1', headSha: 'abc123', cached: false } })
+  assert.deepEqual(answer.body, {
+    ok: true,
+    value: {
+      jobId: 'job-1',
+      headSha: 'abc123',
+      cached: false,
+      options: { depth: 'standard', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 9000, maxChunks: 9, concurrency: 3 },
+    },
+  })
   assert.equal(doubles.started.length, 1)
   assert.equal(doubles.started[0].repo, 'Acefake/yingbox')
   assert.equal(doubles.started[0].number, 129)
   assert.equal(doubles.started[0].headSha, 'abc123')
   assert.equal(doubles.started[0].files.length, 1)
+  assert.deepEqual(doubles.started[0].options, { depth: 'standard', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 9000, maxChunks: 9, concurrency: 3 })
+  assert.deepEqual(doubles.guidelineCalls, ['Acefake/yingbox'])
+  assert.equal(doubles.started[0].guidelines.loaded, true)
+})
+
+test('review-start resolves the depth presets into concrete budgets', async () => {
+  const { handler, doubles } = mount({ llmAvailable: true })
+  const answer = await call(handler, '/codex-review/review-start', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    options: { depth: 'fast', severityThreshold: 'P0', includeGuidelines: false },
+  })
+  assert.deepEqual(answer.body.value.options, {
+    depth: 'fast',
+    severityThreshold: 'P0',
+    includeGuidelines: false,
+    chunkChars: 16000,
+    maxChunks: 6,
+    concurrency: 4,
+  })
+  // includeGuidelines=false must not touch the guidelines endpoint at all.
+  assert.deepEqual(doubles.guidelineCalls, [])
+  assert.equal(doubles.started[0].guidelines, undefined)
+})
+
+test('review-start normalizes unknown options instead of rejecting them', async () => {
+  const { handler, doubles } = mount({ llmAvailable: true })
+  const answer = await call(handler, '/codex-review/review-start', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    options: { depth: 'turbo', severityThreshold: 'P9', includeGuidelines: true },
+  })
+  assert.equal(answer.body.ok, true)
+  assert.equal(answer.body.value.options.depth, 'standard')
+  assert.equal(answer.body.value.options.severityThreshold, 'P2')
+})
+
+test('review-start still runs when the guideline lookup fails', async () => {
+  const { ctx, routes } = createFakeContext()
+  const doubles = createDoubles()
+  doubles.engine.available = () => true
+  doubles.github.getGuidelines = async () => {
+    throw new Error('guideline failure')
+  }
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine })
+  const handler = routes.get('/codex-review').handler
+  const answer = await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
+  assert.equal(answer.body.ok, true)
+  assert.equal(doubles.started.length, 1)
+  assert.equal(doubles.started[0].guidelines, undefined)
 })
 
 test('review-start reports LLM_UNAVAILABLE when the model seam is missing', async () => {
@@ -346,5 +409,137 @@ test('optional llm injection wires ctx.llm.stream into the real review engine', 
 
   const health = await call(handler, '/codex-review/health')
   assert.deepEqual(health.body.value, { gh: 'ok', llm: 'ok', version: '0.1.0' })
+  for (const dispose of disposers) dispose()
+})
+
+test('review-start through the route layer returns v1.1 status fields and option-aware caching', async () => {
+  const { ctx, routes, disposers } = createFakeContext()
+  const requests = []
+  ctx.inject = (deps, callback) => {
+    callback({
+      llm: {
+        stream(request) {
+          requests.push(request)
+          return (async function* generate() {
+            yield {
+              type: 'text-delta',
+              index: 0,
+              text: JSON.stringify({
+                findings: [{
+                  severity: 'P1',
+                  file: 'src/a.ts',
+                  line: 1,
+                  title: '空指针',
+                  why: '为 null 时崩溃',
+                  fix: '判空',
+                  evidence: '+b',
+                  confidence: 'high',
+                }],
+              }),
+            }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          })()
+        },
+      },
+      agentDefaultModel: {
+        currentSelection() {
+          return { provider: 'opencode-go', model: 'deepseek-v4.1-flash' }
+        },
+      },
+      effect(callback) {
+        callback()
+      },
+    })
+    return { dispose() {} }
+  }
+  const github = {
+    async ghStatus() {
+      return 'ok'
+    },
+    async getPull() {
+      return DETAIL
+    },
+    async getGuidelines(repo) {
+      return { loaded: true, files: ['AGENTS.md'], chars: 18, text: '所有审查结论用简体中文' }
+    },
+    async listPullRequests() {
+      return { query: 'q', totalCount: 0, items: [] }
+    },
+  }
+  applyWithDeps(ctx, { requestTimeoutMs: 5000, reviewChunkChars: 1000 }, { github })
+  const handler = routes.get('/codex-review').handler
+
+  /**
+   * Poll one job to a terminal state.
+   * @param {string} jobId - job id.
+   * @returns {Promise<any>} final ReviewStatus.
+   */
+  const waitFor = async (jobId) => {
+    /** @type {any} */
+    let status
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const answer = await call(handler, '/codex-review/review-status', { jobId })
+      status = answer.body.value
+      if (status.state !== 'queued' && status.state !== 'running') return status
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    return status
+  }
+
+  const started = await call(handler, '/codex-review/review-start', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    options: { depth: 'fast', severityThreshold: 'P1', includeGuidelines: true },
+  })
+  assert.equal(started.body.ok, true)
+  assert.deepEqual(started.body.value.options, {
+    depth: 'fast',
+    severityThreshold: 'P1',
+    includeGuidelines: true,
+    chunkChars: 16000,
+    maxChunks: 6,
+    concurrency: 4,
+  })
+  const jobId = started.body.value.jobId
+  const status = await waitFor(jobId)
+  assert.equal(status.state, 'done')
+  assert.equal(status.partial, false)
+  assert.deepEqual(status.options, started.body.value.options)
+  assert.deepEqual(status.guidelines, { loaded: true, files: ['AGENTS.md'], chars: 18 })
+  assert.equal(status.reusedFiles, 0)
+  assert.equal(status.verdict, 'changes')
+  assert.equal(status.findings.length, 1)
+  assert.equal(status.findings[0].evidence, '+b')
+  assert.equal(status.findings[0].confidence, 'high')
+  assert.ok(requests[0].messages[0].content[0].text.includes('## 仓库审查指引'))
+
+  // Same head + same options reuses the finished job; another depth does not.
+  const cached = await call(handler, '/codex-review/review-start', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    options: { depth: 'fast', severityThreshold: 'P1', includeGuidelines: true },
+  })
+  assert.equal(cached.body.value.cached, true)
+  assert.equal(cached.body.value.jobId, jobId)
+  const other = await call(handler, '/codex-review/review-start', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    options: { depth: 'standard' },
+  })
+  assert.equal(other.body.value.cached, false)
+  assert.notEqual(other.body.value.jobId, jobId)
+  const otherStatus = await waitFor(other.body.value.jobId)
+  assert.equal(otherStatus.state, 'done')
+  // Every file is reused from the file-level cache: no extra model call.
+  assert.equal(requests.length, 1)
+  assert.equal(otherStatus.reusedFiles, 1)
+  assert.equal(otherStatus.verdict, 'changes')
+
+  // PrDetail.review exposes the new snapshot fields for the latest variant.
+  const detail = await call(handler, '/codex-review/pr', { repo: 'Acefake/yingbox', number: 129 })
+  assert.equal(detail.body.value.review.state, 'done')
+  assert.deepEqual(detail.body.value.review.options, other.body.value.options)
+  assert.equal(detail.body.value.review.reusedFiles, 1)
+  assert.equal(detail.body.value.review.verdict, 'changes')
   for (const dispose of disposers) dispose()
 })

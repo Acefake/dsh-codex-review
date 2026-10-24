@@ -6,14 +6,30 @@
     "model": "deepseek-v4-pro"
   },
   "findings": [],
-  "overview": "2 个 P1 · 4 个 P2",
+  "overview": "2 个 P1 · 5 个 P2",
   "partial": false,
+  "options": {
+    "depth": "standard",
+    "chunkChars": 9000,
+    "maxChunks": 9,
+    "concurrency": 3,
+    "severityThreshold": "P2",
+    "includeGuidelines": true
+  },
+  "guidelines": {
+    "loaded": true,
+    "files": [
+      "AGENTS.md"
+    ],
+    "chars": 3240
+  },
+  "reusedFiles": 0,
   "state": "running",
   "progress": {
     "phase": "reviewing",
     "filesDone": 12,
     "filesTotal": 24,
-    "startedAt": 1792825372729,
+    "startedAt": 1792838757987,
     "elapsedMs": 6200
   }
 }

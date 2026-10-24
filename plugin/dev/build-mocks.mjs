@@ -97,6 +97,45 @@ function pickLine(fileName, fraction) {
   return lines[Math.min(lines.length - 1, Math.max(0, Math.floor(lines.length * fraction)))]
 }
 
+/**
+ * Text of the added (RIGHT-side) line at `line`, used for Finding.evidence.
+ * Mirrors what the Host prompt asks the model to quote back.
+ */
+function addedLineText(fileName, line) {
+  const file = files.find((entry) => entry.path.endsWith(fileName))
+  if (!file) return ''
+  let newLine = 0
+  for (const raw of String(file.patch || '').split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
+    if (hunk) {
+      newLine = Number(hunk[2])
+      continue
+    }
+    if (raw.startsWith('+')) {
+      if (newLine === Number(line)) return raw.slice(1).trim().slice(0, 180)
+      newLine += 1
+    } else if (raw.startsWith(' ')) {
+      newLine += 1
+    }
+  }
+  return ''
+}
+
+/** The resolved options the Host echoes for each depth preset (CONTRACT §4.1). */
+const DEPTH_PRESETS = {
+  fast: { depth: 'fast', chunkChars: 16000, maxChunks: 6, concurrency: 4 },
+  standard: { depth: 'standard', chunkChars: 9000, maxChunks: 9, concurrency: 3 },
+  deep: { depth: 'deep', chunkChars: 6000, maxChunks: 20, concurrency: 2 },
+}
+
+function resolvedOptions(depth, severityThreshold = 'P2', includeGuidelines = true) {
+  return {
+    ...DEPTH_PRESETS[depth],
+    severityThreshold,
+    includeGuidelines,
+  }
+}
+
 const findingSpecs = [
   {
     severity: 'P1',
@@ -106,6 +145,7 @@ const findingSpecs = [
     why: '当改动让两集没有任何 32 位指纹完全相同的点时，`findCandidates` 返回空数组，`matchEpisodes` 随即进入分批全量扫描；一季 12 集 × 每集 5 分钟指纹 = 每批约 24 亿次汉明比较，批间只让出一次事件循环，播放器主线程会长时间不可用。',
     fix: '给全量扫描加一个「最大比较次数」预算（例如 2e8），超出就直接返回 `null` 并把结果标为 `no-match`；或在扫描前用 `POINT_SECONDS` 做一次粗粒度抽样筛候选。',
     category: 'performance',
+    confidence: 'high',
   },
   {
     severity: 'P1',
@@ -115,6 +155,19 @@ const findingSpecs = [
     why: '`cancel()` 只 abort 当前 ffmpeg 并清空 `current`，但没有把该季从 `pending` 里移除，也没重置 `running`；下一次队列 tick 看到 `running === false` 但 `pending` 里仍有同一季，会静默跳过，UI 永远拿不到「已取消」的终态。',
     fix: '在 `cancel()` 里同时 `pending.delete(key)`、`running = false`，并给等待中的 Promise 一个 `{ cancelled: true }` 的 resolve/reject，让调用方一定能收到终态。',
     category: 'concurrency',
+    confidence: 'medium',
+  },
+  {
+    severity: 'P2',
+    file: 'src/main/intro-detect/match.ts',
+    // Same line as the first P1: exercises the "N findings on one line" marker,
+    // which folds into a single 「N 条」 gutter badge in the diff.
+    lineFraction: 0.46,
+    title: '找到候选后没有尽早结束扫描，后续批次仍在空转',
+    why: '`compareClips` 在 `if (quick) return quick` 之后仍会继续 for 循环直到 `SHIFT_BATCH` 耗尽；命中快速的场景下每批会多跑约 300 次无关的 `bestMatch` 比较，量级不大但完全可避免。',
+    fix: '在 `if (quick) return quick` 分支后直接 `break` 跳出分批循环，或把 `quick` 判定提前到每批开始处。',
+    category: 'performance',
+    confidence: 'low',
   },
   {
     severity: 'P2',
@@ -124,6 +177,7 @@ const findingSpecs = [
     why: '2 集时 `Math.max(2, Math.ceil(2 / 2))` = 2，要求 2 个不同集支持，而一次两两比对只产生 2 集的候选，起止误差正好落在 5 秒边界时可能只算 1 个支持，于是整季被判为「没有统一片头」，手动标记被覆盖成空。',
     fix: '票数门槛改为 `Math.max(2, Math.ceil(total / 2))` 并显式处理 `total === 2`：要么要求 1 个支持（2 集时任意一对都算全票），要么在文档里明确 2 集季不支持自动检测。',
     category: 'correctness',
+    confidence: 'medium',
   },
   {
     severity: 'P2',
@@ -133,6 +187,7 @@ const findingSpecs = [
     why: '`isManual` 依据仅来自 `introSource` 字段，老记录没有该字段时按手动算；但迁移代码写回时只补 `introSource = manual` 而没有保留原有 `end`，第二次检测会把手动标好的片尾区间整体替换掉。',
     fix: '迁移时对已有标记同时写 `introSource: "manual"` 并保留原有区间字段；合并时用 `Object.assign({}, auto, manual)` 让手动字段整体优先，而不是逐字段覆盖。',
     category: 'data',
+    confidence: 'low',
   },
   {
     severity: 'P2',
@@ -142,6 +197,7 @@ const findingSpecs = [
     why: '`runBinary` 只对 stdout 收集 chunks，但 `-progress` 未关闭，stderr 上每 0.1 秒一行；30 分钟分析会产生约 18000 行日志，Node 默认 `maxBuffer`（1 MiB）被撑满后进程被 SIGTERM 杀掉，表现为「检测随机失败」。',
     fix: 'spawn 时显式 `maxBuffer` 并给 stdout 设上限（例如 32 MiB）；关闭 `-progress`/`-nostats`，或按行消费 stderr 只保留最后 20 行。',
     category: 'correctness',
+    confidence: 'high',
   },
   {
     severity: 'P2',
@@ -165,6 +221,7 @@ function slugId(seed) {
 
 const findings = findingSpecs.map((spec) => {
   const line = pickLine(spec.file, spec.lineFraction)
+  const evidence = addedLineText(spec.file, line)
   const base = {
     id: '',
     severity: spec.severity,
@@ -174,7 +231,10 @@ const findings = findingSpecs.map((spec) => {
     why: spec.why,
     fix: spec.fix,
     category: spec.category,
+    // v1.1 extras: diff line that supports the finding + model self-rated confidence.
+    evidence: evidence ? '+' + evidence : '',
   }
+  if (spec.confidence) base.confidence = spec.confidence
   base.id = `${spec.file}:${line}:${slugId(spec.title)}`
   return base
 })
@@ -192,6 +252,12 @@ const reviewBase = {
   findings,
   overview: overviewParts.join(' · '),
   partial: false,
+  // v1.1: resolved options echoed by review-start/review-status, AGENTS.md
+  // report, file-level cache reuse and the derived verdict.
+  options: resolvedOptions('standard'),
+  guidelines: { loaded: true, files: ['AGENTS.md'], chars: 3240 },
+  reusedFiles: 5,
+  verdict: 'changes',
 }
 
 const reviewDone = {
@@ -210,6 +276,8 @@ const reviewEmpty = {
   ...reviewBase,
   overview: '未发现 P0/P1 问题',
   findings: [],
+  verdict: 'approve',
+  reusedFiles: 3,
   state: 'done',
   progress: {
     phase: 'done',
@@ -224,6 +292,8 @@ const reviewRunning = {
   ...reviewBase,
   state: 'running',
   findings: [],
+  verdict: undefined,
+  reusedFiles: 0,
   progress: {
     phase: 'reviewing',
     filesDone: 12,
@@ -237,6 +307,10 @@ const reviewError = {
   ...reviewBase,
   state: 'error',
   findings: [],
+  verdict: undefined,
+  reusedFiles: 0,
+  // Degraded case: no AGENTS.md in the repo, and the model was unavailable.
+  guidelines: { loaded: false, files: [], chars: 0 },
   progress: {
     phase: 'reviewing',
     filesDone: 3,
@@ -247,6 +321,25 @@ const reviewError = {
   error: {
     code: 'LLM_UNAVAILABLE',
     message: '宿主没有可用的模型：请先配置默认模型后重试。',
+  },
+}
+
+const reviewPartial = {
+  ...reviewBase,
+  state: 'done',
+  partial: true,
+  partialReasons: ['src/main/intro-detect/queue.ts：模型输出不是合法 JSON，已跳过该分块'],
+  truncatedCalls: 1,
+  // A deep run: shows the extra verification pass + its slower budget.
+  options: resolvedOptions('deep', 'P1'),
+  verdict: 'changes',
+  reusedFiles: 2,
+  progress: {
+    phase: 'done',
+    filesDone: files.length - 1,
+    filesTotal: files.length,
+    startedAt: Date.now() - 239_000,
+    elapsedMs: 239_000,
   },
 }
 
@@ -332,6 +425,69 @@ checksDetail.checks = { state: 'failure', items: checkItems }
 
 const closedItems = items.slice(0, 4).map((item) => ({ ...item, state: 'closed' }))
 
+/**
+ * PR #129 with existing GitHub review comments, used by the v1.1
+ * `v11-existing-comments` preview scene. Bodies include one >400-char comment so
+ * the client's preview truncation is visible.
+ */
+const longCommentBody = [
+  '这一段的注释和实现不一致：注释说「每批让出事件循环」，但 `SHIFT_BATCH` 循环里没有 `await`，',
+  '实际上只有在每批结束才 `setImmediate`。建议把 `setImmediate` 提前到 for 循环体内部，',
+  '或者把 `SHIFT_BATCH` 调小到 64 以内，避免单批耗时超过 16ms。',
+  '另外 `candidateShifts` 数组在每批都会重新分配，可以提到循环外复用，减少 GC 压力。',
+  '（这条评论故意写长，用来验证行内评论卡最多显示 400 字并在超出时标注「已截断」。）',
+].join('')
+
+const pr129CommentsDetail = JSON.parse(JSON.stringify(pr129Detail))
+pr129CommentsDetail.comments = {
+  total: 6,
+  issue: [
+    {
+      author: 'Acefake',
+      body: '截图里的第一版检测结果：片头 00:12–01:38，片尾 41:02–42:30。冷开场那几集没统一，先手动标。',
+      createdAt: '2026-10-24T03:12:00Z',
+    },
+    {
+      author: 'chatgpt-codex-connector[bot]',
+      body: '已在 #117 上留下 3 条行内建议，其中 1 条属于 P1：队列取消后没有出队。',
+      createdAt: '2026-10-24T04:02:00Z',
+    },
+  ],
+  reviews: [
+    { author: 'chatgpt-codex-connector[bot]', state: 'COMMENTED', body: '3 条行内建议（1 个 P1）' },
+  ],
+  inline: [
+    {
+      path: 'src/main/intro-detect/queue.ts',
+      line: pickLine('src/main/intro-detect/queue.ts', 0.42),
+      body: longCommentBody,
+      author: 'chatgpt-codex-connector[bot]',
+      createdAt: '2026-10-24T04:01:00Z',
+    },
+    {
+      path: 'src/main/intro-detect/vote.ts',
+      line: pickLine('src/main/intro-detect/vote.ts', 0.55),
+      body: '这里的票数门槛建议改成 `Math.max(2, Math.ceil(total / 2))`，并在 `total === 2` 时给出明确行为。',
+      author: 'Acefake',
+      createdAt: '2026-10-24T03:40:00Z',
+    },
+    {
+      path: 'src/main/intro-detect/detector.ts',
+      line: pickLine('src/main/intro-detect/detector.ts', 0.3),
+      body: '`yieldNow` 的导入顺序没问题，但注意不要再引入同步阻塞调用。',
+      author: 'chatgpt-codex-connector[bot]',
+      createdAt: '2026-10-23T22:12:00Z',
+    },
+    {
+      path: 'src/main/intro-detect/queue.ts',
+      line: null,
+      body: '文件级评论示例：整份队列实现建议补一组取消路径的回归测试。',
+      author: 'reviewer-bot',
+      createdAt: '2026-10-23T22:20:00Z',
+    },
+  ],
+}
+
 const write = (name, value) => {
   fs.writeFileSync(path.join(outDir, name), `${JSON.stringify(value, null, 2)}\n`)
   console.log('wrote', path.relative(root, path.join(outDir, name)))
@@ -341,10 +497,12 @@ write('health.json', { gh: 'ok', llm: 'ok', version: '0.1.0' })
 write('prs.json', { query: 'is:open author:@me', totalCount: items.length, items })
 write('prs-closed.json', { query: 'is:closed author:@me', totalCount: closedItems.length, items: closedItems })
 write('pr-129.json', pr129Detail)
+write('pr-129-comments.json', pr129CommentsDetail)
 write('pr-generic.json', genericDetail)
 write('checks-demo.json', checksDetail)
 write('review-done.json', reviewDone)
 write('review-empty.json', reviewEmpty)
 write('review-running.json', reviewRunning)
 write('review-error.json', reviewError)
+write('review-partial.json', reviewPartial)
 console.log(`\n${items.length} PRs, ${files.length} files, ${findings.length} findings (head ${headSha.slice(0, 8)})`)

@@ -173,7 +173,7 @@ test('sortFindings orders P0 > P1 > P2, then file, then line', () => {
   assert.deepEqual(api.sortFindings([{ id: 'x', severity: 'weird' }]).map((item) => item.id), ['x'])
 })
 
-test('countSeverities and deriveVerdict', () => {
+test('countSeverities and deriveVerdict map severities to v1.1 verdicts', () => {
   const findings = [
     { severity: 'P0' },
     { severity: 'P1' },
@@ -183,7 +183,8 @@ test('countSeverities and deriveVerdict', () => {
   ]
   assert.deepEqual(api.countSeverities(findings), { P0: 1, P1: 1, P2: 2 })
   assert.deepEqual(api.countSeverities([]), { P0: 0, P1: 0, P2: 0 })
-  assert.equal(api.deriveVerdict(findings), 'request_changes')
+  assert.equal(api.deriveVerdict(findings), 'block')
+  assert.equal(api.deriveVerdict([{ severity: 'P1' }]), 'changes')
   assert.equal(api.deriveVerdict([{ severity: 'P2' }]), 'approve')
   assert.equal(api.deriveVerdict([]), 'approve')
 })
@@ -390,6 +391,327 @@ test('prStateKey maps summary flags to badge keys', () => {
   assert.equal(api.prStateKey({ state: 'closed' }), 'closed')
   assert.equal(api.prStateKey({ state: 'open', isDraft: true }), 'draft')
   assert.equal(api.prStateKey({ state: 'merged' }), 'merged')
+})
+
+// ---------------------------------------------------------------------------
+// v1.1 review options + settings persistence (localStorage['codex-review:settings'])
+// ---------------------------------------------------------------------------
+
+function memoryStorage(initial) {
+  const data = { ...(initial || {}) }
+  return {
+    data,
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null
+    },
+    setItem(key, value) {
+      data[key] = String(value)
+    },
+  }
+}
+
+test('normalizeSettings clamps garbage to contract defaults', () => {
+  assert.deepEqual(api.normalizeSettings(null), {
+    depth: 'standard',
+    severityThreshold: 'P2',
+    includeGuidelines: true,
+  })
+  assert.deepEqual(api.normalizeSettings('nope'), api.DEFAULT_SETTINGS)
+  assert.deepEqual(api.normalizeSettings({ depth: 'ultra', severityThreshold: 'P9' }), api.DEFAULT_SETTINGS)
+  assert.deepEqual(api.normalizeSettings({ depth: 'deep', severityThreshold: 'P0', includeGuidelines: false }), {
+    depth: 'deep',
+    severityThreshold: 'P0',
+    includeGuidelines: false,
+  })
+  assert.deepEqual(api.normalizeSettings({ includeGuidelines: 0 }), {
+    depth: 'standard',
+    severityThreshold: 'P2',
+    includeGuidelines: false,
+  })
+  assert.equal(api.hasSettingsFields({ depth: 'fast' }), true)
+  assert.equal(api.hasSettingsFields({ chunkChars: 9000 }), false)
+  assert.equal(api.hasSettingsFields(null), false)
+})
+
+test('readSettings/writeSettings round-trip through a storage-like object', () => {
+  const storage = memoryStorage()
+  assert.deepEqual(api.readSettings(storage), api.DEFAULT_SETTINGS)
+  assert.equal(api.writeSettings(storage, { depth: 'fast', severityThreshold: 'P1', includeGuidelines: false }), true)
+  assert.equal(storage.data[api.SETTINGS_KEY], JSON.stringify({ depth: 'fast', severityThreshold: 'P1', includeGuidelines: false }))
+  assert.deepEqual(api.readSettings(storage), {
+    depth: 'fast',
+    severityThreshold: 'P1',
+    includeGuidelines: false,
+  })
+  // Corrupt JSON / throwing storage degrades to defaults, never throws.
+  storage.setItem(api.SETTINGS_KEY, '{not json')
+  assert.deepEqual(api.readSettings(storage), api.DEFAULT_SETTINGS)
+  const throwing = {
+    getItem() {
+      throw new Error('blocked')
+    },
+    setItem() {
+      throw new Error('blocked')
+    },
+  }
+  assert.deepEqual(api.readSettings(throwing), api.DEFAULT_SETTINGS)
+  assert.equal(api.writeSettings(throwing, api.DEFAULT_SETTINGS), false)
+  assert.deepEqual(api.readSettings(null), api.DEFAULT_SETTINGS)
+  assert.equal(api.writeSettings(null, api.DEFAULT_SETTINGS), false)
+  assert.equal(api.localStore(), null, 'no localStorage in the sandbox')
+})
+
+test('settingsToOptions keeps exactly the review-start option fields', () => {
+  assert.deepEqual(api.settingsToOptions({ depth: 'deep', severityThreshold: 'P1', includeGuidelines: false }), {
+    depth: 'deep',
+    severityThreshold: 'P1',
+    includeGuidelines: false,
+  })
+  assert.deepEqual(api.settingsToOptions(undefined), {
+    depth: 'standard',
+    severityThreshold: 'P2',
+    includeGuidelines: true,
+  })
+})
+
+test('normalizeReviewOptions handles resolved echo and missing budgets', () => {
+  assert.deepEqual(api.normalizeReviewOptions(undefined), {
+    depth: 'standard',
+    severityThreshold: 'P2',
+    includeGuidelines: true,
+    chunkChars: 0,
+    maxChunks: 0,
+    concurrency: 0,
+  })
+  const resolved = api.normalizeReviewOptions({
+    depth: 'deep',
+    severityThreshold: 'P0',
+    includeGuidelines: true,
+    chunkChars: 6000,
+    maxChunks: 20,
+    concurrency: 2,
+  })
+  assert.equal(resolved.depth, 'deep')
+  assert.equal(resolved.chunkChars, 6000)
+  assert.equal(resolved.maxChunks, 20)
+  assert.equal(resolved.concurrency, 2)
+  assert.equal(resolved.severityThreshold, 'P0')
+})
+
+test('normalizeGuidelines tolerates missing / empty reports', () => {
+  assert.deepEqual(api.normalizeGuidelines(null), { loaded: false, files: [], chars: 0 })
+  assert.deepEqual(api.normalizeGuidelines({ loaded: true, files: ['AGENTS.md', ''], chars: 3240.4 }), {
+    loaded: true,
+    files: ['AGENTS.md'],
+    chars: 3240,
+  })
+  assert.deepEqual(api.normalizeGuidelines({ loaded: 'yes' }), { loaded: true, files: [], chars: 0 })
+})
+
+// ---------------------------------------------------------------------------
+// v1.1 findings: extras, inline grouping, filtering, verdict echo
+// ---------------------------------------------------------------------------
+
+test('normalizeFinding keeps v1.1 evidence/confidence and degrades gracefully', () => {
+  const full = api.normalizeFinding({
+    id: 'f1',
+    severity: 'P1',
+    file: 'a.ts',
+    line: 92,
+    lineEnd: 94,
+    title: 't',
+    why: 'w',
+    fix: 'fx',
+    category: 'performance',
+    evidence: '+const a = 1',
+    confidence: 'high',
+  })
+  assert.equal(full.evidence, '+const a = 1')
+  assert.equal(full.confidence, 'high')
+  assert.equal(full.lineEnd, 94)
+
+  const old = api.normalizeFinding({ severity: 'weird', file: 'b.ts', line: -3, confidence: 'certain' })
+  assert.equal(old.severity, 'P2')
+  assert.equal(old.line, null)
+  assert.equal(old.lineEnd, null)
+  assert.equal(old.evidence, '')
+  assert.equal(old.confidence, '')
+  assert.equal(old.title, '')
+  const longEvidence = api.normalizeFinding({ severity: 'P0', evidence: 'x'.repeat(500) })
+  assert.equal(longEvidence.evidence.length, 240)
+})
+
+test('normalizeReviewStatus fills v1.1 fields and keeps old payloads working', () => {
+  const legacy = api.normalizeReviewStatus({ state: 'done', findings: [{ severity: 'P2', file: 'a', line: 1 }] })
+  assert.equal(legacy.state, 'done')
+  assert.equal(legacy.findings.length, 1)
+  assert.equal(legacy.findings[0].severity, 'P2')
+  assert.equal(legacy.verdict, null)
+  assert.equal(legacy.options, null)
+  assert.equal(legacy.guidelines, null)
+  assert.equal(legacy.reusedFiles, 0)
+  assert.equal(legacy.cached, false)
+
+  const v11 = api.normalizeReviewStatus({
+    state: 'done',
+    verdict: 'changes',
+    reusedFiles: 5,
+    cached: true,
+    options: { depth: 'deep', severityThreshold: 'P0', includeGuidelines: true, chunkChars: 6000, maxChunks: 20, concurrency: 2 },
+    guidelines: { loaded: true, files: ['AGENTS.md'], chars: 3000 },
+    findings: [{ severity: 'P1', evidence: 'x', confidence: 'medium' }],
+  })
+  assert.equal(v11.verdict, 'changes')
+  assert.equal(v11.reusedFiles, 5)
+  assert.equal(v11.cached, true)
+  assert.equal(v11.options.depth, 'deep')
+  assert.equal(v11.guidelines.loaded, true)
+  assert.equal(v11.findings[0].confidence, 'medium')
+  assert.equal(api.normalizeReviewStatus({ state: 'done', verdict: 'nonsense' }).verdict, null)
+  assert.equal(api.normalizeReviewStatus(null).state, 'none')
+})
+
+test('reviewVerdict prefers the host verdict and falls back to findings', () => {
+  assert.equal(api.reviewVerdict({ verdict: 'block', findings: [] }), 'block')
+  assert.equal(api.reviewVerdict({ verdict: 'approve', findings: [{ severity: 'P0' }] }), 'approve')
+  assert.equal(api.reviewVerdict({ findings: [{ severity: 'P1' }] }), 'changes')
+  assert.equal(api.reviewVerdict({ findings: [] }), 'approve')
+  assert.equal(api.reviewVerdict(null), 'approve')
+})
+
+test('groupFindingsByLine buckets findings per file and line', () => {
+  const grouped = api.groupFindingsByLine([
+    { file: 'a.ts', line: 3 },
+    { file: 'a.ts', line: 3 },
+    { file: 'a.ts', line: 9 },
+    { file: 'b.ts', line: 3 },
+    { file: 'c.ts', line: null },
+    null,
+  ])
+  assert.equal(grouped['a.ts'][3].length, 2)
+  assert.equal(grouped['a.ts'][9].length, 1)
+  assert.equal(grouped['b.ts'][3].length, 1)
+  assert.equal(Object.prototype.hasOwnProperty.call(grouped, 'c.ts'), false)
+  assert.deepEqual(api.groupFindingsByLine(undefined), {})
+})
+
+test('filterFindings and stepSelection drive the review card + keyboard', () => {
+  const findings = [{ severity: 'P0' }, { severity: 'P1' }, { severity: 'P2' }, { severity: 'P2' }]
+  assert.equal(api.filterFindings(findings, 'all').length, 4)
+  assert.equal(api.filterFindings(findings, 'P1').length, 1)
+  assert.equal(api.filterFindings(findings, 'P2').length, 2)
+  assert.deepEqual(api.filterFindings(findings, 'P0'), [{ severity: 'P0' }])
+  assert.deepEqual(api.filterFindings(undefined, 'P0'), [])
+
+  const items = [{ number: 3 }, { number: 7 }, { number: 129 }]
+  assert.equal(api.stepSelection(items, 7, 1).number, 129)
+  assert.equal(api.stepSelection(items, 129, 1).number, 3, 'wraps forward')
+  assert.equal(api.stepSelection(items, 3, -1).number, 129, 'wraps backward')
+  assert.equal(api.stepSelection(items, 99, 1).number, 3, 'unknown current -> first')
+  assert.equal(api.stepSelection(items, 99, -1).number, 129, 'unknown current -> last going back')
+  assert.equal(api.stepSelection([], 1, 1), null)
+})
+
+test('locale key helpers map enum values to t() keys', () => {
+  assert.equal(api.depthKey('fast'), 'depthFast')
+  assert.equal(api.depthKey('deep'), 'depthDeep')
+  assert.equal(api.depthKey('weird'), 'depthStandard')
+  assert.equal(api.thresholdKey('P0'), 'thresholdP0')
+  assert.equal(api.thresholdKey('P1'), 'thresholdP1')
+  assert.equal(api.thresholdKey('P2'), 'thresholdP2')
+  assert.equal(api.verdictKey('block'), 'verdictBlock')
+  assert.equal(api.verdictKey('changes'), 'verdictChanges')
+  assert.equal(api.verdictKey('approve'), 'verdictApprove')
+  assert.equal(api.verdictHintKey('block'), 'verdictBlockHint')
+  assert.equal(api.confidenceKey('high'), 'confidenceHigh')
+  assert.equal(api.confidenceKey('low'), 'confidenceLow')
+  assert.equal(api.confidenceKey(''), '')
+  const options = api.describeReviewOptions({ depth: 'fast', severityThreshold: 'P1' })
+  assert.equal(options.depth, 'fast')
+  assert.equal(options.severityThreshold, 'P1')
+  for (const key of [
+    'depthFast',
+    'depthStandard',
+    'depthDeep',
+    'thresholdP0',
+    'thresholdP1',
+    'thresholdP2',
+    'verdictBlock',
+    'verdictChanges',
+    'verdictApprove',
+    'verdictBlockHint',
+    'verdictChangesHint',
+    'verdictApproveHint',
+    'confidenceHigh',
+    'confidenceMedium',
+    'confidenceLow',
+  ]) {
+    assert.equal(typeof api.locales.zh[key], 'string', `zh is missing ${key}`)
+    assert.equal(typeof api.locales.en[key], 'string', `en is missing ${key}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// v1.1 existing GitHub inline comments
+// ---------------------------------------------------------------------------
+
+test('normalizeInlineComments drops unusable entries and fills defaults', () => {
+  const list = api.normalizeInlineComments([
+    { path: 'a.ts', line: 12, body: 'hi', author: 'bob', createdAt: '2026-10-24T04:01:00Z' },
+    { path: 'a.ts', line: null, body: 'file level' },
+    { line: 3, body: 'no path' },
+    null,
+    'nope',
+  ])
+  assert.equal(list.length, 2)
+  assert.equal(list[0].line, 12)
+  assert.equal(list[1].line, null)
+  assert.equal(list[1].author, 'unknown')
+  assert.deepEqual(api.normalizeInlineComments(undefined), [])
+})
+
+test('groupCommentsByFile separates line comments from file-level ones', () => {
+  const grouped = api.groupCommentsByFile([
+    { path: 'a.ts', line: 12, body: 'x' },
+    { path: 'a.ts', line: 12, body: 'y' },
+    { path: 'a.ts', line: null, body: 'general' },
+    { path: 'b.ts', line: 7, body: 'z' },
+  ])
+  assert.equal(grouped['a.ts'].lines[12].length, 2)
+  assert.equal(grouped['a.ts'].general.length, 1)
+  assert.equal(grouped['b.ts'].lines[7].length, 1)
+  assert.equal(Object.keys(grouped).length, 2)
+})
+
+test('truncateText caps comment bodies at the 400-char preview', () => {
+  assert.deepEqual(api.truncateText('short', 400), { text: 'short', truncated: false })
+  const long = api.truncateText('x'.repeat(500), 400)
+  assert.equal(long.truncated, true)
+  assert.equal(long.text.length, 400)
+  assert.ok(long.text.endsWith('…'))
+  assert.deepEqual(api.truncateText('a'.repeat(400), 400), { text: 'a'.repeat(400), truncated: false })
+  assert.equal(api.truncateText(null, 10).text, '')
+})
+
+test('normalizePrDetail carries the v1.1 review extras and options', () => {
+  const detail = api.normalizePrDetail({
+    summary: { number: 129 },
+    comments: { total: 1, inline: [{ path: 'a.ts', line: 3, body: 'c', author: 'x', createdAt: '' }] },
+    review: {
+      state: 'done',
+      verdict: 'changes',
+      reusedFiles: 4,
+      options: { depth: 'fast', severityThreshold: 'P1', includeGuidelines: false, chunkChars: 16000, maxChunks: 6, concurrency: 4 },
+      guidelines: { loaded: false, files: [], chars: 0 },
+      findings: [{ severity: 'P1', file: 'a.ts', line: 3, evidence: '+x', confidence: 'low' }],
+    },
+  })
+  assert.equal(detail.review.verdict, 'changes')
+  assert.equal(detail.review.reusedFiles, 4)
+  assert.equal(detail.review.options.depth, 'fast')
+  assert.equal(detail.review.guidelines.loaded, false)
+  assert.equal(detail.review.findings[0].confidence, 'low')
+  assert.equal(detail.comments.inline.length, 1)
 })
 
 // ---------------------------------------------------------------------------

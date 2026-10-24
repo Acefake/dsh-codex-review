@@ -11,11 +11,15 @@
  * Usage: node test/smoke-gh.mjs
  */
 
-import { GitHubClient } from '../lib/github.js'
+import { GUIDELINE_MAX_CHARS, GitHubClient } from '../lib/github.js'
 import { resolveConfig } from '../lib/config.js'
 
 const REPO = process.env.SMOKE_REPO ?? 'Acefake/yingbox'
 const PR_NUMBER = Number(process.env.SMOKE_PR ?? 129)
+/** Public repository with a root AGENTS.md, used to exercise the guidelines path. */
+const GUIDELINE_REPO = process.env.SMOKE_GUIDELINE_REPO ?? 'sst/opencode'
+/** Repository without AGENTS.md, used to prove the miss path degrades cleanly. */
+const NO_GUIDELINE_REPO = process.env.SMOKE_NO_GUIDELINE_REPO ?? 'Acefake/sanguo'
 const EXPECTED_FILES = 24
 const EXPECTED_PARENT_PR = 117
 
@@ -78,8 +82,58 @@ try {
     console.log(`  ${file.path} [${file.status}] +${file.additions} -${file.deletions} patch=${file.patch.length} truncated=${file.patchTruncated}`)
   }
 
+  // Repository review guidelines (CONTRACT §4.4): the target PR's repository
+  // (AGENTS.md added for the v1.1 demo) must load and truncate, a public
+  // repository with a root AGENTS.md must load too, and a repository without
+  // one must degrade to loaded=false without failing.
   /** @type {string[]} */
   const failures = []
+  const guidelineStarted = Date.now()
+  const targetGuidelines = await client.getGuidelines(REPO)
+  line('guidelines.target.loaded', targetGuidelines.loaded)
+  line('guidelines.target.files', targetGuidelines.files.length === 0 ? '(none)' : targetGuidelines.files.join(','))
+  line('guidelines.target.chars', targetGuidelines.chars)
+  line('guidelines.target.textChars', targetGuidelines.text.length)
+  line('guidelines.target.ms', Date.now() - guidelineStarted)
+  if (targetGuidelines.loaded) {
+    if (targetGuidelines.files.length === 0 || targetGuidelines.text === '' || targetGuidelines.chars <= 0) {
+      failures.push(`${REPO} reports guidelines without files/text`)
+    }
+    if (targetGuidelines.chars > GUIDELINE_MAX_CHARS || targetGuidelines.chars > targetGuidelines.text.length) {
+      failures.push(`unexpected guideline char budget for ${REPO}: ${targetGuidelines.chars}`)
+    }
+  } else if (targetGuidelines.files.length !== 0 || targetGuidelines.chars !== 0 || targetGuidelines.text !== '') {
+    failures.push(`${REPO} reports an inconsistent empty guideline payload`)
+  }
+
+  const loadedStarted = Date.now()
+  const loadedGuidelines = await client.getGuidelines(GUIDELINE_REPO)
+  line('guidelines.loaded.repo', GUIDELINE_REPO)
+  line('guidelines.loaded.loaded', loadedGuidelines.loaded)
+  line('guidelines.loaded.files', loadedGuidelines.files.join(','))
+  line('guidelines.loaded.chars', loadedGuidelines.chars)
+  line('guidelines.loaded.textChars', loadedGuidelines.text.length)
+  line('guidelines.loaded.head', loadedGuidelines.text.slice(0, 60).replace(/\s+/g, ' '))
+  line('guidelines.loaded.ms', Date.now() - loadedStarted)
+  const cachedStarted = Date.now()
+  const cachedGuidelines = await client.getGuidelines(GUIDELINE_REPO)
+  line('guidelines.cached.ms', Date.now() - cachedStarted)
+  if (loadedGuidelines.loaded !== true || loadedGuidelines.files.length === 0 || loadedGuidelines.text === '') {
+    failures.push(`${GUIDELINE_REPO} must expose AGENTS.md guidelines`)
+  }
+  if (loadedGuidelines.chars > GUIDELINE_MAX_CHARS || loadedGuidelines.chars > loadedGuidelines.text.length) {
+    failures.push(`unexpected guideline char budget: ${loadedGuidelines.chars}`)
+  }
+  if (cachedGuidelines.text !== loadedGuidelines.text) failures.push('guideline cache returned a different payload')
+
+  const absentGuidelines = await client.getGuidelines(NO_GUIDELINE_REPO)
+  line('guidelines.absent.repo', NO_GUIDELINE_REPO)
+  line('guidelines.absent.loaded', absentGuidelines.loaded)
+  line('guidelines.absent.files', absentGuidelines.files.length)
+  if (absentGuidelines.loaded !== false || absentGuidelines.files.length !== 0 || absentGuidelines.text !== '') {
+    failures.push(`${NO_GUIDELINE_REPO} must not report review guidelines`)
+  }
+
   if (detail.files.length !== EXPECTED_FILES) failures.push(`expected ${EXPECTED_FILES} files, got ${detail.files.length}`)
   if (!detail.stack.chain.some((parent) => parent.number === EXPECTED_PARENT_PR)) failures.push(`stack chain must contain #${EXPECTED_PARENT_PR}`)
   if (detail.summary.headRefName !== 'feat/intro-detect') failures.push(`unexpected headRefName ${detail.summary.headRefName}`)

@@ -6,6 +6,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  GUIDELINE_MAX_CHARS,
+  GUIDELINE_PATHS,
   GitHubClient,
   LruCache,
   MAX_TOTAL_PATCH_CHARS,
@@ -13,6 +15,7 @@ import {
   appErrorFromNetwork,
   applyPatchBudget,
   buildStack,
+  decodeContentsPayload,
   findParentPull,
   ghFailureCode,
   httpStatusToCode,
@@ -424,4 +427,154 @@ test('GitHubClient truncates an oversized patch and degrades failed checks to un
     assert.equal(detail.bodyTruncated, true)
     assert.equal(detail.checks.state, 'unknown')
   })
+})
+
+// ---------------------------------------------------------------------------
+// v1.1: repository review guidelines (AGENTS.md) — CONTRACT §4.4.
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a UTF-8 string the way the contents API does (base64, line-wrapped).
+ * @param {string} text - file content.
+ * @returns {string} base64 payload.
+ */
+function base64Content(text) {
+  return Buffer.from(text, 'utf8').toString('base64').replace(/(.{60})/g, '$1\n')
+}
+
+test('decodeContentsPayload decodes base64 files, tolerates plain text and rejects non-files', () => {
+  const text = '第一行\nsecond line'
+  assert.equal(decodeContentsPayload({ type: 'file', encoding: 'base64', content: base64Content(text) }), text)
+  assert.equal(decodeContentsPayload({ type: 'dir', encoding: 'base64', content: base64Content(text) }), '')
+  assert.equal(decodeContentsPayload({ type: 'file', encoding: 'base64', content: '' }), '')
+  assert.equal(decodeContentsPayload({ type: 'file', encoding: 'utf8', content: 'plain text' }), 'plain text')
+  assert.equal(decodeContentsPayload(null), '')
+  assert.equal(decodeContentsPayload({}), '')
+})
+
+test('GitHubClient loads AGENTS.md from both locations, truncates the total and caches per repo', async () => {
+  assert.deepEqual([...GUIDELINE_PATHS], ['AGENTS.md', '.github/AGENTS.md'])
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const rootText = '根指引\n'
+    const githubText = '## GitHub 约定\n- 必须使用 X\n'
+    const fetchImpl = fakeFetch([
+      [/\/repos\/Acme\/repo\/contents\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content(rootText) }],
+      [/\/repos\/Acme\/repo\/contents\/\.github\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content(githubText) }],
+    ])
+    const client = makeClient({}, fetchImpl)
+    const guidelines = await client.getGuidelines('Acme/repo')
+    assert.equal(guidelines.loaded, true)
+    assert.deepEqual(guidelines.files, ['AGENTS.md', '.github/AGENTS.md'])
+    assert.equal(guidelines.chars, rootText.trim().length + githubText.trim().length)
+    assert.equal(guidelines.text.length, guidelines.chars + 2)
+    assert.ok(guidelines.text.startsWith('根指引'))
+    assert.ok(guidelines.text.includes('必须使用 X'))
+    assert.equal(fetchImpl.calls.length, 2)
+    assert.ok(fetchImpl.calls[0].url.includes('/contents/AGENTS.md'))
+    assert.ok(fetchImpl.calls[1].url.includes('/contents/.github/AGENTS.md'))
+
+    // Repo-level cache: a second lookup makes no request.
+    const again = await client.getGuidelines('Acme/repo')
+    assert.deepEqual(again, guidelines)
+    assert.equal(fetchImpl.calls.length, 2)
+  })
+})
+
+test('GitHubClient caps the injected guideline text at 4000 characters in total', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const rootText = 'A'.repeat(GUIDELINE_MAX_CHARS + 500)
+    const fetchImpl = fakeFetch([
+      [/\/repos\/Acme\/repo\/contents\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content(rootText) }],
+      [/\/repos\/Acme\/repo\/contents\/\.github\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content('不应被读取') }],
+    ])
+    const client = makeClient({}, fetchImpl)
+    const guidelines = await client.getGuidelines('Acme/repo')
+    assert.equal(guidelines.loaded, true)
+    assert.deepEqual(guidelines.files, ['AGENTS.md'])
+    assert.equal(guidelines.chars, GUIDELINE_MAX_CHARS)
+    assert.equal(guidelines.text.length, GUIDELINE_MAX_CHARS)
+    // The budget is exhausted by the first file: the second is not fetched.
+    assert.equal(fetchImpl.calls.length, 1)
+
+    // Remaining budget is filled by the second file.
+    const partialFetch = fakeFetch([
+      [/\/repos\/Acme\/repo\/contents\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content('B'.repeat(GUIDELINE_MAX_CHARS - 10)) }],
+      [/\/repos\/Acme\/repo\/contents\/\.github\/AGENTS\.md$/, { type: 'file', encoding: 'base64', content: base64Content('C'.repeat(100)) }],
+    ])
+    const partialClient = makeClient({}, partialFetch)
+    const partialGuidelines = await partialClient.getGuidelines('Acme/repo')
+    assert.deepEqual(partialGuidelines.files, ['AGENTS.md', '.github/AGENTS.md'])
+    assert.equal(partialGuidelines.chars, GUIDELINE_MAX_CHARS)
+    assert.ok(partialGuidelines.text.endsWith('C'.repeat(10)))
+  })
+})
+
+test('GitHubClient treats missing guidelines as empty and never throws', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const calls = []
+    const notFound = async (url) => {
+      calls.push(url)
+      return responseOf({ message: 'Not Found' }, 404)
+    }
+    const client = makeClient({}, notFound)
+    const guidelines = await client.getGuidelines('Acme/repo')
+    assert.deepEqual(guidelines, { loaded: false, files: [], chars: 0, text: '' })
+    assert.equal(calls.length, 2)
+    // The negative result is cached for the repository too.
+    await client.getGuidelines('Acme/repo')
+    assert.equal(calls.length, 2)
+
+    // One failing location must not hide the other.
+    const partial = async (url) => {
+      calls.push(url)
+      if (url.includes('/contents/AGENTS.md')) return responseOf({ message: 'boom' }, 500)
+      return responseOf({ type: 'file', encoding: 'base64', content: base64Content('- 使用 X') })
+    }
+    const partialClient = makeClient({}, partial)
+    const partialGuidelines = await partialClient.getGuidelines('Acme/repo')
+    assert.equal(partialGuidelines.loaded, true)
+    assert.deepEqual(partialGuidelines.files, ['.github/AGENTS.md'])
+    assert.equal(partialGuidelines.chars, '- 使用 X'.length)
+
+    // A deadline-aborted lookup must not be cached as "no guidelines".
+    const ac = new AbortController()
+    ac.abort()
+    const abortCalls = []
+    const abortFetch = async (url) => {
+      abortCalls.push(url)
+      return responseOf({ type: 'file', encoding: 'base64', content: base64Content('- 指引') })
+    }
+    const abortClient = makeClient({}, abortFetch)
+    const aborted = await abortClient.getGuidelines('Acme/repo', { signal: ac.signal })
+    assert.equal(aborted.loaded, true)
+    assert.equal(abortCalls.length, 2)
+    const retried = await abortClient.getGuidelines('Acme/repo')
+    assert.equal(retried.loaded, true)
+    assert.equal(abortCalls.length, 4)
+  })
+})
+
+test('GitHubClient reads guidelines through the gh CLI fallback when no token exists', async () => {
+  const calls = []
+  const execFileImpl = async (file, args) => {
+    calls.push(args)
+    if (args[0] === 'auth') {
+      throw Object.assign(new Error('not logged in'), { code: 4, stderr: 'You are not logged into any GitHub hosts. To log in, run: gh auth login' })
+    }
+    if (args[0] === 'api') {
+      assert.ok(args[1].includes('/contents/'))
+      return { stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: base64Content('CLI 指引') }), stderr: '' }
+    }
+    throw new Error(`unexpected gh ${args.join(' ')}`)
+  }
+  const client = makeClient({}, async () => { throw new Error('fetch must not be used') }, execFileImpl)
+  await withEnv('GH_TOKEN', undefined, async () => {
+    await withEnv('GITHUB_TOKEN', undefined, async () => {
+      const guidelines = await client.getGuidelines('o/r')
+      assert.equal(guidelines.loaded, true)
+      assert.deepEqual(guidelines.files, ['AGENTS.md', '.github/AGENTS.md'])
+      assert.ok(guidelines.text.includes('CLI 指引'))
+    })
+  })
+  assert.ok(calls.some((args) => args[0] === 'api' && args[1].includes('contents/AGENTS.md')))
 })

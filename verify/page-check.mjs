@@ -14,7 +14,8 @@ import { parseArgs } from 'node:util'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 import { launchBrowser, PageSession } from './lib/cdp.mjs'
-import { interactiveSnapshot, pageState } from './lib/dom.mjs'
+import { findSidebarTargets, interactiveSnapshot, pageState } from './lib/dom.mjs'
+import { v11Surface } from './lib/v11-dom.mjs'
 import {
   cookieForUrl,
   EXIT,
@@ -42,6 +43,7 @@ const USAGE = `用法: node verify/page-check.mjs [选项]
   --no-auth               不注入 DSH 浏览器会话 cookie
   --headful               有窗口模式启动 Edge
   --allow-console-errors  存在 console/page error 时仍以 0 退出（报告中仍记录）
+  --v11                   启用 v1.1 页面断言：左栏「代码审查」入口、工作台「用 AI 审查」/设置按钮、截图 v11-page-check.png
   --json                  只输出 JSON 摘要
   -h, --help              显示本帮助`
 
@@ -63,6 +65,7 @@ function parseCli() {
         'no-auth': { type: 'boolean', default: false },
         headful: { type: 'boolean', default: false },
         'allow-console-errors': { type: 'boolean', default: false },
+        v11: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -96,6 +99,8 @@ function parseCli() {
     noAuth: values['no-auth'],
     headful: values.headful,
     allowConsoleErrors: values['allow-console-errors'],
+    v11: values.v11,
+    v11ShotPath: path.resolve(outDir, 'v11-page-check.png'),
     jsonOnly: values.json,
   }
 }
@@ -140,7 +145,7 @@ try {
   const consoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
   const consoleWarnings = page.consoleMessages.filter((message) => message.type === 'warning')
   const logProblems = page.logEntries.filter((entry) => entry.level === 'error' || entry.level === 'warning')
-  const ok = consoleErrors.length === 0 && page.pageErrors.length === 0
+  let ok = consoleErrors.length === 0 && page.pageErrors.length === 0
 
   Object.assign(report, {
     title,
@@ -187,6 +192,61 @@ try {
       crashCount: page.crashCount,
     },
   })
+  // -------------------------------------------------------------------------
+  // v1.1 page assertions (CONTRACT §4.6 item 6): sidebar label + workbench
+  // entry points. Opt-in; never fails the v1 regression run.
+  // -------------------------------------------------------------------------
+  if (options.v11) {
+    const v11Checks = []
+    const v11 = { enabled: true, checks: v11Checks, screenshots: {} }
+    report.v11 = v11
+    const v11Check = (name, pass, detail = '') => v11Checks.push({ name, pass: Boolean(pass), detail })
+    try {
+      const entryLookup = await page.evaluate(findSidebarTargets(['代码审查', 'Code Review']))
+      const entry = entryLookup.targets?.[0]
+      v11Check(
+        'v1.1 左栏「代码审查」入口文案存在',
+        Boolean(entry),
+        entry ? `${entry.text || entry.ariaLabel} @ ${entry.rect.x},${entry.rect.y}` : 'not found',
+      )
+      if (entry) {
+        await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
+        await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 700 }).catch(() => false)
+        await new Promise((resolve) => setTimeout(resolve, 1200))
+        const surface = await page.evaluate(v11Surface())
+        v11.surface = surface
+        v11Check('v1.1 工作台根节点就绪（data-cr-root）', surface.rootReady, JSON.stringify({ rootReady: surface.rootReady, rootTab: surface.rootTab, reviewState: surface.rootReviewState }))
+        v11Check(
+          'v1.1 工作台「用 AI 审查」按钮存在',
+          surface.reviewTriggers.length > 0,
+          JSON.stringify(surface.reviewTriggers.map((trigger) => trigger.text || trigger.aria)),
+        )
+        v11Check(
+          'v1.1 工作台审查设置按钮存在',
+          surface.settingsButtons.length > 0,
+          JSON.stringify(surface.settingsButtons.map((button) => button.text || button.aria)),
+        )
+        await page.screenshot(options.v11ShotPath)
+        v11.screenshots.page = options.v11ShotPath
+        const finalErrors = page.consoleMessages.filter((message) => message.type === 'error')
+        const finalPageErrors = page.pageErrors
+        report.consoleMessages = page.consoleMessages
+        report.consoleErrors = finalErrors
+        report.pageErrors = finalPageErrors
+        v11Check('v1.1 页面流程期间无 console.error', finalErrors.length === 0, `${finalErrors.length} 条`)
+        v11Check('v1.1 页面流程期间无 pageerror', finalPageErrors.length === 0, `${finalPageErrors.length} 条`)
+      }
+    } catch (error) {
+      v11Check('v1.1 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    }
+    v11.pendingCount = v11Checks.filter((check) => check.pending === true).length
+    v11.failedCount = v11Checks.filter((check) => check.pending !== true && check.pass === false).length
+    ok = ok && v11.failedCount === 0
+    report.verdict.ok = ok
+    report.verdict.v11Failed = v11.failedCount
+    report.verdict.v11Pending = v11.pendingCount
+  }
+
   report.screenshotBytes = statSync(options.shotPath).size
   writeJson(options.reportPath, report)
   await page.close()
@@ -197,13 +257,20 @@ try {
     title,
     screenshot: options.shotPath,
     report: options.reportPath,
-    consoleErrors: consoleErrors.length,
+    consoleErrors: report.consoleErrors.length,
     consoleWarnings: consoleWarnings.length,
-    pageErrors: page.pageErrors.length,
+    pageErrors: report.pageErrors.length,
     failedRequests: page.failedRequests.length,
     hasDialog: state.hasDialog,
     sidebarInteractiveCount: sidebar.length,
     auth: report.auth,
+    v11: options.v11
+      ? {
+          failedCount: report.v11?.failedCount ?? 0,
+          pendingCount: report.v11?.pendingCount ?? 0,
+          screenshot: report.v11?.screenshots?.page ?? null,
+        }
+      : null,
   }
   if (options.jsonOnly) console.log(JSON.stringify(summary))
   else {

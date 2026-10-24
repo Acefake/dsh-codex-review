@@ -181,6 +181,37 @@ UI 文案来自客户端内置 locale（zh/en 都识别），报告保留 `bodyT
 node $V\ai-review-ui.mjs --select 自动检测片头片尾 --out-dir $V\out
 ```
 
+### 4.6 v1.1 验收扩展（CONTRACT §4.6）
+
+v1 命令保持不变（默认不加 `--v11` 即纯 v1 回归，不受影响）。v1.1 断言通过显式开关启用：
+
+```powershell
+# A) 路由契约 + v1.1 结构断言（不触发新审查；未部署 v1.1 时新断言记 pending）
+node $V\api-probe.mjs --v11 --out-dir $V\out --report api-probe-v11.json
+# B) 真实选项探测：默认设置(缓存优先) + depth=fast 新 job + 同设置二次 cached=true
+node $V\api-probe.mjs --v11 --v11-ai --out-dir $V\out --report api-probe-v11-ai.json
+# C) severityThreshold=P0 真实审查（findings 全 P0、verdict 一致）
+node $V\api-probe.mjs --v11 --v11-threshold --out-dir $V\out --report api-probe-v11-p0.json
+# D) 页面：左栏入口 + 工作台 data-cr-root + 「用 AI 审查」/设置按钮
+node $V\page-check.mjs --v11 --out-dir $V\out --report page-check-v11.json
+# E) 页面端到端：diff finding 卡、行内评论、设置弹层、j/k/r// 键盘、v11-*.png 截图
+node $V\click-panel.mjs --target 代码审查 --v11 --out-dir $V\out --report click-panel-v11.json
+```
+
+新增断言（`api-probe --v11`）：
+- `ReviewStatus`/`PrDetail.review` 新字段形状：`options`（depth/severityThreshold/includeGuidelines/chunkChars/maxChunks/concurrency）、`verdict`（block/changes/approve 且与 findings 推导一致）、`reusedFiles`（0..filesTotal）、`guidelines`（loaded/files/chars≤4000）；
+- `--v11-ai`：默认设置返回 `ResolvedReviewOptions`（standard/P2/true）、`depth=fast` 与默认**不同 job key** 且预算 16000/6/4、同设置同 headSha 二次调用 `cached=true`、fast 复用文件级缓存 `reusedFiles>0`、repo 有 AGENTS.md 时 `guidelines.loaded=true`；
+- `--v11-threshold`：`severityThreshold=P0` 时 findings 全 P0、verdict 与过滤后集合一致、overview 统计一致。
+
+新增页面断言（`click-panel --v11`，截图 `verify/out/v11-*.png`）：
+`[data-inline-marker]` diff finding 圆点 → 点击展开 `[data-inline-open]` 卡（为什么/怎么改/严重度/可选 confidence/evidence）；
+`[data-inline-comment]` 已有 GitHub 行内评论卡（自动挑一个有 inline 评论的 PR，没有则 pending）；
+`[data-cr-settings]` 弹层 depth 三档 / severityThreshold 三档 / includeGuidelines 开关 / deep 说明，改设置后 localStorage 持久化，
+键盘 `r` 触发的 `review-start` 请求体带当前 `options`；`j/k` 切 PR、`/` 聚焦搜索、`Esc` 关弹层；全程 console/pageerror=0。
+
+**安全约束**：v1.1 的 `--v11-ai/--v11-threshold` 与页面 `r` 键盘都会真实调用 `review-start`（可能新起审查）；
+装置**从不调用 review-cancel**，超时只报失败、不终止任何运行中的 job。
+
 ---
 
 ## 5. 退出码约定
@@ -248,6 +279,7 @@ verify/
 │  ├─ cdp.mjs           # headless Edge + CDP 最小驱动
 │  ├─ gui.mjs           # 同源 JSON POST 客户端
 │  ├─ dom.mjs           # 页面内 DOM 探针表达式（侧栏/模态框/布局/工作台）
+│  ├─ v11-dom.mjs       # v1.1 页面探针（data-cr-* / finding 圆点 / 设置弹层 / 键盘 / 行内评论）
 │  └─ util.mjs          # CLI 公共设施（退出码、目录、JSON 输出）
 ├─ baseline/            # 装置自证基线（插件安装前）
 │  ├─ baseline-gui.png

@@ -199,7 +199,10 @@
         document.body.dataset.theme = theme
 
         var scene = params.get('scene') || 'default'
-        var mockMode = params.get('mode') || (scene === 'review' ? 'done' : scene)
+        var mockMode = params.get('mode') || (scene === 'review' || scene === 'v11-inline-findings' ? 'done' : scene)
+        // The comments scene asks the mock /pr route for the inline-comment fixture.
+        var mockScenario =
+          params.get('mode') === 'comments' || scene === 'v11-existing-comments' ? 'comments' : ''
 
         // Route review-start to the mock server's mode (dev-only field).
         var nativeFetch = window.fetch.bind(window)
@@ -210,6 +213,11 @@
                 var payload = JSON.parse(init.body)
                 payload.mockMode = mockMode
                 init = Object.assign({}, init, { body: JSON.stringify(payload) })
+              }
+              if (input === 'codex-review/pr') {
+                var prPayload = JSON.parse(init.body)
+                prPayload.mockScenario = mockScenario
+                init = Object.assign({}, init, { body: JSON.stringify(prPayload) })
               }
             }
             if (typeof input === 'string' && input.indexOf('codex-review/health') >= 0 && scene === 'health') {
@@ -357,6 +365,16 @@
           doc.scrollTop = doc.scrollTop + (nodeBox.top - docBox.top) - (offset || 8)
         }
 
+        /** Center a node (inside the doc scroller) without touching the page scroll. */
+        function centerInDoc(selector, offset) {
+          var doc = document.querySelector('.cr-doc')
+          var node = document.querySelector(selector)
+          if (!doc || !node) return
+          var docBox = doc.getBoundingClientRect()
+          var nodeBox = node.getBoundingClientRect()
+          doc.scrollTop = doc.scrollTop + (nodeBox.top - docBox.top) - (offset || 80)
+        }
+
         function drive(plugin, main) {
           var ready = false
           Promise.resolve()
@@ -389,11 +407,45 @@
                   if (doc) doc.scrollTop = 0
                 })
               }
+              if (scene === 'v11-inline-findings') {
+                // Run a review, then use "locate in diff": it opens Changes, expands
+                // the file, highlights the line and expands the inline finding card.
+                click('[data-action="review"]')
+                return waitFor(function () {
+                  return document.querySelector('[data-cr-review-state="done"]')
+                }, 12000).then(function () {
+                  var locate = document.querySelector('[data-action="locate"]')
+                  if (locate) locate.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+                  return waitFor(function () { return document.querySelector('.cr-inline-card') }, 12000)
+                })
+              }
+              if (scene === 'v11-settings') {
+                click('[data-action="review-settings"]')
+                return waitFor(function () { return document.querySelector('[data-cr-settings]') })
+              }
+              if (scene === 'v11-existing-comments') {
+                click('[data-tab="changes"]')
+                return waitFor(function () { return document.querySelector('[data-cr-changes]') }).then(function () {
+                  // The comment fixture anchors comments in files 1 / 6 / 7.
+                  click('button[data-file-index="1"]')
+                  click('button[data-file-index="6"]')
+                  click('button[data-file-index="7"]')
+                  return waitFor(function () {
+                    return document.querySelectorAll('.cr-inline-comment').length >= 2
+                  }, 12000)
+                })
+              }
               return null
             })
             .then(function () {
               if (scene === 'changes') {
                 scrollDocTo('.cr-changes-head', 6)
+              }
+              if (scene === 'v11-inline-findings') {
+                centerInDoc('.cr-inline-card', 120)
+              }
+              if (scene === 'v11-existing-comments') {
+                centerInDoc('.cr-inline-comment', 150)
               }
               return waitFor(function () { return document.querySelector('.cr-md, [data-cr-changes]') })
             })

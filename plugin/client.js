@@ -19,6 +19,17 @@ window.__ModuleLoader__.load({
       'ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace'
     const SANS = 'Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif'
     const DEFAULT_QUERY = 'is:open author:@me'
+    /** localStorage key for the review-options popover (CONTRACT §4.5.3). */
+    const SETTINGS_KEY = 'codex-review:settings'
+    /** Valid values for the review-start options this client knows about. */
+    const DEPTHS = ['fast', 'standard', 'deep']
+    const THRESHOLDS = ['P0', 'P1', 'P2']
+    const VERDICTS = ['block', 'changes', 'approve']
+    const CONFIDENCES = ['high', 'medium', 'low']
+    /** Defaults mirror the Host contract: standard depth, keep every severity, read AGENTS.md. */
+    const DEFAULT_SETTINGS = { depth: 'standard', severityThreshold: 'P2', includeGuidelines: true }
+    /** Existing GitHub inline comments show at most this many characters (CONTRACT §4.5.2). */
+    const COMMENT_PREVIEW_CHARS = 400
     /** A single file patch larger than this is collapsed by default (huge diff guard). */
     const MAX_VISIBLE_ROWS = 1600
 
@@ -47,10 +58,9 @@ window.__ModuleLoader__.load({
       expandAll: 'Expand all',
       collapseAll: 'Collapse all',
       expandDiff: 'Show all {n} lines',
-      reviewWithCodex: 'Review with AI',
+      reviewWithAi: 'Review with AI',
       reviewShort: 'Review',
       reviewSettings: 'Review settings',
-      reviewSettingsHint: 'v1 uses the host default model; review settings are fixed.',
       reviewersDisabled: 'Read-only v1: assigning reviewers is not available',
       readOnly: 'Read-only',
       preparing: 'Preparing…',
@@ -62,7 +72,7 @@ window.__ModuleLoader__.load({
       filesProgress: '{done}/{total} files analysed',
       cancel: 'Cancel',
       reviewAgain: 'Review again',
-      reviewResultTitle: 'Codex review',
+      aiReviewTitle: 'AI review',
       reviewDone: 'Done',
       reviewClean: 'No blocking findings',
       reviewCleanHint: 'This diff has no P0/P1 issues worth blocking on.',
@@ -71,9 +81,9 @@ window.__ModuleLoader__.load({
       reviewPartialHint: 'Part of the review did not finish',
       truncatedCalls: '{n} model responses were truncated',
       findingsCount: '{n} findings',
-      verdictApprove: 'Looks good: no P0/P1 findings',
-      verdictRequestChanges: 'Changes requested before merge',
-      verdictBlocked: 'Could not finish the review',
+      verdictApprove: 'Approve',
+      verdictChanges: 'Needs changes',
+      verdictBlock: 'Blocking',
       locate: 'Locate in diff',
       why: 'Why',
       fix: 'Fix',
@@ -121,8 +131,57 @@ window.__ModuleLoader__.load({
       renamed: 'renamed',
       fileCountOne: '1 file',
       fileCount: '{n} files',
+      moreFiles: '{n} more files',
       age: 'Age',
       diffstat: 'Diff stat',
+      depth: 'Depth',
+      depthFast: 'Fast',
+      depthStandard: 'Standard',
+      depthDeep: 'Deep',
+      depthFastHint: 'Fewer, larger chunks — the quickest pass.',
+      depthStandardHint: 'Balanced default.',
+      depthDeepHint: 'Adds one verification pass over every finding, so it takes longer.',
+      severityThreshold: 'Severity threshold',
+      thresholdP0: 'P0 only',
+      thresholdP1: 'P0 + P1',
+      thresholdP2: 'P0–P2 (all)',
+      thresholdHint: 'Findings below the threshold are dropped by the host.',
+      includeGuidelines: 'Inject repo AGENTS.md guidelines',
+      includeGuidelinesHint: 'Reads AGENTS.md or .github/AGENTS.md when the repo has one.',
+      settingsNote: 'Saved in this browser only and attached to review requests; nothing is written to GitHub.',
+      settingsReset: 'Reset',
+      close: 'Close',
+      settingsSaved: 'Settings saved',
+      reviewOptionsSummary: 'Depth {depth} · threshold {threshold}',
+      cached: 'cached',
+      reviewCached: 'Cache hit: reusing the previous result',
+      reusedFiles: '{n} files reused',
+      guidelinesLoaded: 'Repo guidelines: {files} ({chars} chars)',
+      guidelinesMissing: 'No repo guidelines found',
+      guidelinesDisabled: 'Repo guidelines: off',
+      filters: 'Filter findings',
+      filterAll: 'All',
+      noFindingsForFilter: 'No findings with this severity',
+      findingsOnLine: 'Line {line} · {n} findings',
+      findingsOnLineAria: 'Line {line}, {n} findings, worst severity {severity}',
+      inlineFindings: '{n} findings',
+      closeCard: 'Collapse findings',
+      confidence: 'Confidence',
+      confidenceHigh: 'high',
+      confidenceMedium: 'medium',
+      confidenceLow: 'low',
+      evidence: 'Evidence',
+      existingComments: 'Existing comments',
+      inlineCommentTitle: 'Comment on {path}:{line}',
+      inlineCommentFile: 'File-level comment',
+      commentTruncated: 'truncated',
+      jumpToFile: 'Jump to {name}',
+      filesList: 'Files',
+      verdictApproveHint: 'No P0/P1 findings',
+      verdictChangesHint: 'P1 findings need a second look',
+      verdictBlockHint: 'P0 findings block merging',
+      keyboardHint: 'j / k switch PR · / search · r review',
+      lineLabel: 'line {line}',
     }
 
     const zh = {
@@ -146,10 +205,9 @@ window.__ModuleLoader__.load({
       expandAll: '全部展开',
       collapseAll: '全部折叠',
       expandDiff: '展开全部 {n} 行',
-      reviewWithCodex: '用 AI 审查',
+      reviewWithAi: '用 AI 审查',
       reviewShort: 'AI 审查',
       reviewSettings: '审查设置',
-      reviewSettingsHint: 'v1 使用宿主默认模型，审查设置暂不可改',
       reviewersDisabled: 'v1 只读，暂不支持指派 reviewer',
       readOnly: '只读',
       preparing: '准备中…',
@@ -161,7 +219,7 @@ window.__ModuleLoader__.load({
       filesProgress: '已分析 {done}/{total} 文件',
       cancel: '取消',
       reviewAgain: '重新审查',
-      reviewResultTitle: 'Codex 审查',
+      aiReviewTitle: 'AI 审查',
       reviewDone: '完成',
       reviewClean: '未发现 P0/P1 问题',
       reviewCleanHint: '这次 diff 没有发现需要阻断的问题。',
@@ -170,9 +228,9 @@ window.__ModuleLoader__.load({
       reviewPartialHint: '部分内容未能完成审查',
       truncatedCalls: '{n} 次模型输出被截断',
       findingsCount: '{n} 条发现',
-      verdictApprove: '建议合并：没有 P0/P1 问题',
-      verdictRequestChanges: '建议修改后再合并',
-      verdictBlocked: '无法完成审查',
+      verdictApprove: '建议合并',
+      verdictChanges: '需要修改',
+      verdictBlock: '阻塞',
       locate: '定位到 diff',
       why: '为什么',
       fix: '怎么改',
@@ -220,8 +278,57 @@ window.__ModuleLoader__.load({
       renamed: '重命名',
       fileCountOne: '1 file',
       fileCount: '{n} files',
+      moreFiles: '还有 {n} 个文件',
       age: '时间',
       diffstat: '变更统计',
+      depth: '审查深度',
+      depthFast: '快',
+      depthStandard: '标准',
+      depthDeep: '深',
+      depthFastHint: '分块更大、调用更少，最快。',
+      depthStandardHint: '默认，速度与覆盖平衡。',
+      depthDeepHint: '每条发现多一轮复核，耗时更长。',
+      severityThreshold: '严重度阈值',
+      thresholdP0: '仅 P0',
+      thresholdP1: 'P0 + P1',
+      thresholdP2: 'P0–P2（全部）',
+      thresholdHint: '低于阈值的发现会被宿主直接丢弃，不返回给页面。',
+      includeGuidelines: '注入仓库 AGENTS.md 审查指引',
+      includeGuidelinesHint: '仓库存在 AGENTS.md 或 .github/AGENTS.md 时读取并注入提示词。',
+      settingsNote: '设置只存在本机浏览器，并随审查请求发送；不会写入 GitHub。',
+      settingsReset: '恢复默认',
+      close: '关闭',
+      settingsSaved: '设置已保存',
+      reviewOptionsSummary: '深度 {depth} · 阈值 {threshold}',
+      cached: '命中缓存',
+      reviewCached: '命中缓存，直接复用上次结果',
+      reusedFiles: '复用 {n} 个文件',
+      guidelinesLoaded: '仓库指引：{files}（{chars} 字）',
+      guidelinesMissing: '未找到仓库审查指引',
+      guidelinesDisabled: '仓库指引：已关闭',
+      filters: '按严重度筛选',
+      filterAll: '全部',
+      noFindingsForFilter: '没有该严重度的发现',
+      findingsOnLine: '第 {line} 行 · {n} 条发现',
+      findingsOnLineAria: '第 {line} 行，{n} 条发现，最高 {severity}',
+      inlineFindings: '{n} 条发现',
+      closeCard: '收起发现',
+      confidence: '置信度',
+      confidenceHigh: '高',
+      confidenceMedium: '中',
+      confidenceLow: '低',
+      evidence: '证据',
+      existingComments: '已有评论',
+      inlineCommentTitle: '{path}:{line} 的评论',
+      inlineCommentFile: '文件级评论',
+      commentTruncated: '已截断',
+      jumpToFile: '跳到 {name}',
+      filesList: '文件',
+      verdictApproveHint: '没有 P0/P1 问题',
+      verdictChangesHint: 'P1 问题建议修改后再合并',
+      verdictBlockHint: '存在 P0 问题，不建议合并',
+      keyboardHint: 'j / k 切换 PR · / 搜索 · r 审查',
+      lineLabel: '第 {line} 行',
     }
 
     // ---------------------------------------------------------------------
@@ -626,7 +733,6 @@ window.__ModuleLoader__.load({
     function normalizePrDetail(value) {
       const source = value && typeof value === 'object' ? value : {}
       const summary = source.summary && typeof source.summary === 'object' ? source.summary : {}
-      const review = source.review && typeof source.review === 'object' ? source.review : {}
       return Object.assign({}, source, {
         summary,
         body: typeof source.body === 'string' ? source.body : '',
@@ -634,16 +740,7 @@ window.__ModuleLoader__.load({
         comments: normalizeComments(source.comments),
         checks: normalizeChecks(source.checks),
         stack: normalizeStack(source.stack),
-        review: {
-          state: typeof review.state === 'string' ? review.state : 'none',
-          jobId: review.jobId,
-          headSha: typeof review.headSha === 'string' ? review.headSha : '',
-          findings: asArray(review.findings),
-          overview: typeof review.overview === 'string' ? review.overview : '',
-          partial: Boolean(review.partial),
-          partialReasons: asArray(review.partialReasons),
-          truncatedCalls: Number(review.truncatedCalls) || 0,
-        },
+        review: normalizeReviewStatus(source.review),
       })
     }
 
@@ -656,11 +753,315 @@ window.__ModuleLoader__.load({
       return 'open'
     }
 
-    /** Verdict derived from findings, matching the review card wording. */
+    /** Verdict derived from findings (CONTRACT §4.2): P0 -> block, P1 -> changes, else approve. */
     function deriveVerdict(findings) {
       const counts = countSeverities(findings)
-      if (counts.P0 > 0 || counts.P1 > 0) return 'request_changes'
+      if (counts.P0 > 0) return 'block'
+      if (counts.P1 > 0) return 'changes'
       return 'approve'
+    }
+
+    /** Host verdict when present and valid, otherwise the local derivation. */
+    function reviewVerdict(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      if (VERDICTS.indexOf(source.verdict) >= 0) return source.verdict
+      return deriveVerdict(source.findings)
+    }
+
+    /** Coerce the settings blob stored in localStorage into a usable shape. */
+    function normalizeSettings(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      return {
+        depth: DEPTHS.indexOf(source.depth) >= 0 ? source.depth : DEFAULT_SETTINGS.depth,
+        severityThreshold:
+          THRESHOLDS.indexOf(source.severityThreshold) >= 0
+            ? source.severityThreshold
+            : DEFAULT_SETTINGS.severityThreshold,
+        includeGuidelines:
+          source.includeGuidelines === undefined
+            ? DEFAULT_SETTINGS.includeGuidelines
+            : Boolean(source.includeGuidelines),
+      }
+    }
+
+    /** True when the value carries the fields a settings popover writes. */
+    function hasSettingsFields(value) {
+      return Boolean(
+        value &&
+          typeof value === 'object' &&
+          (value.depth !== undefined ||
+            value.severityThreshold !== undefined ||
+            value.includeGuidelines !== undefined),
+      )
+    }
+
+    /** localStorage read that never throws (private mode / disabled storage). */
+    function readSettings(store) {
+      try {
+        if (!store || typeof store.getItem !== 'function') return normalizeSettings(null)
+        const raw = store.getItem(SETTINGS_KEY)
+        if (typeof raw !== 'string' || raw === '') return normalizeSettings(null)
+        return normalizeSettings(JSON.parse(raw))
+      } catch {
+        return normalizeSettings(null)
+      }
+    }
+
+    /** localStorage write that never throws; returns whether it persisted. */
+    function writeSettings(store, settings) {
+      const normalized = normalizeSettings(settings)
+      try {
+        if (!store || typeof store.setItem !== 'function') return false
+        store.setItem(SETTINGS_KEY, JSON.stringify(normalized))
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    /** The browser localStorage object, or null when unavailable (private mode / stub). */
+    function localStore() {
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage) return localStorage
+      } catch {
+        /* accessing localStorage can throw when storage is disabled */
+      }
+      return null
+    }
+
+    /** The subset of settings review-start accepts as `options` (CONTRACT §4.1). */
+    function settingsToOptions(settings) {
+      const normalized = normalizeSettings(settings)
+      return {
+        depth: normalized.depth,
+        severityThreshold: normalized.severityThreshold,
+        includeGuidelines: normalized.includeGuidelines,
+      }
+    }
+
+    /** Coerce ResolvedReviewOptions (host echo) into display-safe shape. */
+    function normalizeReviewOptions(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const settings = normalizeSettings(hasSettingsFields(source) ? source : null)
+      const budget = (name) => {
+        const number = Number(source[name])
+        return Number.isFinite(number) && number > 0 ? number : 0
+      }
+      return {
+        depth: settings.depth,
+        severityThreshold: settings.severityThreshold,
+        includeGuidelines: settings.includeGuidelines,
+        chunkChars: budget('chunkChars'),
+        maxChunks: budget('maxChunks'),
+        concurrency: budget('concurrency'),
+      }
+    }
+
+    /** Coerce the AGENTS.md injection report; absence means "not loaded". */
+    function normalizeGuidelines(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const files = asArray(source.files)
+        .map((file) => String(file === null || file === undefined ? '' : file).trim())
+        .filter(Boolean)
+      const chars = Number(source.chars)
+      return {
+        loaded: Boolean(source.loaded),
+        files,
+        chars: Number.isFinite(chars) && chars > 0 ? Math.round(chars) : 0,
+      }
+    }
+
+    /** Coerce one Finding, tolerating older Host payloads without the v1.1 extras. */
+    function normalizeFinding(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const line = Number(source.line)
+      const lineEnd = Number(source.lineEnd)
+      const evidence = typeof source.evidence === 'string' ? source.evidence : ''
+      return {
+        id: typeof source.id === 'string' ? source.id : '',
+        severity: source.severity === 'P0' || source.severity === 'P1' || source.severity === 'P2'
+          ? source.severity
+          : 'P2',
+        file: typeof source.file === 'string' ? source.file : '',
+        line: Number.isFinite(line) && line > 0 ? line : null,
+        lineEnd: Number.isFinite(lineEnd) && lineEnd > 0 ? lineEnd : null,
+        title: typeof source.title === 'string' ? source.title : '',
+        why: typeof source.why === 'string' ? source.why : '',
+        fix: typeof source.fix === 'string' ? source.fix : '',
+        category: typeof source.category === 'string' ? source.category : '',
+        evidence: evidence.slice(0, 240),
+        confidence: CONFIDENCES.indexOf(source.confidence) >= 0 ? source.confidence : '',
+      }
+    }
+
+    /**
+     * Normalize a ReviewStatus / PrDetail.review payload. Every v1.1 field is
+     * optional so an older Host keeps working with a degraded card.
+     */
+    function normalizeReviewStatus(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const progress = source.progress && typeof source.progress === 'object' ? source.progress : {}
+      const reusedFiles = Number(source.reusedFiles)
+      const options = hasSettingsFields(source.options) || (source.options && source.options.chunkChars !== undefined)
+        ? normalizeReviewOptions(source.options)
+        : null
+      const guidelinesPresent = source.guidelines && typeof source.guidelines === 'object'
+      const error = source.error && typeof source.error === 'object' ? source.error : null
+      return {
+        state: typeof source.state === 'string' && source.state !== '' ? source.state : 'none',
+        jobId: typeof source.jobId === 'string' ? source.jobId : undefined,
+        headSha: typeof source.headSha === 'string' ? source.headSha : '',
+        model: source.model && typeof source.model === 'object' ? source.model : null,
+        overview: typeof source.overview === 'string' ? source.overview : '',
+        findings: asArray(source.findings).map(normalizeFinding),
+        partial: Boolean(source.partial),
+        partialReasons: asArray(source.partialReasons).map((item) => String(item)),
+        truncatedCalls: Number(source.truncatedCalls) || 0,
+        progress,
+        error,
+        cached: Boolean(source.cached),
+        reusedFiles: Number.isFinite(reusedFiles) && reusedFiles > 0 ? Math.round(reusedFiles) : 0,
+        options,
+        guidelines: guidelinesPresent ? normalizeGuidelines(source.guidelines) : null,
+        verdict: VERDICTS.indexOf(source.verdict) >= 0 ? source.verdict : null,
+      }
+    }
+
+    /** Findings that hit one exact new-file line, keyed path -> line -> findings. */
+    function groupFindingsByLine(findings) {
+      const map = Object.create(null)
+      for (const finding of asArray(findings)) {
+        if (!finding || typeof finding.file !== 'string' || finding.file === '') continue
+        const line = Number(finding.line)
+        if (!Number.isFinite(line) || line <= 0) continue
+        let byLine = map[finding.file]
+        if (!byLine) {
+          byLine = Object.create(null)
+          map[finding.file] = byLine
+        }
+        if (!byLine[line]) byLine[line] = []
+        byLine[line].push(finding)
+      }
+      return map
+    }
+
+    /** Coerce PrDetail.comments.inline into the read-only comment shape. */
+    function normalizeInlineComments(value) {
+      const list = []
+      for (const entry of asArray(value)) {
+        if (!entry || typeof entry !== 'object') continue
+        const path = typeof entry.path === 'string' ? entry.path : ''
+        if (path === '') continue
+        const line = Number(entry.line)
+        list.push({
+          path,
+          line: Number.isFinite(line) && line > 0 ? line : null,
+          body: typeof entry.body === 'string' ? entry.body : '',
+          author: typeof entry.author === 'string' && entry.author !== '' ? entry.author : 'unknown',
+          createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
+        })
+      }
+      return list
+    }
+
+    /** Inline comments bucketed per file: {line: [...]} plus line-less `general`. */
+    function groupCommentsByFile(inlineComments) {
+      const map = Object.create(null)
+      for (const comment of normalizeInlineComments(inlineComments)) {
+        let bucket = map[comment.path]
+        if (!bucket) {
+          bucket = { lines: Object.create(null), general: [] }
+          map[comment.path] = bucket
+        }
+        if (comment.line === null) bucket.general.push(comment)
+        else {
+          if (!bucket.lines[comment.line]) bucket.lines[comment.line] = []
+          bucket.lines[comment.line].push(comment)
+        }
+      }
+      return map
+    }
+
+    /** Shorten a comment body for the inline card while keeping a readable prefix. */
+    function truncateText(text, max) {
+      const source = String(text === null || text === undefined ? '' : text)
+      const limit = Number.isFinite(max) ? Math.max(1, Math.trunc(max)) : COMMENT_PREVIEW_CHARS
+      if (source.length <= limit) return { text: source, truncated: false }
+      return { text: source.slice(0, limit - 1) + '…', truncated: true }
+    }
+
+    /** Severity filter used by the review-card chips (pure client-side). */
+    function filterFindings(findings, filter) {
+      const list = asArray(findings)
+      if (THRESHOLDS.indexOf(filter) >= 0) {
+        return list.filter((finding) => finding && finding.severity === filter)
+      }
+      return list.slice()
+    }
+
+    /** Next/previous PR for the j/k shortcuts; wraps around and tolerates no match. */
+    function stepSelection(items, currentNumber, delta) {
+      const list = asArray(items).filter((item) => item && item.number !== undefined)
+      if (list.length === 0) return null
+      const step = Number(delta) >= 0 ? 1 : -1
+      let index = -1
+      for (let cursor = 0; cursor < list.length; cursor += 1) {
+        if (Number(list[cursor].number) === Number(currentNumber)) {
+          index = cursor
+          break
+        }
+      }
+      if (index < 0) return step > 0 ? list[0] : list[list.length - 1]
+      index = (index + step + list.length) % list.length
+      return list[index]
+    }
+
+    /** Locale key for a depth value; unknown values fall back to "standard". */
+    function depthKey(depth) {
+      return depth === 'fast' ? 'depthFast' : depth === 'deep' ? 'depthDeep' : 'depthStandard'
+    }
+
+    /** Locale key for a severityThreshold value. */
+    function thresholdKey(threshold) {
+      return threshold === 'P0' ? 'thresholdP0' : threshold === 'P1' ? 'thresholdP1' : 'thresholdP2'
+    }
+
+    /** Locale key for a verdict badge. */
+    function verdictKey(verdict) {
+      return verdict === 'block' ? 'verdictBlock' : verdict === 'changes' ? 'verdictChanges' : 'verdictApprove'
+    }
+
+    /** Locale key for the one-line verdict explanation. */
+    function verdictHintKey(verdict) {
+      return verdict === 'block'
+        ? 'verdictBlockHint'
+        : verdict === 'changes'
+          ? 'verdictChangesHint'
+          : 'verdictApproveHint'
+    }
+
+    /** Locale key for a Finding.confidence value; empty means "not reported". */
+    function confidenceKey(confidence) {
+      return confidence === 'high'
+        ? 'confidenceHigh'
+        : confidence === 'low'
+          ? 'confidenceLow'
+          : confidence === 'medium'
+            ? 'confidenceMedium'
+            : ''
+    }
+
+    /** Human readable summary of the options a review ran with (or the current ones). */
+    function describeReviewOptions(options) {
+      const value = normalizeReviewOptions(options)
+      return {
+        depth: value.depth,
+        severityThreshold: value.severityThreshold,
+        includeGuidelines: value.includeGuidelines,
+        chunkChars: value.chunkChars,
+        maxChunks: value.maxChunks,
+        concurrency: value.concurrency,
+      }
     }
 
     // ---------------------------------------------------------------------
@@ -717,6 +1118,7 @@ window.__ModuleLoader__.load({
     const CSS = `
 .cr-root{
   container-type: inline-size;
+  position:relative;
   --cr-bg: var(--dsw-alias-bg-base);
   --cr-side: color-mix(in srgb, var(--dsw-alias-label-primary) 2.2%, var(--dsw-alias-bg-base));
   --cr-panel: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, var(--dsw-alias-bg-base));
@@ -819,7 +1221,7 @@ window.__ModuleLoader__.load({
 .cr-body{flex:1;min-height:0;display:flex;justify-content:center;overflow:hidden}
 .cr-cluster{display:flex;gap:44px;width:100%;max-width:1160px;min-height:0;padding:0 20px;justify-content:center}
 .cr-doc{width:760px;max-width:100%;min-width:0;min-height:0;overflow-y:auto;padding:4px 0 96px;scrollbar-gutter:stable}
-.cr-details{width:300px;flex:none;min-height:0;overflow-y:auto;padding:10px 0 80px}
+.cr-details{width:300px;flex:none;align-self:flex-start;position:sticky;top:0;max-height:100%;min-height:0;overflow-y:auto;padding:10px 0 80px}
 
 /* ---------------- pr header ---------------- */
 .cr-pr-badges{display:flex;align-items:center;gap:10px;min-height:26px}
@@ -969,8 +1371,95 @@ window.__ModuleLoader__.load({
 .cr-check--failure .cr-check-dot{background:var(--cr-red)}
 .cr-check--pending .cr-check-dot{background:var(--cr-orange)}
 
-/* ---------------- composer (read-only placeholder) ---------------- */
-.cr-composer{position:absolute;right:21px;bottom:21px;z-index:3;display:flex;align-items:center;gap:10px;height:43px;padding:0 12px 0 14px;border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 11%,var(--dsw-alias-bg-base));box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2);pointer-events:none}
+/* ---------------- v1.1: inline findings + existing comments in the diff ---------------- */
+.cr-diff-mark{width:18px}
+.cr-diff-dotbtn{display:inline-flex;align-items:center;justify-content:center;gap:2px;width:100%;height:100%;min-height:17px;padding:0;border:0;background:transparent;cursor:pointer;border-radius:4px}
+.cr-diff-dotbtn:hover{background:color-mix(in srgb,var(--cr-sev-color,var(--cr-text-2)) 18%,transparent)}
+.cr-diff-dot{display:block;width:6px;height:6px;border-radius:50%;background:var(--cr-sev-color,var(--cr-text-2));transition:transform .12s ease}
+.cr-diff-dotbtn:hover .cr-diff-dot{transform:scale(1.25)}
+.cr-diff-dot--P0{--cr-sev-color:var(--cr-red)}
+.cr-diff-dot--P1{--cr-sev-color:var(--cr-orange)}
+.cr-diff-dot--P2{--cr-sev-color:var(--cr-yellow)}
+.cr-diff-dotcount{font-size:9px;line-height:1;font-weight:700;color:var(--cr-text-2);font-variant-numeric:tabular-nums}
+.cr-diff-inline{position:sticky;left:0;width:100%;padding:6px 14px 8px 32px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 3.5%,var(--cr-bg));border-top:1px solid var(--cr-border);border-bottom:1px solid var(--cr-border)}
+.cr-diff-inline-head{display:flex;align-items:center;gap:8px;margin:2px 0 2px;font-size:11.5px;line-height:17px;color:var(--cr-text-3)}
+.cr-diff-comments{position:sticky;left:0;width:100%;padding:4px 14px 6px 32px}
+.cr-inline-card{position:relative;margin:8px 0 2px;padding:10px 12px 10px 14px;border-radius:8px;background:var(--cr-card);border:1px solid var(--cr-border-2);overflow:hidden}
+.cr-inline-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--cr-sev-color,var(--cr-text-3))}
+.cr-inline-card--P0{--cr-sev-color:var(--cr-red)}
+.cr-inline-card--P1{--cr-sev-color:var(--cr-orange)}
+.cr-inline-card--P2{--cr-sev-color:var(--cr-yellow)}
+.cr-inline-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.cr-inline-close{margin-left:auto;display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--cr-text-3);cursor:pointer}
+.cr-inline-close:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-inline-title{margin-top:5px;font-size:13px;line-height:20px;font-weight:600;color:var(--cr-text);overflow-wrap:anywhere}
+.cr-inline-loc{display:inline-flex;align-items:center;gap:5px;margin-top:4px;font-family:var(--cr-mono);font-size:11px;line-height:17px;color:var(--cr-blue)}
+.cr-inline-body{margin-top:6px;font-size:12px;line-height:19px;color:var(--cr-text-2);overflow-wrap:anywhere;white-space:pre-wrap}
+.cr-inline-label{display:inline-block;margin-right:6px;font-size:10.5px;font-weight:600;line-height:16px;color:var(--cr-text);background:var(--cr-bg);border-radius:4px;padding:0 5px}
+.cr-inline-evidence{margin-top:7px;padding:7px 9px;border-radius:6px;background:var(--dsw-alias-markdown-code-block);font-family:var(--cr-mono);font-size:11.5px;line-height:17px;color:var(--cr-text-2);overflow-x:auto;white-space:pre}
+.cr-inline-foot{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap}
+.cr-chip-tag{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:5px;font-size:10.5px;font-weight:600;line-height:1;color:var(--cr-text-2);background:var(--cr-raised);border:1px solid var(--cr-border-2)}
+.cr-chip-tag--confidence-high{color:var(--cr-green);border-color:color-mix(in srgb,var(--cr-green) 30%,transparent);background:color-mix(in srgb,var(--cr-green) 12%,transparent)}
+.cr-chip-tag--confidence-medium{color:var(--cr-orange);border-color:color-mix(in srgb,var(--cr-orange) 30%,transparent);background:color-mix(in srgb,var(--cr-orange) 12%,transparent)}
+.cr-chip-tag--confidence-low{color:var(--cr-text-3)}
+.cr-inline-comment{position:relative;margin:6px 0 2px;padding:8px 10px 9px 12px;border-radius:8px;background:color-mix(in srgb,var(--cr-blue) 7%,transparent);border:1px solid color-mix(in srgb,var(--cr-blue) 24%,transparent);overflow:hidden}
+.cr-inline-comment::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--cr-blue)}
+.cr-inline-comment-head{display:flex;align-items:center;gap:6px;font-size:11px;line-height:16px;color:var(--cr-text-3);flex-wrap:wrap}
+.cr-inline-comment-author{color:var(--cr-text-2);font-weight:500}
+.cr-inline-comment-body{margin-top:4px;font-size:12px;line-height:19px;color:var(--cr-text-2);white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* ---------------- v1.1: verdict badge, filter chips, review meta ---------------- */
+.cr-verdict{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;border:1px solid transparent;font-size:11.5px;font-weight:700;letter-spacing:.01em;white-space:nowrap}
+.cr-verdict--block{color:var(--cr-red);background:color-mix(in srgb,var(--cr-red) 14%,transparent);border-color:color-mix(in srgb,var(--cr-red) 32%,transparent)}
+.cr-verdict--changes{color:var(--cr-orange);background:color-mix(in srgb,var(--cr-orange) 14%,transparent);border-color:color-mix(in srgb,var(--cr-orange) 32%,transparent)}
+.cr-verdict--approve{color:var(--cr-green);background:color-mix(in srgb,var(--cr-green) 14%,transparent);border-color:color-mix(in srgb,var(--cr-green) 32%,transparent)}
+.cr-verdict-hint{font-size:12px;line-height:17px;color:var(--cr-text-3)}
+.cr-review-verdict-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:10px}
+.cr-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}
+.cr-chip{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:12px;border:1px solid var(--cr-border-2);background:transparent;color:var(--cr-text-2);font-size:11.5px;font-weight:500;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cr-chip:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-chip--active,.cr-chip--active:hover{background:var(--cr-raised);border-color:var(--cr-border-strong);color:var(--cr-text)}
+.cr-chip-count{color:var(--cr-text-3);font-weight:600}
+.cr-chip--P0 .cr-chip-count{color:var(--cr-red)}
+.cr-chip--P1 .cr-chip-count{color:var(--cr-orange)}
+.cr-chip--P2 .cr-chip-count{color:var(--cr-yellow)}
+.cr-review-meta-row{display:flex;align-items:center;flex-wrap:wrap;gap:5px 12px;margin-top:9px;font-size:11.5px;line-height:17px;color:var(--cr-text-3)}
+.cr-review-meta-item{display:inline-flex;align-items:center;gap:5px;min-width:0}
+.cr-review-meta-item--good{color:color-mix(in srgb,var(--cr-green) 78%,var(--cr-text-2))}
+.cr-review-meta-item--warn{color:var(--cr-orange)}
+.cr-filter-empty{margin-top:8px;font-size:12px;color:var(--cr-text-3)}
+
+/* ---------------- v1.1: right-column file list ---------------- */
+.cr-filelinks{display:flex;flex-direction:column;gap:1px;margin-top:7px}
+.cr-filelink{display:flex;align-items:center;gap:6px;width:100%;padding:3px 6px;margin:0 -6px;border:0;border-radius:6px;background:transparent;cursor:pointer;text-align:left;color:var(--cr-text-2)}
+.cr-filelink:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-filelink-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--cr-mono);font-size:11px;line-height:17px}
+.cr-filelink-badge{flex:none;font-size:10px;font-weight:700;line-height:14px;padding:0 4px;border-radius:5px;color:var(--cr-text);background:var(--cr-raised)}
+.cr-filelink-badge--P0{color:var(--cr-red);background:color-mix(in srgb,var(--cr-red) 16%,transparent)}
+.cr-filelink-badge--P1{color:var(--cr-orange);background:color-mix(in srgb,var(--cr-orange) 16%,transparent)}
+.cr-filelink-badge--P2{color:var(--cr-yellow);background:color-mix(in srgb,var(--cr-yellow) 16%,transparent)}
+
+/* ---------------- v1.1: review settings popover ---------------- */
+.cr-modal-backdrop{position:absolute;inset:0;z-index:20;display:flex;align-items:flex-start;justify-content:flex-end;padding:58px 20px 20px;background:var(--dsw-alias-bg-mask-1)}
+.cr-modal{width:352px;max-width:100%;max-height:calc(100% - 78px);overflow-y:auto;background:var(--cr-card);border:1px solid var(--cr-border-strong);border-radius:12px;box-shadow:0 12px 32px var(--dsw-alias-bg-mask-2);padding:13px 15px 14px}
+.cr-modal-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.cr-modal-title{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--cr-text)}
+.cr-modal-close{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--cr-text-2);cursor:pointer}
+.cr-modal-close:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-field{border:0;margin:0;padding:0}
+.cr-field + .cr-field{margin-top:11px;padding-top:11px;border-top:1px solid var(--cr-border)}
+.cr-field legend{padding:0;margin-bottom:4px;font-size:12px;font-weight:600;color:var(--cr-text-2)}
+.cr-option{display:flex;align-items:flex-start;gap:8px;padding:5px 7px;border-radius:8px;cursor:pointer}
+.cr-option:hover{background:var(--cr-hover)}
+.cr-option input{flex:none;width:14px;height:14px;margin:3px 0 0;accent-color:var(--cr-green);cursor:pointer}
+.cr-option-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.cr-option-label{font-size:12.5px;line-height:18px;color:var(--cr-text)}
+.cr-option-hint{font-size:11px;line-height:16px;color:var(--cr-text-3)}
+.cr-modal-note{margin:7px 0 0;font-size:11px;line-height:17px;color:var(--cr-text-3)}
+.cr-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:13px}
+.cr-modal-actions .cr-btn--ghost{margin-right:auto}
+
+/* ---------------- composer (read-only placeholder) ---------------- */.cr-composer{position:absolute;right:21px;bottom:21px;z-index:3;display:flex;align-items:center;gap:10px;height:43px;padding:0 12px 0 14px;border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 11%,var(--dsw-alias-bg-base));box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2);pointer-events:none}
 .cr-composer-plus{color:var(--cr-text-3);display:grid;place-items:center}
 .cr-composer-text{font-size:13.5px;color:var(--cr-text-3);white-space:nowrap}
 .cr-composer-icons{display:flex;align-items:center;gap:10px;margin-left:10px;color:var(--cr-text-3)}
@@ -1234,8 +1723,10 @@ window.__ModuleLoader__.load({
         h('input', {
           type: 'text',
           value: props.value,
+          ref: props.inputRef,
           placeholder: tx(t, 'searchPlaceholder'),
           'aria-label': tx(t, 'searchLabel'),
+          'aria-keyshortcuts': '/',
           spellCheck: false,
           onChange: (event) => props.onChange(event.target.value),
           onKeyDown: (event) => {
@@ -1319,6 +1810,7 @@ window.__ModuleLoader__.load({
           h(SearchBox, {
             value: props.queryInput,
             t,
+            inputRef: props.inputRef,
             onChange: props.onQueryChange,
             onCommit: props.onRefresh,
             onClear: props.onClearQuery,
@@ -1328,7 +1820,9 @@ window.__ModuleLoader__.load({
           'div',
           {
             className: 'cr-list',
+            ref: props.listRef,
             role: 'list',
+            'aria-label': tx(t, 'panel'),
             'aria-busy': state.state === 'loading' ? 'true' : 'false',
           },
           state.state === 'loading' && items.length === 0
@@ -1441,7 +1935,7 @@ window.__ModuleLoader__.load({
       const t = props.t
       const review = props.review || { state: 'none' }
       const busy = review.state === 'preparing' || review.state === 'running'
-      let reviewLabel = tx(t, 'reviewWithCodex')
+      let reviewLabel = tx(t, 'reviewWithAi')
       let reviewShortLabel = tx(t, 'reviewShort')
       if (review.state === 'preparing') {
         reviewLabel = tx(t, 'preparing')
@@ -1519,7 +2013,8 @@ window.__ModuleLoader__.load({
               'data-action': 'review',
               disabled: busy || !props.canReview,
               'aria-label': reviewLabel,
-              title: reviewLabel,
+              'aria-keyshortcuts': 'r',
+              title: props.settingsSummary ? reviewLabel + ' · ' + props.settingsSummary : reviewLabel,
               onClick: props.onReview,
             },
             busy ? h('span', { className: 'cr-spinner' }) : Icon('brain', 15),
@@ -1532,7 +2027,10 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'cr-review-gear',
               'data-action': 'review-settings',
+              ref: props.gearRef,
               'aria-label': tx(t, 'reviewSettings'),
+              'aria-haspopup': 'dialog',
+              'aria-expanded': props.settingsOpen ? 'true' : 'false',
               title: tx(t, 'reviewSettings'),
               onClick: props.onGear,
             },
@@ -1709,6 +2207,244 @@ window.__ModuleLoader__.load({
       return h('span', { className: 'cr-sev cr-finding--' + severity }, severity)
     }
 
+    /** Verdict pill for the review card: block / changes / approve (CONTRACT §4.2). */
+    function VerdictBadge(props) {
+      const t = props.t
+      const verdict = props.verdict
+      if (verdict !== 'block' && verdict !== 'changes' && verdict !== 'approve') return null
+      return h(
+        'span',
+        {
+          className: 'cr-verdict cr-verdict--' + verdict,
+          'data-verdict': verdict,
+          title: tx(t, verdictHintKey(verdict)),
+        },
+        Icon(verdict === 'approve' ? 'check' : 'alert', 11, { strokeWidth: 2 }),
+        tx(t, verdictKey(verdict)),
+      )
+    }
+
+    /**
+     * Review metadata that only exists in v1.1 payloads: resolved options,
+     * reused files, cache hits and the AGENTS.md injection report. Renders
+     * nothing for an older Host so the card degrades instead of breaking.
+     */
+    function ReviewMetaRow(props) {
+      const t = props.t
+      const review = props.review || {}
+      const options =
+        review.options && typeof review.options === 'object'
+          ? describeReviewOptions(review.options)
+          : null
+      const guidelines =
+        review.guidelines && typeof review.guidelines === 'object'
+          ? normalizeGuidelines(review.guidelines)
+          : null
+      const items = []
+      if (options) {
+        const summary = tx(t, 'reviewOptionsSummary', {
+          depth: tx(t, depthKey(options.depth)),
+          threshold: tx(t, thresholdKey(options.severityThreshold)),
+        })
+        items.push(
+          h(
+            'span',
+            { key: 'options', className: 'cr-review-meta-item', title: summary, 'data-review-options': 'ready' },
+            Icon('gear', 11),
+            h('span', null, summary),
+          ),
+        )
+      }
+      const reused = Number(review.reusedFiles) || 0
+      if (reused > 0) {
+        items.push(
+          h(
+            'span',
+            { key: 'reused', className: 'cr-review-meta-item cr-review-meta-item--good', 'data-review-reused': String(reused) },
+            Icon('clock', 11),
+            h('span', null, tx(t, 'reusedFiles', { n: formatNumber(reused) })),
+          ),
+        )
+      }
+      if (review.cached) {
+        items.push(
+          h(
+            'span',
+            { key: 'cached', className: 'cr-review-meta-item', 'data-review-cached': 'true' },
+            h('span', { className: 'cr-chip-tag' }, tx(t, 'cached')),
+          ),
+        )
+      }
+      if (guidelines) {
+        let text
+        if (!guidelines.loaded) {
+          text =
+            options && options.includeGuidelines === false
+              ? tx(t, 'guidelinesDisabled')
+              : tx(t, 'guidelinesMissing')
+        } else {
+          text = tx(t, 'guidelinesLoaded', {
+            files: guidelines.files.join('、') || 'AGENTS.md',
+            chars: formatNumber(guidelines.chars),
+          })
+        }
+        items.push(
+          h(
+            'span',
+            {
+              key: 'guidelines',
+              className:
+                'cr-review-meta-item' + (guidelines.loaded ? ' cr-review-meta-item--good' : ''),
+              title: guidelines.files.join(', '),
+              'data-review-guidelines': guidelines.loaded ? 'loaded' : 'missing',
+            },
+            Icon('file', 11),
+            h('span', null, text),
+          ),
+        )
+      }
+      if (items.length === 0) return null
+      return h('div', { className: 'cr-review-meta-row' }, items)
+    }
+
+    /** One finding rendered inside an expanded diff line (CONTRACT §4.5.1). */
+    function FindingInlineCard(props) {
+      const t = props.t
+      const finding = props.finding || {}
+      const severity = finding.severity === 'P0' || finding.severity === 'P1' ? finding.severity : 'P2'
+      const location =
+        String(finding.file || '') +
+        ':' +
+        (finding.line === null || finding.line === undefined ? '?' : finding.line) +
+        (finding.lineEnd ? '-' + finding.lineEnd : '')
+      const confidence = confidenceKey(finding.confidence)
+      return h(
+        'div',
+        {
+          className: 'cr-inline-card cr-inline-card--' + severity,
+          'data-inline-finding': finding.id || '',
+          role: 'group',
+          'aria-label': String(finding.title || '') + ' · ' + location,
+        },
+        h(
+          'div',
+          { className: 'cr-inline-head' },
+          h(SeverityBadge, { severity }),
+          finding.category
+            ? h('span', { className: 'cr-finding-cat' }, String(finding.category))
+            : null,
+          confidence
+            ? h(
+                'span',
+                { className: 'cr-chip-tag cr-chip-tag--confidence-' + finding.confidence },
+                tx(t, 'confidence') + ' ' + tx(t, confidence),
+              )
+            : null,
+          props.onClose
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'cr-inline-close',
+                  'aria-label': tx(t, 'closeCard'),
+                  title: tx(t, 'closeCard'),
+                  onClick: () => {
+                    if (typeof props.onClose === 'function') props.onClose()
+                  },
+                },
+                Icon('close', 11, { strokeWidth: 2 }),
+              )
+            : null,
+        ),
+        h('div', { className: 'cr-inline-title' }, String(finding.title || '')),
+        h(
+          'div',
+          { className: 'cr-inline-loc', title: location },
+          Icon('file', 10),
+          h('span', null, truncateMiddle(location, 80)),
+        ),
+        finding.why
+          ? h(
+              'div',
+              { className: 'cr-inline-body' },
+              h('span', { className: 'cr-inline-label' }, tx(t, 'why')),
+              String(finding.why),
+            )
+          : null,
+        finding.fix
+          ? h(
+              'div',
+              { className: 'cr-inline-body' },
+              h('span', { className: 'cr-inline-label' }, tx(t, 'fix')),
+              String(finding.fix),
+            )
+          : null,
+        finding.evidence
+          ? h(
+              'div',
+              null,
+              h('div', { className: 'cr-inline-loc', style: { color: 'var(--cr-text-3)' } }, tx(t, 'evidence')),
+              h('pre', { className: 'cr-inline-evidence' }, String(finding.evidence)),
+            )
+          : null,
+        h(
+          'div',
+          { className: 'cr-inline-foot' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-btn cr-btn--ghost',
+              'data-action': 'locate-inline',
+              onClick: () => {
+                if (typeof props.onLocate === 'function') props.onLocate(finding)
+              },
+            },
+            Icon('external', 12),
+            tx(t, 'locate'),
+          ),
+        ),
+      )
+    }
+
+    /** Read-only rendering of an existing GitHub inline comment (CONTRACT §4.5.2). */
+    function InlineCommentCard(props) {
+      const t = props.t
+      const comment = props.comment || {}
+      const preview = truncateText(comment.body, COMMENT_PREVIEW_CHARS)
+      const line = comment.line === null || comment.line === undefined ? '' : comment.line
+      const label =
+        line === ''
+          ? tx(t, 'inlineCommentFile')
+          : tx(t, 'inlineCommentTitle', { path: String(comment.path || ''), line })
+      return h(
+        'div',
+        {
+          className: 'cr-inline-comment',
+          'data-inline-comment': String(comment.path || '') + ':' + line,
+          role: 'note',
+          'aria-label': label,
+        },
+        h(
+          'div',
+          { className: 'cr-inline-comment-head' },
+          Icon('comment', 11),
+          h(Avatar, { name: comment.author, size: 16 }),
+          h('span', { className: 'cr-inline-comment-author' }, String(comment.author || 'unknown')),
+          h('span', null, '·'),
+          h(RelativeTime, { iso: comment.createdAt, t }),
+          preview.truncated
+            ? h('span', { className: 'cr-chip-tag' }, tx(t, 'commentTruncated'))
+            : null,
+        ),
+        h(
+          'div',
+          { className: 'cr-inline-comment-body', title: String(comment.body || '') },
+          preview.text,
+        ),
+      )
+    }
+
     /** Three-part finding: severity + title, location, why, fix, locate action. */
     function FindingItem(props) {
       const finding = props.finding || {}
@@ -1816,8 +2552,14 @@ window.__ModuleLoader__.load({
       const t = props.t
       const review = props.review || { state: 'none' }
       const state = review.state
-      if (state === 'none') return null
       const findings = sortFindings(review.findings)
+      const [filter, setFilter] = useState('all')
+      const reviewKey = String(review.jobId || '') + ':' + state + ':' + findings.length
+      // A new review (or a new PR) always starts on the "all" chip.
+      useEffect(() => {
+        setFilter('all')
+      }, [reviewKey])
+      if (state === 'none') return null
       const counts = countSeverities(findings)
       const running = state === 'preparing' || state === 'running'
       const progress = review.progress || {}
@@ -1834,19 +2576,26 @@ window.__ModuleLoader__.load({
               : tx(t, 'phaseReviewing')
       const model = review.model && review.model.model ? String(review.model.model) : ''
       const elapsed = formatElapsed(review)
-      const verdict = deriveVerdict(findings)
+      const verdict = reviewVerdict(review)
+      const filtered = filterFindings(findings, filter)
       // Host may report an incomplete review (some chunks failed / model output
       // truncated). Surface it instead of pretending the diff is clean.
       const partialReasons = Array.isArray(review.partialReasons) ? review.partialReasons : []
       const truncatedCalls = Number(review.truncatedCalls) || 0
       const partial = Boolean(review.partial) || partialReasons.length > 0 || truncatedCalls > 0
+      const filters = [
+        { value: 'all', label: tx(t, 'filterAll'), count: findings.length },
+        { value: 'P0', label: 'P0', count: counts.P0 },
+        { value: 'P1', label: 'P1', count: counts.P1 },
+        { value: 'P2', label: 'P2', count: counts.P2 },
+      ]
       return h(
         'section',
         { className: 'cr-review-card', 'data-review-state': state, 'aria-busy': running ? 'true' : 'false' },
         h(
           'div',
           { className: 'cr-review-card-head' },
-          h('span', { className: 'cr-review-card-title' }, Icon('brain', 15), tx(t, 'reviewResultTitle')),
+          h('span', { className: 'cr-review-card-title' }, Icon('brain', 15), tx(t, 'aiReviewTitle')),
           running
             ? h(
                 'span',
@@ -1937,14 +2686,16 @@ window.__ModuleLoader__.load({
               null,
               h(
                 'div',
-                { className: 'cr-review-verdict' },
-                partial
-                  ? tx(t, 'reviewPartialHint')
-                  : verdict === 'approve'
-                    ? tx(t, 'verdictApprove')
-                    : tx(t, 'verdictRequestChanges'),
+                { className: 'cr-review-verdict-row', 'data-review-verdict': verdict },
+                h(VerdictBadge, { verdict, t }),
+                h(
+                  'span',
+                  { className: 'cr-verdict-hint' },
+                  partial ? tx(t, 'reviewPartialHint') : tx(t, verdictHintKey(verdict)),
+                ),
               ),
               h(SeverityCounts, { counts }),
+              h(ReviewMetaRow, { review, t }),
               review.overview ? h('div', { className: 'cr-review-verdict' }, String(review.overview)) : null,
               partial
                 ? h(
@@ -1972,13 +2723,44 @@ window.__ModuleLoader__.load({
                       h('span', null, tx(t, 'reviewClean')),
                       h('span', { style: { color: 'var(--cr-text-3)' } }, tx(t, 'reviewCleanHint')),
                     )
-                : findings.map((finding) =>
-                    h(FindingItem, {
-                      key: finding.id || finding.file + ':' + finding.line,
-                      finding,
-                      t,
-                      onLocate: props.onLocate,
-                    }),
+                : h(
+                    'div',
+                    null,
+                    h(
+                      'div',
+                      { className: 'cr-chips', role: 'group', 'aria-label': tx(t, 'filters') },
+                      filters.map((chip) =>
+                        h(
+                          'button',
+                          {
+                            key: chip.value,
+                            type: 'button',
+                            className:
+                              'cr-chip' +
+                              (chip.value === 'all' ? '' : ' cr-chip--' + chip.value) +
+                              (filter === chip.value ? ' cr-chip--active' : ''),
+                            'aria-pressed': filter === chip.value ? 'true' : 'false',
+                            'data-filter': chip.value,
+                            onClick: () => setFilter(chip.value),
+                          },
+                          h('span', null, chip.label),
+                          h('span', { className: 'cr-chip-count' }, String(chip.count)),
+                        ),
+                      ),
+                    ),
+                    filtered.length === 0
+                      ? h('div', { className: 'cr-filter-empty' }, tx(t, 'noFindingsForFilter'))
+                      : filtered.map((finding, findingIndex) =>
+                          h(FindingItem, {
+                            key:
+                              (finding.id || finding.file + ':' + finding.line) +
+                              ':' +
+                              findingIndex,
+                            finding,
+                            t,
+                            onLocate: props.onLocate,
+                          }),
+                        ),
                   ),
             )
           : null,
@@ -2021,68 +2803,180 @@ window.__ModuleLoader__.load({
       const t = props.t
       const rows = useMemo(() => parseUnifiedDiff(props.patch || ''), [props.patch])
       const [showAll, setShowAll] = useState(false)
+      const [openLines, setOpenLines] = useState({})
+      // Findings for this file, bucketed by new-file line for the gutter markers.
       const byLine = useMemo(() => {
-        const map = Object.create(null)
-        for (const finding of Array.isArray(props.findings) ? props.findings : []) {
+        const byFile = groupFindingsByLine(props.findings)
+        const scoped = props.filePath ? byFile[props.filePath] : null
+        if (scoped) return scoped
+        // Degraded host payload: findings may carry a shortened file path.
+        const merged = Object.create(null)
+        for (const finding of asArray(props.findings)) {
           const line = Number(finding && finding.line)
-          if (!Number.isFinite(line)) continue
-          if (!map[line]) map[line] = []
-          map[line].push(finding)
+          if (!Number.isFinite(line) || line <= 0) continue
+          if (!merged[line]) merged[line] = []
+          merged[line].push(finding)
         }
-        return map
-      }, [props.findings])
+        return merged
+      }, [props.findings, props.filePath])
+      // Existing GitHub review comments grouped by line; null-line ones are file-level.
+      const commentLines = useMemo(() => {
+        const lines = Object.create(null)
+        const general = []
+        for (const comment of normalizeInlineComments(props.comments)) {
+          if (comment.line === null) {
+            general.push(comment)
+            continue
+          }
+          if (!lines[comment.line]) lines[comment.line] = []
+          lines[comment.line].push(comment)
+        }
+        return { lines, general }
+      }, [props.comments])
+      const highlightLine = Number.isFinite(Number(props.highlightLine))
+        ? Number(props.highlightLine)
+        : null
+      const toggleLine = useCallback((line) => {
+        setOpenLines((previous) => Object.assign({}, previous, { [line]: !previous[line] }))
+      }, [])
+      // "Locate in diff" from the review list also expands the inline card.
+      useEffect(() => {
+        if (highlightLine === null) return
+        setOpenLines((previous) =>
+          previous[highlightLine] ? previous : Object.assign({}, previous, { [highlightLine]: true }),
+        )
+      }, [highlightLine])
 
       if (rows.length === 0) {
         return h('div', { className: 'cr-diff-empty' }, tx(t, 'emptyDiff'))
       }
       const visible = showAll ? rows : rows.slice(0, MAX_VISIBLE_ROWS)
-      const highlightLine = Number.isFinite(Number(props.highlightLine))
-        ? Number(props.highlightLine)
-        : null
-      const children = visible.map((row, index) => {
+      const children = []
+      visible.forEach((row, index) => {
         if (row.type === 'hunk') {
-          return h('div', { key: index, className: 'cr-diff-hunk' }, String(row.text || ''))
+          children.push(h('div', { key: 'h' + index, className: 'cr-diff-hunk' }, String(row.text || '')))
+          return
         }
         if (row.type === 'meta') {
-          return h('div', { key: index, className: 'cr-diff-meta' }, String(row.text || ''))
+          children.push(h('div', { key: 'm' + index, className: 'cr-diff-meta' }, String(row.text || '')))
+          return
         }
         const line = row.newLine === null || row.newLine === undefined ? null : Number(row.newLine)
-        const marks = line !== null && byLine[line] ? byLine[line] : null
+        const marks = line !== null && byLine[line] ? sortFindings(byLine[line]) : null
+        const worst = marks && marks.length > 0 ? marks[0].severity || 'P2' : 'P2'
+        const isOpen = Boolean(line !== null && openLines[line])
         const isTarget = highlightLine !== null && line === highlightLine
-        return h(
-          'div',
-          {
-            key: index,
-            className:
-              'cr-diff-row cr-diff-row--' +
-              row.type +
-              (isTarget ? ' cr-diff-row--target' : ''),
-            'data-cr-line': line === null ? undefined : String(line),
-          },
+        children.push(
           h(
-            'span',
-            { className: 'cr-diff-mark' },
-            marks
-              ? h('span', {
-                  className: 'cr-diff-dot cr-diff-dot--' + (marks[0].severity || 'P2'),
-                  title: (marks[0].severity || '') + ' · ' + String(marks[0].title || ''),
-                })
-              : null,
-          ),
-          h(
-            'span',
-            { className: 'cr-diff-gutter' },
-            h('span', { className: 'cr-diff-ln' }, row.oldLine === null ? '' : String(row.oldLine)),
-            h('span', { className: 'cr-diff-ln' }, row.newLine === null ? '' : String(row.newLine)),
+            'div',
+            {
+              key: 'r' + index,
+              className:
+                'cr-diff-row cr-diff-row--' +
+                row.type +
+                (isTarget ? ' cr-diff-row--target' : '') +
+                (isOpen ? ' cr-diff-row--open' : ''),
+              'data-cr-line': line === null ? undefined : String(line),
+            },
             h(
               'span',
-              { className: 'cr-diff-sign' },
-              row.type === 'add' ? '+' : row.type === 'del' ? '−' : '',
+              { className: 'cr-diff-mark' },
+              marks
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-diff-dotbtn cr-diff-dot--' + worst,
+                      'data-inline-marker': String(line),
+                      'aria-expanded': isOpen ? 'true' : 'false',
+                      'aria-label': tx(t, 'findingsOnLineAria', {
+                        line,
+                        n: marks.length,
+                        severity: worst,
+                      }),
+                      title: tx(t, 'findingsOnLine', { line, n: marks.length }),
+                      onClick: (event) => {
+                        if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+                        toggleLine(line)
+                      },
+                    },
+                    h('span', { className: 'cr-diff-dot' }),
+                    marks.length > 1
+                      ? h('span', { className: 'cr-diff-dotcount' }, String(marks.length))
+                      : null,
+                  )
+                : null,
+            ),
+            h(
+              'span',
+              { className: 'cr-diff-gutter' },
+              h('span', { className: 'cr-diff-ln' }, row.oldLine === null ? '' : String(row.oldLine)),
+              h('span', { className: 'cr-diff-ln' }, row.newLine === null ? '' : String(row.newLine)),
+              h(
+                'span',
+                { className: 'cr-diff-sign' },
+                row.type === 'add' ? '+' : row.type === 'del' ? '−' : '',
+              ),
+            ),
+            h('span', { className: 'cr-diff-code' }, row.text === '' ? '\u00a0' : String(row.text)),
+          ),
+        )
+        if (isOpen && marks) {
+          children.push(
+            h(
+              'div',
+              {
+                key: 'fi' + index,
+                className: 'cr-diff-inline',
+                'data-inline-open': String(line),
+              },
+              marks.length > 1
+                ? h(
+                    'div',
+                    { className: 'cr-diff-inline-head' },
+                    Icon('alert', 11),
+                    h('span', null, tx(t, 'findingsOnLine', { line, n: marks.length })),
+                  )
+                : null,
+              marks.map((finding, markIndex) =>
+                h(FindingInlineCard, {
+                  key: (finding.id || '') + ':' + markIndex,
+                  finding,
+                  t,
+                  onLocate: props.onLocate,
+                  onClose: () => toggleLine(line),
+                }),
+              ),
+            ),
+          )
+        }
+        if (line !== null && commentLines.lines[line]) {
+          children.push(
+            h(
+              'div',
+              { key: 'ci' + index, className: 'cr-diff-comments' },
+              commentLines.lines[line].map((comment, commentIndex) =>
+                h(InlineCommentCard, {
+                  key: commentIndex,
+                  comment,
+                  t,
+                }),
+              ),
+            ),
+          )
+        }
+      })
+      if (commentLines.general.length > 0) {
+        children.push(
+          h(
+            'div',
+            { key: 'cg', className: 'cr-diff-comments' },
+            commentLines.general.map((comment, commentIndex) =>
+              h(InlineCommentCard, { key: commentIndex, comment, t }),
             ),
           ),
-          h('span', { className: 'cr-diff-code' }, row.text === '' ? '\u00a0' : String(row.text)),
         )
-      })
+      }
       if (rows.length > MAX_VISIBLE_ROWS && !showAll) {
         children.push(
           h(
@@ -2096,7 +2990,11 @@ window.__ModuleLoader__.load({
           ),
         )
       }
-      return h('div', { className: 'cr-diff', role: 'table', 'aria-label': 'diff' }, children)
+      return h(
+        'div',
+        { className: 'cr-diff', role: 'table', 'aria-label': 'diff' },
+        children,
+      )
     }
 
     function FileCard(props) {
@@ -2183,7 +3081,10 @@ window.__ModuleLoader__.load({
               h(DiffView, {
                 patch: file.patch || '',
                 findings,
+                comments: props.comments,
+                filePath: path,
                 highlightLine: props.highlightLine,
+                onLocate: props.onLocate,
                 t,
               }),
               file.patchTruncated
@@ -2202,6 +3103,21 @@ window.__ModuleLoader__.load({
       const reportedFiles = Number(summary.changedFiles) || 0
       const findingsByFile = props.findingsByFile || Object.create(null)
       const expanded = props.expanded || Object.create(null)
+      // Existing GitHub review comments, re-bucketed per file for the diff.
+      const commentsByFile = useMemo(() => {
+        const grouped = groupCommentsByFile(detail.comments && detail.comments.inline)
+        const map = Object.create(null)
+        for (const path of Object.keys(grouped)) {
+          const bucket = grouped[path]
+          const list = []
+          for (const line of Object.keys(bucket.lines)) {
+            for (const comment of bucket.lines[line]) list.push(comment)
+          }
+          for (const comment of bucket.general) list.push(comment)
+          map[path] = list
+        }
+        return map
+      }, [detail.comments])
       const allOpen =
         files.length > 0 && files.every((file, index) => Boolean(expanded[fileKey(file, index)]))
       return h(
@@ -2243,8 +3159,10 @@ window.__ModuleLoader__.load({
                 t,
                 open: Boolean(expanded[key]),
                 findings: findingsByFile[key] || [],
+                comments: commentsByFile[key] || [],
                 highlightLine: props.highlight && props.highlight.path === key ? props.highlight.line : null,
                 onToggle: () => props.onToggleFile(key),
+                onLocate: props.onLocate,
               })
             }),
         detail.filesTruncated
@@ -2279,6 +3197,9 @@ window.__ModuleLoader__.load({
       const files = listed > 0 ? listed : Number(summary.changedFiles) || 0
       const counts = props.counts || { P0: 0, P1: 0, P2: 0 }
       const findingCount = counts.P0 + counts.P1 + counts.P2
+      const fileList = Array.isArray(detail.files) ? detail.files : []
+      const findingsByFile = props.findingsByFile || Object.create(null)
+      const visibleFiles = fileList.slice(0, 6)
       return h(
         Section,
         { title: tx(t, 'changes'), first: true },
@@ -2302,6 +3223,50 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'cr-file-badge' }, String(findingCount))
             : null,
         ),
+        fileList.length > 0
+          ? h(
+              'div',
+              { className: 'cr-filelinks', 'data-cr-filelinks': 'ready' },
+              visibleFiles.map((file, index) => {
+                const path = String((file && file.path) || '')
+                const key = fileKey(file, index)
+                const scoped = findingsByFile[key] || []
+                const worst = scoped.length > 0 ? sortFindings(scoped)[0].severity || 'P2' : null
+                const label = tx(t, 'jumpToFile', { name: path })
+                return h(
+                  'button',
+                  {
+                    key,
+                    type: 'button',
+                    className: 'cr-filelink',
+                    'data-action': 'goto-file',
+                    'data-file-key': key,
+                    title: label,
+                    'aria-label': label,
+                    onClick: () => {
+                      if (typeof props.onJumpFile === 'function') props.onJumpFile(key, index)
+                    },
+                  },
+                  Icon('file', 11),
+                  h('span', { className: 'cr-filelink-name' }, path),
+                  worst
+                    ? h(
+                        'span',
+                        { className: 'cr-filelink-badge cr-filelink-badge--' + worst },
+                        String(scoped.length),
+                      )
+                    : null,
+                )
+              }),
+              fileList.length > visibleFiles.length
+                ? h(
+                    'div',
+                    { className: 'cr-empty-line', style: { paddingLeft: 17 } },
+                    tx(t, 'moreFiles', { n: fileList.length - visibleFiles.length }),
+                  )
+                : null,
+            )
+          : null,
       )
     }
 
@@ -2375,7 +3340,15 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'cr-comment-head' },
-              h('span', { className: 'cr-finding-cat' }, String(comment.path || '') + ':' + comment.line),
+              h(
+                'span',
+                { className: 'cr-finding-cat', title: String(comment.path || '') + ':' + comment.line },
+                truncateMiddle(String(comment.path || '') + ':' + (comment.line === null || comment.line === undefined ? '?' : comment.line), 34),
+              ),
+              h(Avatar, { name: comment.author, size: 16 }),
+              h('span', { className: 'cr-comment-author' }, String(comment.author || 'unknown')),
+              h('span', null, '·'),
+              h(RelativeTime, { iso: comment.createdAt, t }),
             ),
             h('div', { className: 'cr-comment-body' }, String(comment.body || '')),
           ),
@@ -2460,7 +3433,7 @@ window.__ModuleLoader__.load({
         Number(review.truncatedCalls) > 0
       return h(
         Section,
-        { title: tx(t, 'reviewResultTitle') },
+        { title: tx(t, 'aiReviewTitle') },
         running
           ? h(
               'div',
@@ -2491,14 +3464,16 @@ window.__ModuleLoader__.load({
               null,
               h(
                 'div',
-                { className: 'cr-empty-line', style: { marginBottom: 6 } },
-                partial
-                  ? tx(t, 'reviewPartialHint')
-                  : deriveVerdict(findings) === 'approve'
-                    ? tx(t, 'verdictApprove')
-                    : tx(t, 'verdictRequestChanges'),
+                { className: 'cr-review-verdict-row', 'data-review-verdict': reviewVerdict(review) },
+                h(VerdictBadge, { verdict: reviewVerdict(review), t }),
+                h(
+                  'span',
+                  { className: 'cr-verdict-hint' },
+                  partial ? tx(t, 'reviewPartialHint') : tx(t, verdictHintKey(reviewVerdict(review))),
+                ),
               ),
               h(SeverityCounts, { counts }),
+              h(ReviewMetaRow, { review, t }),
               h(
                 'div',
                 { className: 'cr-finding-actions' },
@@ -2532,6 +3507,208 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Review-options popover opened by the toolbar gear (CONTRACT §4.5.3):
+     * depth, severity threshold and the AGENTS.md toggle. Every change is
+     * persisted immediately; Esc / the backdrop close it and focus returns to
+     * the gear (handled by the workbench).
+     */
+    function ReviewSettings(props) {
+      const t = props.t
+      const settings = normalizeSettings(props.settings)
+      const dialogRef = useRef(null)
+      const onChange = props.onChange
+      const onClose = props.onClose
+      useEffect(() => {
+        try {
+          const root = dialogRef.current
+          if (!root || typeof root.querySelector !== 'function') return
+          const checked = root.querySelector('input:checked')
+          const target = checked || root
+          if (target && typeof target.focus === 'function') target.focus()
+        } catch {
+          /* focus is a nicety; never let it break the dialog */
+        }
+      }, [])
+      const handleKeyDown = (event) => {
+        try {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            if (typeof onClose === 'function') onClose()
+            return
+          }
+          if (event.key !== 'Tab') return
+          const root = dialogRef.current
+          if (!root || typeof root.querySelectorAll !== 'function') return
+          const nodes = root.querySelectorAll(
+            'button, input, [tabindex]:not([tabindex="-1"])',
+          )
+          if (nodes.length === 0) return
+          const first = nodes[0]
+          const last = nodes[nodes.length - 1]
+          const active = typeof document !== 'undefined' ? document.activeElement : null
+          if (event.shiftKey && active === first) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && active === last) {
+            event.preventDefault()
+            first.focus()
+          }
+        } catch {
+          /* a focus-trap failure must not break the dialog */
+        }
+      }
+      const update = (patch) => {
+        if (typeof onChange === 'function') onChange(patch)
+      }
+      const depthHint = (depth) =>
+        depth === 'fast' ? 'depthFastHint' : depth === 'deep' ? 'depthDeepHint' : 'depthStandardHint'
+      return h(
+        'div',
+        {
+          className: 'cr-modal-backdrop',
+          'data-cr-settings-backdrop': 'ready',
+          onMouseDown: (event) => {
+            if (event && event.target === event.currentTarget && typeof onClose === 'function') {
+              onClose()
+            }
+          },
+        },
+        h(
+          'div',
+          {
+            className: 'cr-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'cr-review-settings-title',
+            tabIndex: -1,
+            ref: dialogRef,
+            onKeyDown: handleKeyDown,
+            'data-cr-settings': 'ready',
+          },
+          h(
+            'div',
+            { className: 'cr-modal-head' },
+            h(
+              'span',
+              { className: 'cr-modal-title', id: 'cr-review-settings-title' },
+              tx(t, 'reviewSettings'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-modal-close',
+                'aria-label': tx(t, 'close'),
+                title: tx(t, 'close'),
+                onClick: () => {
+                  if (typeof onClose === 'function') onClose()
+                },
+              },
+              Icon('close', 13, { strokeWidth: 2 }),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'depth')),
+            DEPTHS.map((depth) =>
+              h(
+                'label',
+                { key: depth, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-review-depth',
+                  value: depth,
+                  'data-depth': depth,
+                  checked: settings.depth === depth,
+                  onChange: () => update({ depth }),
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
+                  h('span', { className: 'cr-option-hint' }, tx(t, depthHint(depth))),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'severityThreshold')),
+            THRESHOLDS.map((threshold) =>
+              h(
+                'label',
+                { key: threshold, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-review-threshold',
+                  value: threshold,
+                  'data-threshold': threshold,
+                  checked: settings.severityThreshold === threshold,
+                  onChange: () => update({ severityThreshold: threshold }),
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
+                ),
+              ),
+            ),
+            h('p', { className: 'cr-modal-note' }, tx(t, 'thresholdHint')),
+          ),
+          h(
+            'label',
+            { className: 'cr-option', style: { marginTop: 10 } },
+            h('input', {
+              type: 'checkbox',
+              'data-guidelines': 'toggle',
+              checked: settings.includeGuidelines,
+              onChange: (event) =>
+                update({ includeGuidelines: Boolean(event && event.target && event.target.checked) }),
+            }),
+            h(
+              'span',
+              { className: 'cr-option-text' },
+              h('span', { className: 'cr-option-label' }, tx(t, 'includeGuidelines')),
+              h('span', { className: 'cr-option-hint' }, tx(t, 'includeGuidelinesHint')),
+            ),
+          ),
+          h('p', { className: 'cr-modal-note' }, tx(t, 'settingsNote')),
+          h(
+            'div',
+            { className: 'cr-modal-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--ghost',
+                'data-action': 'settings-reset',
+                onClick: () => {
+                  if (typeof props.onReset === 'function') props.onReset()
+                },
+              },
+              tx(t, 'settingsReset'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn',
+                'data-action': 'settings-close',
+                onClick: () => {
+                  if (typeof onClose === 'function') onClose()
+                },
+              },
+              tx(t, 'close'),
+            ),
+          ),
+        ),
+      )
+    }
+
     function RightPanel(props) {
       const t = props.t
       const detail = props.detail || {}
@@ -2543,7 +3720,9 @@ window.__ModuleLoader__.load({
           detail,
           counts,
           t,
+          findingsByFile: props.findingsByFile,
           onJump: () => props.onTabChange('changes'),
+          onJumpFile: props.onJumpFile,
         }),
         h(StackCard, { stack: detail.stack, t }),
         h(CommentsCard, { comments: detail.comments, t }),
@@ -2635,8 +3814,11 @@ window.__ModuleLoader__.load({
       const [tab, setTab] = useState('summary')
       const [expanded, setExpanded] = useState({})
       const [highlight, setHighlight] = useState(null)
-      const [review, setReview] = useState({ state: 'none' })
+      const [review, setReview] = useState(() => normalizeReviewStatus({ state: 'none' }))
       const [pinned, setPinned] = useState(false)
+      const [settings, setSettings] = useState(() => readSettings(localStore()))
+      const [settingsOpen, setSettingsOpen] = useState(false)
+      const [jumpTarget, setJumpTarget] = useState(null)
       const [toast, showToast] = useToast()
       const [clock] = useState(() => Date.now())
 
@@ -2646,6 +3828,13 @@ window.__ModuleLoader__.load({
       const reviewGeneration = useRef(0)
       const selectedRef = useRef(null)
       selectedRef.current = selected
+      const settingsRef = useRef(settings)
+      settingsRef.current = settings
+      const gearRef = useRef(null)
+      const searchRef = useRef(null)
+      const listRef = useRef(null)
+      /** Per-tab scroll offsets so Summary/Changes switching keeps each position. */
+      const scrollPositions = useRef({ summary: 0, changes: 0 })
 
       // health: one shot, drives the top notice bar only
       useEffect(() => {
@@ -2667,7 +3856,7 @@ window.__ModuleLoader__.load({
         if (!summary || summary.repo === undefined || summary.number === undefined) return
         const generation = ++detailGeneration.current
         reviewGeneration.current += 1
-        setReview({ state: 'none' })
+        setReview(normalizeReviewStatus({ state: 'none' }))
         setDetail((previous) => ({ state: 'loading', value: previous.value, error: null }))
         post(ROUTE + '/pr', { repo: summary.repo, number: summary.number }).then((result) => {
           if (generation !== detailGeneration.current) return
@@ -2676,10 +3865,10 @@ window.__ModuleLoader__.load({
             setDetail({ state: 'ready', value, error: null })
             const seed = value.review
             if (seed && (seed.state === 'done' || seed.state === 'error')) {
-              setReview(Object.assign({}, seed))
+              setReview(seed)
             } else if (seed && seed.state === 'running' && seed.jobId) {
               const nextGeneration = ++reviewGeneration.current
-              setReview({ state: 'running', jobId: seed.jobId, progress: seed.progress || {} })
+              setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
               void pollReview(nextGeneration, seed.jobId)
             }
           } else {
@@ -2695,6 +3884,10 @@ window.__ModuleLoader__.load({
           setTab('summary')
           setExpanded({})
           setHighlight(null)
+          setJumpTarget(null)
+          scrollPositions.current = { summary: 0, changes: 0 }
+          const doc = docRef.current
+          if (doc) doc.scrollTop = 0
           loadDetail(summary)
         },
         [loadDetail],
@@ -2737,41 +3930,34 @@ window.__ModuleLoader__.load({
           }
           const status = result.value || {}
           if (status.state === 'done') {
-            setReview({
-              state: 'done',
-              jobId,
-              headSha: status.headSha,
-              model: status.model,
-              overview: status.overview,
-              partial: Boolean(status.partial),
-              partialReasons: Array.isArray(status.partialReasons) ? status.partialReasons : [],
-              truncatedCalls: Number(status.truncatedCalls) || 0,
-              progress: status.progress || {},
-              findings: Array.isArray(status.findings) ? status.findings : [],
-            })
+            setReview(normalizeReviewStatus(Object.assign({}, status, { jobId })))
             return
           }
           if (status.state === 'error') {
-            setReview({
-              state: 'error',
-              jobId,
-              error: status.error || { code: 'INTERNAL', message: '审查失败' },
-              progress: status.progress || {},
-            })
+            setReview(
+              normalizeReviewStatus(
+                Object.assign({}, status, {
+                  state: 'error',
+                  jobId,
+                  error: status.error || { code: 'INTERNAL', message: '审查失败' },
+                }),
+              ),
+            )
             return
           }
           if (status.state === 'cancelled') {
-            setReview({ state: 'none' })
+            setReview((previous) => normalizeReviewStatus({ state: 'none', options: previous.options }))
             return
           }
           setReview((previous) =>
-            Object.assign({}, previous, {
-              state: 'running',
-              jobId,
-              headSha: status.headSha,
-              model: status.model,
-              progress: status.progress || previous.progress || {},
-            }),
+            normalizeReviewStatus(
+              Object.assign({}, previous, status, {
+                state: 'running',
+                jobId,
+                progress: status.progress || previous.progress || {},
+                options: status.options || previous.options,
+              }),
+            ),
           )
         }
       }, [])
@@ -2780,29 +3966,55 @@ window.__ModuleLoader__.load({
         const current = selectedRef.current
         if (!current) return
         const generation = ++reviewGeneration.current
-        setReview({ state: 'preparing' })
-        post(ROUTE + '/review-start', { repo: current.repo, number: current.number }).then(
+        const options = settingsToOptions(settingsRef.current)
+        setReview(
+          normalizeReviewStatus({
+            state: 'preparing',
+            options: normalizeReviewOptions(options),
+            progress: {},
+          }),
+        )
+        post(ROUTE + '/review-start', { repo: current.repo, number: current.number, options }).then(
           (result) => {
             if (generation !== reviewGeneration.current) return
             if (!result.ok) {
-              setReview({ state: 'error', error: result.error })
+              setReview(
+                normalizeReviewStatus({
+                  state: 'error',
+                  error: result.error,
+                  options: normalizeReviewOptions(options),
+                }),
+              )
               return
             }
-            const jobId = result.value && result.value.jobId
-            setReview({
-              state: 'running',
-              jobId,
-              progress: { phase: 'preparing', filesDone: 0, filesTotal: 0, startedAt: Date.now() },
-            })
+            const value = result.value || {}
+            const jobId = value.jobId
+            const cached = Boolean(value.cached)
+            setReview(
+              normalizeReviewStatus({
+                state: 'running',
+                jobId,
+                cached,
+                headSha: value.headSha,
+                options: normalizeReviewOptions(value.options || options),
+                progress: {
+                  phase: 'preparing',
+                  filesDone: 0,
+                  filesTotal: 0,
+                  startedAt: Date.now(),
+                },
+              }),
+            )
+            if (cached) showToast(tx(t, 'reviewCached'))
             void pollReview(generation, jobId)
           },
         )
-      }, [pollReview])
+      }, [pollReview, showToast, t])
 
       const cancelReview = useCallback(() => {
         const current = review
         reviewGeneration.current += 1
-        setReview({ state: 'none' })
+        setReview((previous) => normalizeReviewStatus({ state: 'none', options: previous.options }))
         if (current && current.jobId) {
           void post(ROUTE + '/review-cancel', { jobId: current.jobId })
         }
@@ -2811,6 +4023,7 @@ window.__ModuleLoader__.load({
       const locateFinding = useCallback((finding) => {
         if (!finding || typeof finding.file !== 'string') return
         const line = Number(finding.line)
+        scrollPositions.current.changes = 0
         setTab('changes')
         setExpanded((previous) => Object.assign({}, previous, { [finding.file]: true }))
         setHighlight({ path: finding.file, line: Number.isFinite(line) ? line : null, nonce: Date.now() })
@@ -2832,6 +4045,156 @@ window.__ModuleLoader__.load({
         },
         [detail.value],
       )
+
+      /** Switch tabs while remembering each tab's scroll offset (CONTRACT §4.5.5). */
+      const changeTab = useCallback((next) => {
+        const doc = docRef.current
+        setTab((previous) => {
+          if (previous === next) return previous
+          if (doc) scrollPositions.current[previous] = doc.scrollTop
+          return next
+        })
+      }, [])
+
+      useEffect(() => {
+        const doc = docRef.current
+        if (!doc) return
+        const top = scrollPositions.current[tab]
+        doc.scrollTop = Number.isFinite(top) ? top : 0
+      }, [tab])
+
+      // Right-column file list: switch to Changes, expand the file, scroll to it.
+      const jumpToFile = useCallback((key, index) => {
+        if (typeof key !== 'string' || key === '') return
+        scrollPositions.current.changes = 0
+        setExpanded((previous) => Object.assign({}, previous, { [key]: true }))
+        setTab('changes')
+        setJumpTarget({
+          key,
+          index: Number.isFinite(Number(index)) ? Number(index) : -1,
+          nonce: Date.now(),
+        })
+      }, [])
+
+      useEffect(() => {
+        if (!jumpTarget) return undefined
+        const timer = setTimeout(() => {
+          const doc = docRef.current
+          if (!doc || typeof doc.querySelectorAll !== 'function') return
+          let node = null
+          const sections = doc.querySelectorAll('[data-file-path]')
+          for (let index = 0; index < sections.length; index += 1) {
+            if (sections[index].getAttribute('data-file-path') === jumpTarget.key) {
+              node = sections[index]
+              break
+            }
+          }
+          if (!node && jumpTarget.index >= 0 && typeof doc.querySelector === 'function') {
+            node = doc.querySelector('#cr-file-' + jumpTarget.index)
+          }
+          if (node && typeof node.scrollIntoView === 'function') {
+            node.scrollIntoView({ block: 'start' })
+          }
+        }, 90)
+        return () => clearTimeout(timer)
+      }, [jumpTarget])
+
+      /** Persist a settings patch immediately and keep both storage + UI in sync. */
+      const updateSettings = useCallback((patch) => {
+        setSettings((previous) => {
+          const next = normalizeSettings(Object.assign({}, previous, patch))
+          writeSettings(localStore(), next)
+          return next
+        })
+      }, [])
+
+      const resetSettings = useCallback(() => {
+        const next = normalizeSettings(null)
+        writeSettings(localStore(), next)
+        setSettings(next)
+      }, [])
+
+      const closeSettings = useCallback(() => {
+        setSettingsOpen(false)
+        const node = gearRef.current
+        setTimeout(() => {
+          try {
+            if (node && typeof node.focus === 'function') node.focus()
+          } catch {
+            /* focus restore is best effort */
+          }
+        }, 0)
+      }, [])
+
+      // Keyboard shortcuts: j/k switch PR, / focuses search, r reviews, Esc closes the popover.
+      useEffect(() => {
+        const isTyping = (target) => {
+          try {
+            if (!target || typeof target !== 'object') return false
+            const tag = String(target.tagName || '').toLowerCase()
+            return (
+              tag === 'input' ||
+              tag === 'textarea' ||
+              tag === 'select' ||
+              Boolean(target.isContentEditable)
+            )
+          } catch {
+            return false
+          }
+        }
+        const onKeyDown = (event) => {
+          try {
+            if (!event || event.defaultPrevented) return
+            if (event.metaKey || event.ctrlKey || event.altKey) return
+            const key = String(event.key || '')
+            if (key === 'Escape') {
+              if (settingsOpen) {
+                event.preventDefault()
+                setSettingsOpen(false)
+              }
+              return
+            }
+            if (settingsOpen) return
+            if (isTyping(event.target)) return
+            if (key === 'j' || key === 'k') {
+              const items = Array.isArray(list.items) ? list.items : []
+              if (items.length === 0) return
+              const next = stepSelection(items, selected ? selected.number : null, key === 'j' ? 1 : -1)
+              if (!next) return
+              event.preventDefault()
+              if (selected && Number(next.number) === Number(selected.number)) return
+              selectPr(next)
+              const container = listRef.current
+              if (container && typeof container.querySelector === 'function') {
+                const node = container.querySelector('[data-pr-number="' + String(next.number) + '"]')
+                if (node && typeof node.scrollIntoView === 'function') {
+                  node.scrollIntoView({ block: 'nearest' })
+                }
+              }
+              return
+            }
+            if (key === '/') {
+              event.preventDefault()
+              const input = searchRef.current
+              if (input && typeof input.focus === 'function') {
+                input.focus()
+                if (typeof input.select === 'function') input.select()
+              }
+              return
+            }
+            if (key === 'r' || key === 'R') {
+              if (!selected) return
+              if (review.state === 'preparing' || review.state === 'running') return
+              event.preventDefault()
+              startReview()
+            }
+          } catch {
+            /* a shortcut must never break the workbench */
+          }
+        }
+        document.addEventListener('keydown', onKeyDown, true)
+        return () => document.removeEventListener('keydown', onKeyDown, true)
+      }, [list.items, selected, settingsOpen, review.state, selectPr, startReview])
 
       // scroll the located diff line into view, then fade the highlight out
       useEffect(() => {
@@ -2902,6 +4265,10 @@ window.__ModuleLoader__.load({
       const findings = Array.isArray(reviewValue.findings) ? reviewValue.findings : []
       const findingsByFile = groupFindingsByFile(findings)
       const summary = detailValue && detailValue.summary ? detailValue.summary : selected || {}
+      const settingsSummary = tx(t, 'reviewOptionsSummary', {
+        depth: tx(t, depthKey(settings.depth)),
+        threshold: tx(t, thresholdKey(settings.severityThreshold)),
+      })
 
       let docBody
       if (!selected && detail.state === 'idle') {
@@ -2944,6 +4311,7 @@ window.__ModuleLoader__.load({
                 onToggleAll: toggleAllFiles,
                 findingsByFile,
                 highlight,
+                onLocate: locateFinding,
                 t,
               })
             : h(SummaryView, {
@@ -2979,6 +4347,9 @@ window.__ModuleLoader__.load({
           'data-cr-detail': detailValue ? 'ready' : detail.state,
           'data-cr-list': list.state,
           'data-cr-files': detailValue ? String((detailValue.files || []).length) : '0',
+          'data-cr-settings-open': settingsOpen ? 'open' : 'closed',
+          'data-cr-settings-depth': settings.depth,
+          'data-cr-settings-threshold': settings.severityThreshold,
         },
         h('style', null, CSS),
         h(PrList, {
@@ -2986,6 +4357,8 @@ window.__ModuleLoader__.load({
           queryInput,
           selectedNumber: selected ? selected.number : null,
           t,
+          inputRef: searchRef,
+          listRef,
           onSelect: selectPr,
           onQueryChange: setQueryInput,
           onRefresh: () => setQuery(queryInput),
@@ -3015,12 +4388,15 @@ window.__ModuleLoader__.load({
             url: selected ? selected.url : undefined,
             canReview: Boolean(selected),
             review: reviewValue,
-            onTabChange: setTab,
+            settingsSummary,
+            settingsOpen,
+            gearRef,
+            onTabChange: changeTab,
             onPin: () => setPinned((previous) => !previous),
             onCopy: copyLink,
             onGithub: openGithub,
             onReview: startReview,
-            onGear: () => showToast(tx(t, 'reviewSettingsHint')),
+            onGear: () => setSettingsOpen(true),
           }),
           h(
             'div',
@@ -3042,8 +4418,10 @@ window.__ModuleLoader__.load({
                 ? h(RightPanel, {
                     detail: detailValue,
                     review: reviewValue,
+                    findingsByFile,
                     t,
-                    onTabChange: setTab,
+                    onTabChange: changeTab,
+                    onJumpFile: jumpToFile,
                     onStartReview: startReview,
                     onCancelReview: cancelReview,
                   })
@@ -3051,6 +4429,15 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        settingsOpen
+          ? h(ReviewSettings, {
+              settings,
+              t,
+              onChange: updateSettings,
+              onReset: resetSettings,
+              onClose: closeSettings,
+            })
+          : null,
         h(Composer, { t }),
         toast ? h('div', { className: 'cr-toast', role: 'status' }, String(toast)) : null,
       )
@@ -3197,6 +4584,11 @@ window.__ModuleLoader__.load({
         PANEL_ID,
         ROUTE,
         DEFAULT_QUERY,
+        SETTINGS_KEY,
+        DEFAULT_SETTINGS,
+        DEPTHS,
+        THRESHOLDS,
+        COMMENT_PREVIEW_CHARS,
         locales: { en, zh },
         tx,
         formatNumber,
@@ -3218,6 +4610,29 @@ window.__ModuleLoader__.load({
         tokenizeInline,
         prStateKey,
         deriveVerdict,
+        reviewVerdict,
+        normalizeSettings,
+        hasSettingsFields,
+        readSettings,
+        writeSettings,
+        localStore,
+        settingsToOptions,
+        normalizeReviewOptions,
+        normalizeGuidelines,
+        normalizeFinding,
+        normalizeReviewStatus,
+        groupFindingsByLine,
+        normalizeInlineComments,
+        groupCommentsByFile,
+        truncateText,
+        filterFindings,
+        stepSelection,
+        depthKey,
+        thresholdKey,
+        verdictKey,
+        verdictHintKey,
+        confidenceKey,
+        describeReviewOptions,
         post,
       },
     }

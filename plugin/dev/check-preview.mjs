@@ -26,7 +26,18 @@ const EDGE_CANDIDATES = [
   '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ]
 const DEBUG_PORT = 9333
-const SCENES = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['default', 'changes', 'review', 'partial']
+const SCENES =
+  process.argv.slice(2).length > 0
+    ? process.argv.slice(2)
+    : [
+        'default',
+        'changes',
+        'review',
+        'partial',
+        'v11-inline-findings',
+        'v11-settings',
+        'v11-existing-comments',
+      ]
 
 function findEdge() {
   for (const candidate of EDGE_CANDIDATES) {
@@ -137,6 +148,39 @@ const LAYOUT_EXPRESSION = `(() => {
     reviewState: (document.querySelector('[data-cr-root]') || {}).getAttribute
       ? document.querySelector('[data-cr-root]').getAttribute('data-cr-review-state')
       : '',
+    verdict: (() => {
+      const node = document.querySelector('[data-review-verdict]')
+      return node ? node.getAttribute('data-review-verdict') : ''
+    })(),
+    chips: document.querySelectorAll('[data-filter]').length,
+    findingItems: document.querySelectorAll('[data-finding-id]').length,
+    reviewOptions: Boolean(document.querySelector('[data-review-options]')),
+    reviewReused: Boolean(document.querySelector('[data-review-reused]')),
+    reviewGuidelines: (() => {
+      const node = document.querySelector('[data-review-guidelines]')
+      return node ? node.getAttribute('data-review-guidelines') : ''
+    })(),
+    inlineMarkers: document.querySelectorAll('[data-inline-marker]').length,
+    inlineCards: document.querySelectorAll('.cr-inline-card').length,
+    inlineOpen: document.querySelectorAll('[data-inline-open]').length,
+    inlineComments: document.querySelectorAll('[data-inline-comment]').length,
+    settingsOpen: Boolean(document.querySelector('[role="dialog"][data-cr-settings]')),
+    settingsDepth: document.querySelectorAll('input[data-depth]').length,
+    settingsThreshold: document.querySelectorAll('input[data-threshold]').length,
+    settingsGuidelines: Boolean(document.querySelector('input[data-guidelines]')),
+    settingsAriaModal: (() => {
+      const node = document.querySelector('[role="dialog"][data-cr-settings]')
+      return node ? node.getAttribute('aria-modal') : ''
+    })(),
+    settingsFocusInside: (() => {
+      const node = document.querySelector('[role="dialog"][data-cr-settings]')
+      return Boolean(node && node.contains(document.activeElement))
+    })(),
+    selectedNumber: (() => {
+      const node = document.querySelector('[data-pr-number][aria-current="true"]')
+      return node ? node.getAttribute('data-pr-number') : ''
+    })(),
+    fileLinks: document.querySelectorAll('[data-action="goto-file"]').length,
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
   }
 })()`
@@ -177,11 +221,142 @@ async function checkScene(cdp, scene) {
   await sleep(250)
   const finalResult = await send('Runtime.evaluate', { expression: LAYOUT_EXPRESSION, returnByValue: true })
   const finalLayout = finalResult.result.value
+  const interactions = await probeInteractions(send, scene)
   await send('Target.closeTarget', { targetId: target.targetId })
-  return { scene, layout: finalLayout, errors }
+  return { scene, layout: finalLayout, errors, interactions }
 }
 
-function assertScene(scene, layout, errors) {
+/**
+ * Keyboard acceptance checks (CONTRACT §4.5.5): j switches PR, / focuses the
+ * search box and Esc closes the settings popover.
+ */
+async function probeInteractions(send, scene) {
+  const result = {
+    selectedBefore: '',
+    selectedAfter: '',
+    searchFocused: false,
+    reviewRequested: '',
+    jumpedToFile: '',
+    scrollRestored: null,
+    settingsClosedByEsc: null,
+    settingsStored: '',
+    reviewOptionsText: '',
+    invalid: '',
+  }
+  const evaluate = async (expression) => {
+    const value = await send('Runtime.evaluate', { expression, returnByValue: true })
+    return value && value.result ? value.result.value : undefined
+  }
+  const press = (key) =>
+    evaluate(
+      `document.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true, cancelable: true }))`,
+    )
+  const selected = () =>
+    evaluate(
+      `(() => { const node = document.querySelector('[data-pr-number][aria-current="true"]'); return node ? node.getAttribute('data-pr-number') : '' })()`,
+    )
+  try {
+    if (scene === 'default') {
+      result.selectedBefore = await selected()
+      await press('j')
+      await sleep(900)
+      result.selectedAfter = await selected()
+      if (!result.selectedAfter || result.selectedAfter === result.selectedBefore) {
+        result.invalid = 'j did not move the PR selection'
+      }
+      await press('k')
+      await sleep(900)
+      const selectedBack = await selected()
+      if (selectedBack !== result.selectedBefore) {
+        result.invalid = `k did not move back (${result.selectedBefore} -> ${selectedBack})`
+      }
+      await press('/')
+      await sleep(200)
+      result.searchFocused = await evaluate(
+        `(() => { const input = document.querySelector('.cr-search input'); return Boolean(input && document.activeElement === input) })()`,
+      )
+      if (!result.searchFocused) result.invalid = 'slash did not focus the search box'
+      await press('Escape')
+      // "r" starts a review with the current settings (only when not typing).
+      await evaluate(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`)
+      await press('r')
+      await sleep(600)
+      result.reviewRequested = await evaluate(
+        `(() => { const root = document.querySelector('[data-cr-root]'); return root ? root.getAttribute('data-cr-review-state') : '' })()`,
+      )
+      if (result.reviewRequested !== 'preparing' && result.reviewRequested !== 'running') {
+        result.invalid = 'r did not start a review'
+      }
+    }
+    if (scene === 'changes') {
+      // Summary <-> Changes must keep each tab's scroll offset (CONTRACT §4.5.5).
+      await evaluate(`document.querySelector('.cr-doc').scrollTop = 420`)
+      await sleep(120)
+      await evaluate(`document.querySelector('[data-tab="summary"]').click()`)
+      await sleep(250)
+      await evaluate(`document.querySelector('[data-tab="changes"]').click()`)
+      await sleep(450)
+      result.scrollRestored = await evaluate(`Math.round(document.querySelector('.cr-doc').scrollTop)`)
+      if (!(typeof result.scrollRestored === 'number' && result.scrollRestored >= 360)) {
+        result.invalid = `tab switch lost the scroll offset (${result.scrollRestored})`
+      }
+    }
+    if (scene === 'default') {
+      // Right-column file link: switch to Changes, expand and scroll to that file.
+      await evaluate(
+        `(() => { const links = document.querySelectorAll('[data-action="goto-file"]'); if (links[1]) links[1].click(); return links.length })()`,
+      )
+      await sleep(800)
+      result.jumpedToFile = await evaluate(
+        `(() => { const root = document.querySelector('[data-cr-root]'); const open = document.querySelectorAll('.cr-file--open').length; const doc = document.querySelector('.cr-doc'); return (root ? root.getAttribute('data-cr-tab') : '') + ':' + open + ':' + (doc ? Math.round(doc.scrollTop) : -1) })()`,
+      )
+      if (!String(result.jumpedToFile).startsWith('changes:')) {
+        result.invalid = 'right-column file link did not switch to Changes'
+      }
+    }
+    if (scene === 'v11-settings') {
+      // Change depth to "deep": the popover persists to localStorage immediately.
+      await evaluate(
+        `(() => { const input = document.querySelector('input[data-depth="deep"]'); if (input) input.click(); return Boolean(input) })()`,
+      )
+      await sleep(250)
+      result.settingsStored = await evaluate(
+        `(() => { try { return localStorage.getItem('codex-review:settings') || '' } catch (error) { return 'error' } })()`,
+      )
+      if (!String(result.settingsStored).includes('"depth":"deep"')) {
+        result.invalid = 'settings were not persisted to localStorage'
+      }
+      await press('Escape')
+      await sleep(300)
+      result.settingsClosedByEsc = await evaluate(
+        `!document.querySelector('[role="dialog"][data-cr-settings]')`,
+      )
+      if (result.settingsClosedByEsc !== true) result.invalid = 'Esc did not close the settings popover'
+      // The next review must carry the new options; the card echoes them.
+      await evaluate(`document.querySelector('[data-action="review"]').click()`)
+      let state = ''
+      for (let attempt = 0; attempt < 32; attempt += 1) {
+        await sleep(200)
+        state = await evaluate(
+          `(() => { const root = document.querySelector('[data-cr-root]'); return root ? root.getAttribute('data-cr-review-state') : '' })()`,
+        )
+        if (state === 'done' || state === 'error') break
+      }
+      result.reviewOptionsText = await evaluate(
+        `(() => { const node = document.querySelector('[data-review-options]'); return node ? node.textContent : '' })()`,
+      )
+      if (state !== 'done') result.invalid = `review after settings change ended "${state}"`
+      else if (!String(result.reviewOptionsText).includes('深')) {
+        result.invalid = 'review did not echo the new depth option'
+      }
+    }
+  } catch (error) {
+    result.invalid = String((error && error.message) || error)
+  }
+  return result
+}
+
+function assertScene(scene, layout, errors, interactions) {
   const problems = []
   if (!layout) return ['no layout snapshot']
   if (!layout.ok) return [layout.reason]
@@ -200,12 +375,61 @@ function assertScene(scene, layout, errors) {
     if (!aria || !aria.trim()) problems.push('icon button without aria-label')
   }
   if (layout.overflowX) problems.push('page has horizontal overflow')
+  if (layout.fileLinks < 1) problems.push('right-column file links missing')
   if (scene === 'changes') {
     if (layout.diffRows < 10) problems.push(`diff rows ${layout.diffRows}`)
     if (layout.files < 10) problems.push(`file cards ${layout.files}`)
   }
   if ((scene === 'review' || scene === 'partial') && layout.reviewState !== 'done') problems.push(`review state ${layout.reviewState}`)
   if (scene === 'partial' && !layout.partial) problems.push('partial banner missing')
+  if (scene === 'review' || scene === 'partial') {
+    if (layout.findingItems < 1) problems.push('no finding cards')
+    if (layout.chips < 4) problems.push(`filter chips ${layout.chips}`)
+    if (!layout.reviewOptions) problems.push('resolved options row missing')
+    if (!layout.reviewReused) problems.push('reused-files row missing')
+    if (!layout.reviewGuidelines) problems.push('guidelines row missing')
+  }
+  if (scene === 'review') {
+    if (layout.verdict !== 'changes') problems.push(`verdict "${layout.verdict}"`)
+  }
+  if (scene === 'v11-inline-findings') {
+    if (layout.inlineMarkers < 1) problems.push('no inline finding markers')
+    if (layout.inlineCards < 1) problems.push('inline finding card did not expand')
+    if (layout.inlineOpen < 1) problems.push('inline panel without data-inline-open')
+  }
+  if (scene === 'v11-settings') {
+    if (!layout.settingsOpen) problems.push('settings popover did not open')
+    if (layout.settingsAriaModal !== 'true') problems.push('settings popover without aria-modal')
+    if (layout.settingsDepth !== 3) problems.push(`depth radios ${layout.settingsDepth}`)
+    if (layout.settingsThreshold !== 3) problems.push(`threshold radios ${layout.settingsThreshold}`)
+    if (!layout.settingsGuidelines) problems.push('guidelines toggle missing')
+    if (!layout.settingsFocusInside) problems.push('focus did not move into the popover')
+  }
+  if (scene === 'v11-existing-comments') {
+    if (layout.inlineComments < 2) problems.push(`inline comment cards ${layout.inlineComments}`)
+  }
+  if (interactions) {
+    if (interactions.invalid) problems.push(interactions.invalid)
+    if (scene === 'default') {
+      if (
+        interactions.reviewRequested !== 'preparing' &&
+        interactions.reviewRequested !== 'running'
+      ) {
+        problems.push(`r shortcut state "${interactions.reviewRequested}"`)
+      }
+      if (!String(interactions.jumpedToFile).startsWith('changes:')) {
+        problems.push('right-column file link did not switch to Changes')
+      } else if (Number(String(interactions.jumpedToFile).split(':')[2]) < 30) {
+        problems.push(`file link did not scroll (${interactions.jumpedToFile})`)
+      }
+    }
+    if (scene === 'changes' && !(interactions.scrollRestored >= 360)) {
+      problems.push(`scroll restore ${interactions.scrollRestored}`)
+    }
+    if (scene === 'v11-settings' && interactions.settingsClosedByEsc !== true) {
+      problems.push('Esc did not close the settings popover')
+    }
+  }
   return problems
 }
 
@@ -236,14 +460,15 @@ async function main() {
     try {
       for (const scene of SCENES) {
         const result = await checkScene(cdp, scene)
-        const problems = assertScene(scene, result.layout, result.errors)
+        const problems = assertScene(scene, result.layout, result.errors, result.interactions)
         const status = problems.length === 0 ? 'PASS' : 'FAIL'
         if (problems.length > 0) failed = true
         const layout = result.layout || {}
         console.log(
-          `${status} ${scene.padEnd(8)} side=${layout.sidebar ? layout.sidebar.width : '?'} main=${layout.main ? layout.main.width : '?'} ` +
+          `${status} ${scene.padEnd(20)} side=${layout.sidebar ? layout.sidebar.width : '?'} main=${layout.main ? layout.main.width : '?'} ` +
             `doc=${layout.doc ? layout.doc.width : '?'} details=${layout.details ? layout.details.width : '?'} ` +
-            `rows=${layout.rows} files=${layout.files} diffRows=${layout.diffRows} review=${layout.reviewState}`,
+            `rows=${layout.rows} files=${layout.files} diffRows=${layout.diffRows} review=${layout.reviewState} ` +
+            `verdict=${layout.verdict || '-'} inline=${layout.inlineCards} comments=${layout.inlineComments}`,
         )
         for (const problem of problems) console.log(`     - ${problem}`)
       }

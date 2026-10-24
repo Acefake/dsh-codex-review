@@ -59,6 +59,10 @@ const USAGE = `用法: node verify/api-probe.mjs [选项]
   --review-timeout-ms <ms>  轮询审查终态上限（默认 600000，分块多时按需加大）
   --poll-ms <ms>            轮询间隔（默认 800）
   --skip-security           跳过信任围栏（Origin / x-forwarded-for / content-type）探测
+  --v11                     启用 v1.1 断言（结构校验；未生效时新断言记 pending，不误报失败）
+  --v11-ai                  启用 v1.1 真实审查探测：默认设置(命中缓存/必要时真跑) + depth=fast 新 job + 同设置二次调用 cached=true
+  --v11-threshold           启用 v1.1 severityThreshold='P0' 探测（优先命中已缓存的 fast+P0，不 cancel）
+  --v11-newjob              启用 v1.1 未缓存选项组合探测（fast+P1，预期 24/24 复用、秒回、0 模型调用）
   --out-dir <dir>           报告目录（默认 verify/out）
   --report <json>           报告路径（默认 <out-dir>/api-probe-<时间>.json）
   --json                    只输出 JSON 摘要
@@ -81,6 +85,10 @@ function parseCli() {
         'review-timeout-ms': { type: 'string', default: '600000' },
         'poll-ms': { type: 'string', default: '800' },
         'skip-security': { type: 'boolean', default: false },
+        v11: { type: 'boolean', default: false },
+        'v11-ai': { type: 'boolean', default: false },
+        'v11-threshold': { type: 'boolean', default: false },
+        'v11-newjob': { type: 'boolean', default: false },
         'out-dir': { type: 'string', default: OUT_ROOT },
         report: { type: 'string' },
         json: { type: 'boolean', default: false },
@@ -116,6 +124,10 @@ function parseCli() {
     reviewTimeoutMs: numeric('review-timeout-ms', 600_000, { min: 1000 }),
     pollMs: numeric('poll-ms', 800, { min: 100 }),
     skipSecurity: values['skip-security'],
+    v11: values.v11,
+    v11Ai: values['v11-ai'],
+    v11Threshold: values['v11-threshold'],
+    v11NewJob: values['v11-newjob'],
     reportPath: path.resolve(outDir, values.report ?? `api-probe-${timestampForFile()}.json`),
     jsonOnly: values.json,
   }
@@ -142,6 +154,16 @@ const checks = report.checks
  */
 function check(name, pass, detail = '') {
   checks.push({ name, pass: Boolean(pass), detail })
+}
+
+/**
+ * Record a v1.1 assertion that cannot run yet (capability not deployed).
+ * Pending checks are reported but never fail the run.
+ * @param {string} name
+ * @param {string} detail
+ */
+function checkPending(name, detail) {
+  checks.push({ name, pass: null, pending: true, detail })
 }
 
 /**
@@ -252,6 +274,112 @@ function stackReferences(stack, number) {
   return { found, chainNumbers, basePr: stack.basePr?.number, declaredBase: stack.declaredBase }
 }
 
+// ---------------------------------------------------------------------------
+// v1.1 validators (CONTRACT.md §4.1/§4.2)
+// ---------------------------------------------------------------------------
+const DEPTH_PRESETS = Object.freeze({
+  fast: { chunkChars: 16000, maxChunks: 6, concurrency: 4 },
+  standard: { chunkChars: 9000, maxChunks: 9, concurrency: 3 },
+  deep: { chunkChars: 6000, maxChunks: 20, concurrency: 2 },
+})
+const DEPTHS = new Set(['fast', 'standard', 'deep'])
+const THRESHOLDS = new Set(['P0', 'P1', 'P2'])
+const VERDICTS = new Set(['block', 'changes', 'approve'])
+
+/**
+ * Validate `ResolvedReviewOptions` (CONTRACT §4.1).
+ * @param {unknown} value
+ * @returns {string[]} problems
+ */
+function validateResolvedOptions(value) {
+  if (!isObject(value)) return ['options 不是对象']
+  const problems = []
+  if (!DEPTHS.has(value.depth)) problems.push(`depth 非法（${JSON.stringify(value.depth)}）`)
+  if (!THRESHOLDS.has(value.severityThreshold)) problems.push(`severityThreshold 非法（${JSON.stringify(value.severityThreshold)}）`)
+  if (typeof value.includeGuidelines !== 'boolean') problems.push('includeGuidelines 不是布尔')
+  if (!isPositiveInt(value.chunkChars)) problems.push('chunkChars 不是正整数')
+  if (!isPositiveInt(value.maxChunks)) problems.push('maxChunks 不是正整数')
+  if (!isPositiveInt(value.concurrency)) problems.push('concurrency 不是正整数')
+  return problems
+}
+
+/**
+ * Validate the resolved options of one depth against the CONTRACT preset table.
+ * @param {Record<string, unknown>} value
+ * @returns {string[]}
+ */
+function validateDepthPreset(value) {
+  const problems = validateResolvedOptions(value)
+  if (problems.length > 0) return problems
+  const preset = DEPTH_PRESETS[value.depth]
+  if (value.chunkChars !== preset.chunkChars) problems.push(`chunkChars=${value.chunkChars}（期望 ${preset.chunkChars}）`)
+  if (value.maxChunks !== preset.maxChunks) problems.push(`maxChunks=${value.maxChunks}（期望 ${preset.maxChunks}）`)
+  if (value.concurrency !== preset.concurrency) problems.push(`concurrency=${value.concurrency}（期望 ${preset.concurrency}）`)
+  return problems
+}
+
+/**
+ * Validate `guidelines` (CONTRACT §4.2/§4.4).
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function validateGuidelines(value) {
+  if (!isObject(value)) return ['guidelines 不是对象']
+  const problems = []
+  if (typeof value.loaded !== 'boolean') problems.push('loaded 不是布尔')
+  if (!Array.isArray(value.files)) problems.push('files 不是数组')
+  else if (value.files.some((file) => typeof file !== 'string')) problems.push('files 含非字符串')
+  if (typeof value.chars !== 'number' || value.chars < 0) problems.push('chars 不是非负数')
+  if (typeof value.chars === 'number' && value.chars > 4000) problems.push(`chars=${value.chars} 超过 4000 上限`)
+  return problems
+}
+
+/**
+ * Derive the expected verdict from findings (CONTRACT §4.2).
+ * @param {Array<{severity?: string}>} findings
+ * @returns {'block'|'changes'|'approve'}
+ */
+function deriveVerdict(findings) {
+  const list = Array.isArray(findings) ? findings : []
+  if (list.some((finding) => finding?.severity === 'P0')) return 'block'
+  if (list.some((finding) => finding?.severity === 'P1')) return 'changes'
+  return 'approve'
+}
+
+/**
+ * Validate the v1.1 additions on `ReviewStatus` / `PrDetail.review`.
+ * @param {Record<string, unknown>} review
+ * @param {number} filesTotal
+ * @returns {string[]} problems
+ */
+function validateV11ReviewFields(review, filesTotal) {
+  const problems = []
+  if (!isObject(review)) return ['review 不是对象']
+  if (review.options !== undefined) problems.push(...validateResolvedOptions(review.options).map((problem) => `options.${problem}`))
+  if (review.guidelines !== undefined) problems.push(...validateGuidelines(review.guidelines).map((problem) => `guidelines.${problem}`))
+  if (review.verdict !== undefined) {
+    if (!VERDICTS.has(review.verdict)) problems.push(`verdict 非法（${JSON.stringify(review.verdict)}）`)
+    else {
+      const expected = deriveVerdict(review.findings)
+      if (review.verdict !== expected) problems.push(`verdict=${review.verdict} 与 findings 推导值 ${expected} 不一致`)
+    }
+  }
+  if (review.reusedFiles !== undefined) {
+    if (!Number.isInteger(review.reusedFiles) || review.reusedFiles < 0) problems.push('reusedFiles 不是非负整数')
+    else if (Number.isFinite(filesTotal) && review.reusedFiles > filesTotal) problems.push(`reusedFiles=${review.reusedFiles} 超过 filesTotal=${filesTotal}`)
+  }
+  return problems
+}
+
+/**
+ * A v1.1 review field set is "deployed" when any of the new fields is present.
+ * @param {Record<string, unknown>} review
+ * @returns {boolean}
+ */
+function hasV11Fields(review) {
+  return isObject(review) && ['options', 'verdict', 'reusedFiles', 'guidelines'].some((key) => review[key] !== undefined)
+}
+
 let client
 try {
   client = new GuiClient(options.baseUrl, { token: options.token })
@@ -354,7 +482,17 @@ if (prsEnvelope.ok) {
   if (isObject(value)) {
     check('prs: items 是数组', Array.isArray(value.items))
     const items = Array.isArray(value.items) ? value.items : []
-    check(`prs: 返回至少 ${options.minPrs} 条`, items.length >= options.minPrs, `实际 ${items.length} 条`)
+    const totalCount = typeof value.totalCount === 'number' ? value.totalCount : null
+    // The count is GitHub data, not plugin behavior: pass when either the
+    // configured floor is met OR the returned page matches totalCount with a
+    // minimal sane floor (open PRs get merged/closed while the repo is in use).
+    const meetsMin = items.length >= options.minPrs
+    const matchesTotal = totalCount !== null && items.length === totalCount && totalCount >= 5
+    check(
+      `prs: 返回至少 ${options.minPrs} 条（或与 totalCount 一致且 ≥5）`,
+      meetsMin || matchesTotal,
+      `实际 ${items.length} 条，totalCount=${String(totalCount)}${meetsMin ? '' : matchesTotal ? '（真实 open PR 数不足阈值，按 totalCount 一致放行）' : ''}`,
+    )
     check('prs: totalCount 是数字', typeof value.totalCount === 'number', JSON.stringify(value.totalCount))
     check('prs: query 是字符串', typeof value.query === 'string', JSON.stringify(value.query))
     const problems = []
@@ -535,6 +673,347 @@ if (!options.skipAi) {
 }
 
 // ---------------------------------------------------------------------------
+// v1.1 assertions (CONTRACT.md §4.6)
+//
+// Structural checks read the cached review result and never start a model call.
+// Real option-variation probes are opt-in (--v11-ai / --v11-threshold) because
+// each one may start a full review; this probe NEVER cancels a live job.
+// ---------------------------------------------------------------------------
+if (options.v11) {
+  const v11 = {
+    enabled: true,
+    capability: {},
+    runs: [],
+    statuses: [],
+  }
+  report.v11 = v11
+  const v11StartIndex = checks.length
+  const prRef = options.pr
+
+  /**
+   * POST review-start with optional v1.1 options.
+   * @param {string} label
+   * @param {Record<string, unknown> | undefined} reviewOptions
+   */
+  async function v11Start(label, reviewOptions) {
+    const requestBody = { repo: prRef.repo, number: prRef.number }
+    if (reviewOptions !== undefined) requestBody.options = reviewOptions
+    const response = await client.post('codex-review/review-start', requestBody, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    check(
+      `v1.1[${label}]: review-start 信封合法`,
+      response.status === 200 && envelope.envelope,
+      `HTTP ${response.status}${envelope.note ? `，${envelope.note}` : ''}${envelope.ok === false ? `，${envelope.error.code}` : ''}`,
+    )
+    const value = envelope.ok ? envelope.value : undefined
+    v11.runs.push({ label, request: requestBody, response: { status: response.status, value, error: envelope.error } })
+    return { response, envelope, value }
+  }
+
+  /**
+   * Poll review-status until a terminal state (never cancels).
+   * @param {string} label
+   * @param {string} jobId
+   */
+  async function v11Wait(label, jobId) {
+    if (!isNonEmptyString(jobId)) return { status: null, note: '缺少 jobId' }
+    const deadline = Date.now() + options.reviewTimeoutMs
+    let last = null
+    let polls = 0
+    while (Date.now() < deadline) {
+      const response = await client.post('codex-review/review-status', { jobId }, { timeoutMs: 20_000 })
+      const envelope = parseEnvelope(response)
+      polls += 1
+      if (response.status !== 200 || !envelope.envelope || !envelope.ok) {
+        return { status: last, note: `轮询失败 HTTP ${response.status}${envelope.error ? `/${envelope.error.code}` : ''}`, polls }
+      }
+      last = envelope.value
+      if (TERMINAL_STATES.has(last?.state)) {
+        v11.statuses.push({ label, jobId, state: last.state, polls, value: last })
+        return { status: last, polls }
+      }
+      await delay(options.pollMs)
+    }
+    return { status: last, note: `超时 ${options.reviewTimeoutMs}ms 未到终态`, polls }
+  }
+
+  // Capability detection: a v1.1 Host returns the new review fields; read-only
+  // when a cached review exists, otherwise defer to the opt-in real probes.
+  const v11DetailResponse = await client.post('codex-review/pr', { repo: prRef.repo, number: prRef.number }, { timeoutMs: 30_000 })
+  const v11DetailEnvelope = parseEnvelope(v11DetailResponse)
+  const v11DetailReview = v11DetailEnvelope.ok && isObject(v11DetailEnvelope.value?.review) ? v11DetailEnvelope.value.review : {}
+  v11.capability.fromPrDetail = hasV11Fields(v11DetailReview)
+  v11.capability.prReviewKeys = Object.keys(v11DetailReview)
+
+  /** @type {{value?: any} | null} */
+  let defaultRun = null
+  let fastRunId
+  let deepRunId
+  let p0RunId
+  if (!v11.capability.fromPrDetail && (options.v11Ai || options.v11Threshold || options.v11NewJob)) {
+    defaultRun = await v11Start('default', undefined)
+    v11.capability.fromReviewStart = hasV11Fields(defaultRun.value?.options ? { options: defaultRun.value.options } : {})
+  }
+  const v11Active = v11.capability.fromPrDetail || v11.capability.fromReviewStart === true
+  v11.active = v11Active
+  check(
+    'v1.1: Host 已部署 v1.1 契约（options/verdict/reusedFiles/guidelines 可见）',
+    v11Active,
+    JSON.stringify(v11.capability),
+  )
+
+  if (!v11Active) {
+    checkPending('v1.1: ReviewStatus/PrDetail.review 新字段形状（options/verdict/reusedFiles/guidelines）', 'v1.1 尚未生效（Host 未部署）')
+    checkPending('v1.1: depth=fast 与默认产生不同 job key', 'v1.1 尚未生效')
+    checkPending('v1.1: 同设置同 headSha 二次 review-start cached=true', 'v1.1 尚未生效')
+    checkPending('v1.1: severityThreshold=P0 时 findings 全 P0', 'v1.1 尚未生效')
+    checkPending('v1.1: includeGuidelines/AGENTS.md 注入（guidelines.loaded）', 'v1.1 尚未生效')
+    checkPending('v1.1: reusedFiles 增量复用', 'v1.1 尚未生效')
+    checkPending('v1.1: 未缓存选项组合产生新 job key 且复用全命中', 'v1.1 尚未生效')
+  } else {
+    const filesTotal = typeof v11DetailReview.filesTotal === 'number'
+      ? v11DetailReview.filesTotal
+      : undefined
+    // Structural validation of PrDetail.review (cached result is enough).
+    const detailProblems = validateV11ReviewFields(v11DetailReview, filesTotal)
+    check('v1.1: PrDetail.review 新字段形状合法', detailProblems.length === 0, detailProblems.slice(0, 6).join('；'))
+    check(
+      'v1.1: PrDetail.review.options.depth/severityThreshold/includeGuidelines 存在且合法',
+      isObject(v11DetailReview.options) && validateResolvedOptions(v11DetailReview.options).length === 0,
+      JSON.stringify(v11DetailReview.options),
+    )
+    check(
+      'v1.1: PrDetail.review.verdict 合法且与 findings 一致',
+      VERDICTS.has(v11DetailReview.verdict) && v11DetailReview.verdict === deriveVerdict(v11DetailReview.findings),
+      `verdict=${JSON.stringify(v11DetailReview.verdict)}，findings=${(v11DetailReview.findings ?? []).length}`,
+    )
+    check(
+      'v1.1: PrDetail.review.guidelines 形状合法',
+      validateGuidelines(v11DetailReview.guidelines).length === 0,
+      JSON.stringify(v11DetailReview.guidelines),
+    )
+    check(
+      'v1.1: PrDetail.review.reusedFiles 为非负整数',
+      Number.isInteger(v11DetailReview.reusedFiles) && v11DetailReview.reusedFiles >= 0,
+      JSON.stringify(v11DetailReview.reusedFiles),
+    )
+
+    // ReviewStatus carries the same new fields; fetch the cached job if known.
+    const cachedJobId = v11DetailReview.jobId
+    if (isNonEmptyString(cachedJobId)) {
+      const cachedStatusResponse = await client.post('codex-review/review-status', { jobId: cachedJobId }, { timeoutMs: 20_000 })
+      const cachedEnvelope = parseEnvelope(cachedStatusResponse)
+      if (cachedEnvelope.envelope && cachedEnvelope.ok) {
+        const cachedStatus = cachedEnvelope.value
+        v11.statuses.push({ label: 'cached-detail', jobId: cachedJobId, state: cachedStatus.state, polls: 1, value: cachedStatus })
+        const statusProblems = validateV11ReviewFields(cachedStatus, cachedStatus.progress?.filesTotal)
+        check('v1.1: ReviewStatus 新字段形状合法', statusProblems.length === 0, statusProblems.slice(0, 6).join('；'))
+        check(
+          'v1.1: ReviewStatus.options 与 depth 预设一致',
+          validateDepthPreset(cachedStatus.options).length === 0,
+          JSON.stringify(cachedStatus.options),
+        )
+      } else {
+        checkPending('v1.1: ReviewStatus 新字段形状（缓存 job 不可读）', `review-status ${cachedEnvelope.note || cachedEnvelope.error?.code || 'failed'}`)
+      }
+    } else {
+      checkPending('v1.1: ReviewStatus 新字段形状（当前无缓存 job）', '需要 --v11-ai 先完成一次审查')
+    }
+
+    // --- opt-in real option probes -----------------------------------------
+    if (options.v11Ai) {
+      if (!defaultRun) defaultRun = await v11Start('default', undefined)
+      const defaultJobId = defaultRun.value?.jobId
+      check(
+        'v1.1[default]: review-start 返回 ResolvedReviewOptions',
+        isObject(defaultRun.value?.options) && validateResolvedOptions(defaultRun.value.options).length === 0,
+        JSON.stringify(defaultRun.value?.options),
+      )
+      check(
+        'v1.1[default]: 默认 depth=standard、severityThreshold=P2、includeGuidelines=true',
+        defaultRun.value?.options?.depth === 'standard'
+          && defaultRun.value?.options?.severityThreshold === 'P2'
+          && defaultRun.value?.options?.includeGuidelines === true,
+        JSON.stringify(defaultRun.value?.options),
+      )
+      const defaultWait = await v11Wait('default', defaultJobId)
+      const defaultStatus = defaultWait.status
+      check('v1.1[default]: 到达 done 终态', defaultStatus?.state === 'done', defaultWait.note || `state=${defaultStatus?.state}`)
+      if (defaultStatus?.state === 'done') {
+        check('v1.1[default]: partial=false', defaultStatus.partial !== true, `partial=${String(defaultStatus.partial)}`)
+        const g = defaultStatus.guidelines
+        // Acefake/yingbox has an AGENTS.md (26959 bytes, truncated to <=4000).
+        check(
+          'v1.1[default]: includeGuidelines 生效（repo 有 AGENTS.md → guidelines.loaded=true）',
+          isObject(g) && g.loaded === true && Array.isArray(g.files) && g.files.some((file) => /AGENTS\.md/iu.test(file)) && g.chars > 0 && g.chars <= 4000,
+          JSON.stringify(g),
+        )
+      }
+
+      // Same settings + same headSha second call must hit the cache.
+      const secondRun = await v11Start('default-second', undefined)
+      check(
+        'v1.1: 同设置同 headSha 二次 review-start cached=true 且 jobId 相同',
+        secondRun.value?.cached === true && secondRun.value?.jobId === defaultJobId,
+        `cached=${JSON.stringify(secondRun.value?.cached)}，jobId=${secondRun.value?.jobId} vs ${defaultJobId}`,
+      )
+
+      // depth=fast must be a distinct job key with the fast preset budgets.
+      const fastRun = await v11Start('fast', { depth: 'fast' })
+      fastRunId = fastRun.value?.jobId
+      check(
+        'v1.1[fast]: depth=fast 产生不同 job key',
+        isNonEmptyString(fastRun.value?.jobId) && fastRun.value.jobId !== defaultJobId,
+        `fast=${fastRun.value?.jobId}，default=${defaultJobId}`,
+      )
+      check(
+        'v1.1[fast]: options 与 fast 预设一致（16000/6/4）',
+        fastRun.value?.options?.depth === 'fast' && validateDepthPreset(fastRun.value.options).length === 0,
+        JSON.stringify(fastRun.value?.options),
+      )
+      const fastWait = await v11Wait('fast', fastRun.value?.jobId)
+      check('v1.1[fast]: 到达 done 终态', fastWait.status?.state === 'done', fastWait.note || `state=${fastWait.status?.state}`)
+      const filesTotal = defaultStatus?.progress?.filesTotal
+      if (fastWait.status?.state === 'done') {
+        check('v1.1[fast]: partial=false', fastWait.status.partial !== true, `partial=${String(fastWait.status.partial)}`)
+        check(
+          'v1.1[fast]: reusedFiles 为 0..filesTotal 的整数',
+          Number.isInteger(fastWait.status.reusedFiles) && fastWait.status.reusedFiles >= 0 && (!Number.isFinite(filesTotal) || fastWait.status.reusedFiles <= filesTotal),
+          `reusedFiles=${JSON.stringify(fastWait.status.reusedFiles)}，filesTotal=${String(filesTotal)}，elapsedMs=${fastWait.status.progress?.elapsedMs}`,
+        )
+        check(
+          'v1.1[fast]: verdict 与 findings 一致',
+          VERDICTS.has(fastWait.status.verdict) && fastWait.status.verdict === deriveVerdict(fastWait.status.findings),
+          `verdict=${JSON.stringify(fastWait.status.verdict)}`,
+        )
+      }
+
+      // Cross-depth incremental reuse: the pre-warmed deep run reuses every file
+      // (reusedFiles === filesTotal, near-zero elapsed, no model calls).
+      const deepRun = await v11Start('deep', { depth: 'deep' })
+      deepRunId = deepRun.value?.jobId
+      check(
+        'v1.1[deep]: 与 default/fast 产生不同 job key',
+        isNonEmptyString(deepRun.value?.jobId) && deepRun.value.jobId !== defaultJobId && deepRun.value.jobId !== fastRun.value?.jobId,
+        `deep=${deepRun.value?.jobId}，default=${defaultJobId}，fast=${fastRun.value?.jobId}`,
+      )
+      check(
+        'v1.1[deep]: options 与 deep 预设一致（6000/20/2）',
+        deepRun.value?.options?.depth === 'deep' && validateDepthPreset(deepRun.value.options).length === 0,
+        JSON.stringify(deepRun.value?.options),
+      )
+      const deepWait = await v11Wait('deep', deepRun.value?.jobId)
+      check('v1.1[deep]: 到达 done 终态', deepWait.status?.state === 'done', deepWait.note || `state=${deepWait.status?.state}`)
+      if (deepWait.status?.state === 'done') {
+        check('v1.1[deep]: partial=false', deepWait.status.partial !== true, `partial=${String(deepWait.status.partial)}`)
+        check(
+          'v1.1[deep]: 增量复用全命中（reusedFiles === filesTotal 且 elapsedMs 很小）',
+          Number.isInteger(deepWait.status.reusedFiles)
+            && Number.isFinite(filesTotal)
+            && deepWait.status.reusedFiles === filesTotal
+            && Number(deepWait.status.progress?.elapsedMs) < 5000,
+          `reusedFiles=${JSON.stringify(deepWait.status.reusedFiles)}，filesTotal=${String(filesTotal)}，elapsedMs=${deepWait.status.progress?.elapsedMs}`,
+        )
+        check(
+          'v1.1[deep]: verdict 与 findings 一致',
+          VERDICTS.has(deepWait.status.verdict) && deepWait.status.verdict === deriveVerdict(deepWait.status.findings),
+          `verdict=${JSON.stringify(deepWait.status.verdict)}，findings=${(deepWait.status.findings ?? []).length}`,
+        )
+      }
+    }
+
+    if (options.v11Threshold) {
+      // Use the pre-warmed fast+P0 combination so this probe never starts a long
+      // review: cached results still prove the server-side severity filtering.
+      const p0Run = await v11Start('threshold-P0', { depth: 'fast', severityThreshold: 'P0' })
+      p0RunId = p0Run.value?.jobId
+      check(
+        'v1.1[threshold-P0]: options.severityThreshold=P0 回显',
+        p0Run.value?.options?.severityThreshold === 'P0',
+        JSON.stringify(p0Run.value?.options),
+      )
+      check(
+        'v1.1[threshold-P0]: 与默认设置产生不同 job key',
+        isNonEmptyString(p0Run.value?.jobId) && p0Run.value.jobId !== defaultRun?.value?.jobId,
+        `p0=${p0Run.value?.jobId}，default=${defaultRun?.value?.jobId}`,
+      )
+      const p0Wait = await v11Wait('threshold-P0', p0Run.value?.jobId)
+      check('v1.1[threshold-P0]: 到达 done 终态', p0Wait.status?.state === 'done', p0Wait.note || `state=${p0Wait.status?.state}`)
+      if (p0Wait.status?.state === 'done') {
+        const findings = Array.isArray(p0Wait.status.findings) ? p0Wait.status.findings : []
+        check('v1.1[threshold-P0]: partial=false', p0Wait.status.partial !== true, `partial=${String(p0Wait.status.partial)}`)
+        check(
+          'v1.1[threshold-P0]: findings 全为 P0',
+          findings.every((finding) => finding?.severity === 'P0'),
+          `findings=${findings.length}，severity=${JSON.stringify([...new Set(findings.map((finding) => finding.severity))])}`,
+        )
+        check(
+          'v1.1[threshold-P0]: verdict 与过滤后 findings 一致',
+          p0Wait.status.verdict === deriveVerdict(findings),
+          `verdict=${JSON.stringify(p0Wait.status.verdict)}，期望 ${deriveVerdict(findings)}`,
+        )
+        check(
+          'v1.1[threshold-P0]: overview 统计与过滤后集合一致',
+          typeof p0Wait.status.overview === 'string' && p0Wait.status.overview.includes(String(findings.length)),
+          `overview=${JSON.stringify(p0Wait.status.overview)}，findings=${findings.length}`,
+        )
+        check(
+          'v1.1[threshold-P0]: 过滤复用全命中（reusedFiles === filesTotal 且 elapsedMs 很小）',
+          Number.isInteger(p0Wait.status.reusedFiles)
+            && Number.isFinite(p0Wait.status.progress?.filesTotal)
+            && p0Wait.status.reusedFiles === p0Wait.status.progress.filesTotal
+            && Number(p0Wait.status.progress?.elapsedMs) < 5000,
+          `reusedFiles=${JSON.stringify(p0Wait.status.reusedFiles)}，filesTotal=${String(p0Wait.status.progress?.filesTotal)}，elapsedMs=${p0Wait.status.progress?.elapsedMs}`,
+        )
+      }
+    }
+
+    if (options.v11NewJob) {
+      // An uncached option combination still reuses every file (no model calls):
+      // proves job keys include options while file-level reuse stays cross-option.
+      const newRun = await v11Start('newjob-fast-P1', { depth: 'fast', severityThreshold: 'P1' })
+      const knownJobIds = new Set([defaultRun?.value?.jobId, fastRunId, deepRunId, p0RunId].filter(isNonEmptyString))
+      check(
+        'v1.1[newjob]: 未缓存选项组合产生不同 job key',
+        isNonEmptyString(newRun.value?.jobId) && !knownJobIds.has(newRun.value.jobId),
+        `new=${newRun.value?.jobId}，known=${JSON.stringify([...knownJobIds])}`,
+      )
+      check(
+        'v1.1[newjob]: options 回显 fast+P1',
+        newRun.value?.options?.depth === 'fast' && newRun.value?.options?.severityThreshold === 'P1' && validateDepthPreset(newRun.value.options).length === 0,
+        JSON.stringify(newRun.value?.options),
+      )
+      const newWait = await v11Wait('newjob-fast-P1', newRun.value?.jobId)
+      check('v1.1[newjob]: 到达 done 终态', newWait.status?.state === 'done', newWait.note || `state=${newWait.status?.state}`)
+      if (newWait.status?.state === 'done') {
+        const findings = Array.isArray(newWait.status.findings) ? newWait.status.findings : []
+        const filesTotalNew = newWait.status.progress?.filesTotal
+        check('v1.1[newjob]: partial=false', newWait.status.partial !== true, `partial=${String(newWait.status.partial)}`)
+        check(
+          'v1.1[newjob]: 增量复用全命中且无长耗时（reusedFiles === filesTotal，elapsedMs < 5000）',
+          Number.isInteger(newWait.status.reusedFiles) && Number.isFinite(filesTotalNew) && newWait.status.reusedFiles === filesTotalNew && Number(newWait.status.progress?.elapsedMs) < 5000,
+          `reusedFiles=${JSON.stringify(newWait.status.reusedFiles)}，filesTotal=${String(filesTotalNew)}，elapsedMs=${newWait.status.progress?.elapsedMs}`,
+        )
+        check(
+          'v1.1[newjob]: findings 仅含 P0/P1（P1 阈值过滤）',
+          findings.every((finding) => finding?.severity === 'P0' || finding?.severity === 'P1'),
+          `findings=${findings.length}，severity=${JSON.stringify([...new Set(findings.map((finding) => finding.severity))])}`,
+        )
+        check(
+          'v1.1[newjob]: verdict 与过滤后 findings 一致',
+          newWait.status.verdict === deriveVerdict(findings),
+          `verdict=${JSON.stringify(newWait.status.verdict)}，期望 ${deriveVerdict(findings)}`,
+        )
+      }
+    }
+  }
+
+  v11.checks = checks.slice(v11StartIndex)
+  v11.pendingCount = v11.checks.filter((entry) => entry.pending === true).length
+  v11.failedCount = v11.checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
 // trust fence probes (local-only loopback server must reject these)
 // ---------------------------------------------------------------------------
 if (!options.skipSecurity) {
@@ -564,8 +1043,14 @@ const jsonHeaderProblems = Object.entries(report.routeHeaders ?? {})
   })
 check('响应头: 200 响应均为 application/json 且 no-store', jsonHeaderProblems.length === 0, jsonHeaderProblems.slice(0, 6).join('；'))
 
-const ok = checks.every((entry) => entry.pass)
-report.verdict = { ok, failed: checks.filter((entry) => !entry.pass).map((entry) => entry.name) }
+const decisive = checks.filter((entry) => entry.pending !== true)
+const ok = decisive.every((entry) => entry.pass)
+report.verdict = {
+  ok,
+  failed: decisive.filter((entry) => !entry.pass).map((entry) => entry.name),
+  passed: decisive.filter((entry) => entry.pass).length,
+  pending: checks.filter((entry) => entry.pending === true).map((entry) => entry.name),
+}
 report.finishedAt = isoTimestamp()
 writeJson(options.reportPath, report)
 
@@ -576,16 +1061,24 @@ const summary = {
   routesReady: report.routesReady,
   report: options.reportPath,
   totalChecks: checks.length,
+  passedChecks: report.verdict.passed,
   failedChecks: report.verdict.failed,
+  pendingChecks: report.verdict.pending,
   prsCount: report.routes.prs?.count ?? null,
   prFiles: report.routes.pr?.files ?? null,
   reviewState: report.routes.review?.state ?? null,
   findings: report.routes.review?.findingsCount ?? null,
+  v11Active: report.v11?.active ?? null,
+  v11Pending: report.v11?.pendingCount ?? 0,
+  v11Failed: report.v11?.failedCount ?? 0,
 }
 if (options.jsonOnly) console.log(JSON.stringify(summary))
 else {
-  console.log(`${ok ? '✓' : '✗'} 插件路由契约检查完成（${checks.length} 项断言，${checks.filter((entry) => entry.pass).length} 通过）`)
-  for (const entry of checks) console.log(`${entry.pass ? '  ✓' : '  ✗'} ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`)
+  console.log(`${ok ? '✓' : '✗'} 插件路由契约检查完成（${checks.length} 项断言，${decisive.filter((entry) => entry.pass).length} 通过${report.verdict.pending.length > 0 ? `，${report.verdict.pending.length} pending` : ''}）`)
+  for (const entry of checks) {
+    const marker = entry.pending === true ? '  ○' : entry.pass ? '  ✓' : '  ✗'
+    console.log(`${marker} ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`)
+  }
   console.log(JSON.stringify(summary, null, 2))
 }
 process.exitCode = ok ? EXIT.OK : EXIT.FAIL
