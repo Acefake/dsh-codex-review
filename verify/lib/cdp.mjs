@@ -672,6 +672,15 @@ export class PageSession {
     await this.#send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
   }
 
+  /**
+   * Type text into the focused element via CDP `Input.insertText`.
+   * @param {string} text
+   * @returns {Promise<void>}
+   */
+  async insertText(text) {
+    await this.#send('Input.insertText', { text })
+  }
+
   /** Bring the target to the foreground (headless pages are active by default). */
   async bringToFront() {
     await this.#send('Page.bringToFront')

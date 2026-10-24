@@ -19,6 +19,7 @@
  */
 
 import { AppError, USER_MESSAGES, isAbortError, toPublicError } from './errors.js'
+import { encodeSseError } from './chat.js'
 
 /** Prefix owned by this plugin; no other plugin may register under it. */
 export const ROUTE_PREFIX = '/codex-review'
@@ -281,6 +282,162 @@ export function createJsonRouteHandler(options) {
           // the socket is already gone
         }
       }
+    }
+  }
+}
+
+/** Response headers shared by the SSE chat answer (CONTRACT §5.2). */
+const SSE_HEADERS = Object.freeze({
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-store',
+  'referrer-policy': 'no-referrer',
+  connection: 'keep-alive',
+  'x-accel-buffering': 'no',
+})
+
+/**
+ * Body cap for the chat route. It is larger than {@link BODY_LIMIT_BYTES}
+ * because the contract allows 20 history messages of 4000 characters each,
+ * which cannot fit in 64 KiB once UTF-8 encoded.
+ */
+export const CHAT_BODY_LIMIT_BYTES = 512 * 1024
+
+/**
+ * Build the `kind: 'exact'` handler of `POST /codex-review/chat`. It crosses the
+ * same loopback/same-origin fence and POST+JSON enforcement as the JSON route
+ * family, then hands the parsed body to `handle` with a streaming interface:
+ * `{ signal, send, end, clientGone }`. Every failure becomes a `data: {"error"}`
+ * SSE frame; the request deadline and a client disconnect both abort `signal`
+ * so the upstream model stream stops.
+ * @param {{ handle: (payload: Record<string, unknown>, stream: { signal: AbortSignal, send: (frame: string) => void, end: () => void, clientGone: () => boolean }) => Promise<void>, deadlineMs?: number, maxBodyBytes?: number, logger?: { warn?: (message: string) => void } }} options - handler wiring.
+ * @returns {(request: any, response: any) => Promise<void>} the node request handler.
+ */
+export function createChatRouteHandler(options = {}) {
+  const handle = options.handle
+  if (typeof handle !== 'function') throw new TypeError('createChatRouteHandler requires a handle function')
+  const deadlineMs = options.deadlineMs ?? 300_000
+  const maxBodyBytes = options.maxBodyBytes ?? CHAT_BODY_LIMIT_BYTES
+  const logger = options.logger
+  return async function handler(request, response) {
+    if (!isLoopbackRequest(request)) {
+      writeJson(response, 403, { error: 'forbidden: loopback-only' })
+      return
+    }
+    if (request.method !== 'POST') {
+      writeJson(response, 405, { error: 'method not allowed' })
+      return
+    }
+    const contentType = String(request.headers?.['content-type'] ?? '').toLowerCase()
+    if (!contentType.startsWith('application/json')) {
+      writeJson(response, 415, { error: 'content-type must be application/json' })
+      return
+    }
+
+    /** Whether the SSE answer was closed (normally or by the client). */
+    let ended = false
+    /** Whether the client disconnected before the answer finished. */
+    let clientGone = false
+    /** Whether response headers were already written. */
+    let headersWritten = false
+    /** Set when the request-level deadline fired. */
+    let timedOut = false
+    const controller = new AbortController()
+    /** Write the SSE head exactly once. */
+    const writeHeadOnce = () => {
+      if (headersWritten) return
+      headersWritten = true
+      try {
+        response.writeHead(200, SSE_HEADERS)
+      } catch {
+        ended = true
+      }
+    }
+    /**
+     * Write one SSE frame; a closed stream silently drops it.
+     * @param {string} frame - encoded SSE event.
+     */
+    const send = (frame) => {
+      if (ended || typeof frame !== 'string' || frame === '') return
+      writeHeadOnce()
+      if (ended) return
+      try {
+        response.write(frame)
+      } catch {
+        ended = true
+      }
+    }
+    /** End the SSE answer once. */
+    const end = () => {
+      if (ended) return
+      ended = true
+      try {
+        response.end()
+      } catch {
+        // the socket is already gone
+      }
+    }
+    /** Abort the model stream when the client disconnects mid-answer. */
+    const abortFromClient = () => {
+      if (ended) return
+      clientGone = true
+      try {
+        controller.abort(new AppError('INTERNAL', '客户端已断开'))
+      } catch {
+        // an already-aborted signal is fine
+      }
+    }
+    // Only the response 'close' event means "the client is gone": the request
+    // stream's 'close' fires as soon as the POST body is complete (i.e. before
+    // the answer starts), so listening on it would abort every chat.
+    response.on?.('close', abortFromClient)
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        controller.abort(new AppError('INTERNAL', `请求超时（${Math.round(deadlineMs / 1000)} 秒）`))
+      } catch {
+        // an already-aborted signal is fine
+      }
+    }, deadlineMs)
+    if (typeof timer.unref === 'function') timer.unref()
+    // A comment frame keeps idle proxies from dropping the connection while the
+    // model is still reasoning; SSE clients ignore it.
+    const heartbeat = setInterval(() => {
+      if (ended) return
+      writeHeadOnce()
+      if (ended) return
+      try {
+        response.write(': ping\n\n')
+      } catch {
+        ended = true
+      }
+    }, 15_000)
+    if (typeof heartbeat.unref === 'function') heartbeat.unref()
+    try {
+      const body = await readJsonBody(request, { maxBytes: maxBodyBytes })
+      if (!body.ok) {
+        const message = body.reason === 'too-large'
+          ? `请求体超过 ${Math.round(maxBodyBytes / 1024)} KiB 上限`
+          : '请求体必须是合法的 JSON 对象'
+        send(encodeSseError({ code: 'BAD_REQUEST', message }))
+        return
+      }
+      await handle(body.value, { signal: controller.signal, send, end, clientGone: () => clientGone })
+    } catch (error) {
+      if (ended || clientGone) return
+      const publicError = timedOut
+        ? { code: 'LLM_ERROR', message: `AI 回答超时（${Math.round(deadlineMs / 1000)} 秒），请重试` }
+        : mapRouteError(error, controller.signal)
+      try {
+        logger?.warn?.(`dsh-codex-review: chat ${publicError.code} ${publicError.message}`)
+      } catch {
+        // logging must never change the answer
+      }
+      send(encodeSseError(publicError))
+    } finally {
+      clearTimeout(timer)
+      clearInterval(heartbeat)
+      response.removeListener?.('close', abortFromClient)
+      end()
     }
   }
 }

@@ -11,9 +11,26 @@
 
 import { AppError, badRequest } from './lib/errors.js'
 import { Config, resolveConfig } from './lib/config.js'
-import { GitHubClient, REPO_RE } from './lib/github.js'
+import {
+  GitHubClient,
+  MERGE_COMMIT_MESSAGE_MAX_CHARS,
+  MERGE_COMMIT_TITLE_MAX_CHARS,
+  MERGE_METHODS,
+  REPO_RE,
+} from './lib/github.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
-import { ROUTE_PREFIX, createJsonRouteHandler } from './lib/http.js'
+import { ROUTE_PREFIX, createChatRouteHandler, createJsonRouteHandler } from './lib/http.js'
+import {
+  CHAT_CALL_TIMEOUT_MS,
+  CHAT_CONCURRENCY,
+  CHAT_REQUEST_DEADLINE_MS,
+  createChatLimiter,
+  encodeSseDelta,
+  encodeSseDone,
+  mapChatFailure,
+  toModelMessages,
+  validateChatRequest,
+} from './lib/chat.js'
 
 /** Plugin id; equals the package name and the Client bundle id. */
 export const name = 'dsh-codex-review'
@@ -22,10 +39,13 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.2.0'
+export const VERSION = '0.3.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
+
+/** Streaming chat path; registered as its own `kind: 'exact'` route so the prefix handler cannot swallow it. */
+export const CHAT_PATH = `${ROUTE_PREFIX}/chat`
 
 /** Route paths owned by this plugin. */
 const PATHS = Object.freeze({
@@ -36,6 +56,7 @@ const PATHS = Object.freeze({
   reviewStart: `${ROUTE_PREFIX}/review-start`,
   reviewStatus: `${ROUTE_PREFIX}/review-status`,
   reviewCancel: `${ROUTE_PREFIX}/review-cancel`,
+  merge: `${ROUTE_PREFIX}/merge`,
 })
 
 /**
@@ -180,6 +201,8 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
 
   const github = deps.github ?? new GitHubClient({ config, logger })
   const engine = deps.engine ?? new ReviewEngine({ streamLlm, resolveSelection, config, logger })
+  /** Concurrent chat streams allowed by CONTRACT §5.2. */
+  const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
   const routes = createRoutes({
     config,
     github,
@@ -193,19 +216,156 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     deadlineMs: config.requestTimeoutMs,
     logger,
   })
+  const chatHandler = createChatRouteHandler({
+    handle: createChatStreamHandler({
+      github,
+      engine,
+      streamLlm,
+      llmAvailable: () => llmFace !== undefined,
+      config,
+      logger,
+      limiter: chatLimiter,
+    }),
+    deadlineMs: CHAT_REQUEST_DEADLINE_MS,
+    logger,
+  })
 
   ctx.effect(
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     'dsh-codex-review: host routes',
   )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: CHAT_PATH, handler: chatHandler }),
+    'dsh-codex-review: chat route',
+  )
   ctx.effect(() => () => engine.dispose(), 'dsh-codex-review: review engine')
+  // A plugin dispose must stop every live chat stream, not just its listeners.
+  ctx.effect(() => () => chatLimiter.abortAll(new AppError('INTERNAL', '插件已卸载')), 'dsh-codex-review: chat streams')
+}
+
+/**
+ * Build the chat business flow used by the SSE transport (CONTRACT §5.2):
+ * validate → acquire a concurrency slot → load the PR/review context → stream
+ * the model answer as `data: {"delta"}` frames → terminal done/error frame.
+ * Every model call goes through the same prepared-call seam as the review
+ * engine and carries `sessionId = chat-<repo>#<number>` so the provider can
+ * route/reuse the auxiliary conversation.
+ * @param {{ github: any, engine: any, streamLlm: (request: any) => Promise<AsyncIterable<any>>, llmAvailable: () => boolean, config: any, logger?: any, limiter: ReturnType<typeof createChatLimiter>, callTimeoutMs?: number }} wiring - dependencies.
+ * @returns {(payload: Record<string, unknown>, stream: { signal: AbortSignal, send: (frame: string) => void, end: () => void, clientGone: () => boolean }) => Promise<void>} the chat flow.
+ */
+export function createChatStreamHandler(wiring) {
+  const { github, engine, streamLlm, llmAvailable, config, limiter } = wiring
+  const callTimeoutMs = Number.isFinite(wiring.callTimeoutMs) && wiring.callTimeoutMs > 0 ? wiring.callTimeoutMs : CHAT_CALL_TIMEOUT_MS
+
+  /**
+   * Map any thrown value onto the chat error codes (`LLM_ERROR` for provider
+   * failures, the AppError code otherwise).
+   * @param {unknown} error - thrown value.
+   * @param {boolean} timedOut - whether the per-call deadline fired.
+   * @returns {AppError} a chat-safe failure.
+   */
+  const toChatError = (error, timedOut) => {
+    if (timedOut) return new AppError('LLM_ERROR', 'AI 回答超时，请重试')
+    const mapped = mapChatFailure(error)
+    return new AppError(mapped.code, mapped.message)
+  }
+
+  return async function handleChat(payload, stream) {
+    const request = validateChatRequest(payload)
+    if (!llmAvailable()) throw new AppError('LLM_UNAVAILABLE')
+    const controller = new AbortController()
+    if (!limiter.tryAcquire(controller)) throw new AppError('BUSY')
+    /** @type {NodeJS.Timeout | undefined} */
+    let callTimer
+    /** @type {(() => void) | undefined} */
+    let unlinkAbort
+    let timedOut = false
+    try {
+      // A client disconnect must abort the upstream model stream.
+      const linkAbort = () => {
+        try {
+          controller.abort(stream.signal.reason)
+        } catch {
+          // an already-aborted signal is fine
+        }
+      }
+      if (stream.signal.aborted) linkAbort()
+      else stream.signal.addEventListener('abort', linkAbort, { once: true })
+      unlinkAbort = () => stream.signal.removeEventListener('abort', linkAbort)
+
+      const detail = await github.getPull(request.repo, request.number)
+      const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
+      const review = engine.existing(request.repo, request.number, headSha)
+      const context = await github.chatContext({
+        repo: request.repo,
+        number: request.number,
+        focusFile: request.focusFile,
+        detail,
+        review,
+        messages: request.messages,
+      })
+      if (stream.clientGone()) return
+      const model = engine.resolveModel()
+
+      callTimer = setTimeout(() => {
+        timedOut = true
+        try {
+          controller.abort(new AppError('LLM_ERROR', 'AI 回答超时，请重试'))
+        } catch {
+          // an already-aborted signal is fine
+        }
+      }, callTimeoutMs)
+      if (typeof callTimer.unref === 'function') callTimer.unref()
+
+      /** @type {AsyncIterable<any>} */
+      let upstream
+      try {
+        upstream = await streamLlm({
+          provider: model.provider,
+          model: model.model,
+          system: context.system,
+          messages: toModelMessages(context.messages),
+          maxTokens: config.maxOutputTokens > 0 ? config.maxOutputTokens : undefined,
+          sessionId: `chat-${request.repo}#${request.number}`,
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (stream.clientGone()) return
+        throw toChatError(error, timedOut)
+      }
+      /** @type {any} */
+      let usage
+      /** @type {any} */
+      let reason
+      try {
+        for await (const chunk of upstream) {
+          if (stream.clientGone()) return
+          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') stream.send(encodeSseDelta(chunk.text))
+          else if (chunk?.type === 'usage') usage = chunk.usage ?? chunk
+          else if (chunk?.type === 'finish') reason = chunk.reason
+        }
+      } catch (error) {
+        if (stream.clientGone()) return
+        throw toChatError(error, timedOut)
+      }
+      if (stream.clientGone()) return
+      if (timedOut) throw new AppError('LLM_ERROR', 'AI 回答超时，请重试')
+      if (reason?.kind === 'error') throw toChatError(reason.failure, false)
+      if (reason?.kind === 'aborted') throw new AppError('LLM_ERROR', 'AI 回答被中止，请重试')
+      stream.send(encodeSseDone({ model, usage }))
+    } finally {
+      if (callTimer !== undefined) clearTimeout(callTimer)
+      unlinkAbort?.()
+      limiter.release(controller)
+    }
+  }
 }
 
 /**
  * Build the pathname → handler map. Handlers receive the parsed JSON body and
  * the request context `{ signal }`; they either resolve the route value or
  * throw an {@link AppError} that the transport turns into the error envelope.
- * @param {{ config: any, github: any, engine: any, llmAvailable: () => boolean, version?: string }} wiring - route dependencies.
+ * @param {{ config: any, github: any, engine: any, llmAvailable: () => boolean, llmInfo?: () => Promise<any>, version?: string }} wiring - route dependencies.
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
@@ -250,6 +410,23 @@ export function createRoutes(wiring) {
   const withReview = (repo, number, detail) => {
     const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
     return { ...detail, review: engine.existing(repo, number, headSha) }
+  }
+
+  /**
+   * Validate one optional merge commit field (`commitTitle` / `commitMessage`).
+   * @param {unknown} value - raw field.
+   * @param {number} maxChars - contract cap.
+   * @param {string} label - field label used in the error message.
+   * @returns {string | undefined} trimmed value or undefined.
+   * @throws {AppError} BAD_REQUEST for a non-string or over-long value.
+   */
+  const optionalCommitField = (value, maxChars, label) => {
+    if (value === undefined || value === null) return undefined
+    if (typeof value !== 'string') throw badRequest(`${label} 必须是字符串`)
+    const trimmed = value.trim()
+    if (trimmed === '') return undefined
+    if (trimmed.length > maxChars) throw badRequest(`${label} 超过 ${maxChars} 字`)
+    return trimmed
   }
 
   return {
@@ -340,6 +517,36 @@ export function createRoutes(wiring) {
     [PATHS.reviewCancel]: async (payload) => {
       const jobId = requireString(payload, 'jobId', 'jobId')
       return { cancelled: engine.cancel(jobId) }
+    },
+
+    [PATHS.merge]: async (payload) => {
+      const { repo, number } = requirePullRef(payload)
+      // Guard 1: a write operation always needs an explicit confirmation.
+      if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
+      const method = typeof payload.method === 'string' ? payload.method.trim().toLowerCase() : ''
+      if (!MERGE_METHODS.includes(method)) throw badRequest('method 必须是 merge|squash|rebase')
+      const expectedHeadSha = requireString(payload, 'expectedHeadSha', 'expectedHeadSha')
+      if (expectedHeadSha.length > 100) throw badRequest('expectedHeadSha 不合法')
+      const commitTitle = optionalCommitField(payload.commitTitle, MERGE_COMMIT_TITLE_MAX_CHARS, 'commitTitle')
+      const commitMessage = optionalCommitField(payload.commitMessage, MERGE_COMMIT_MESSAGE_MAX_CHARS, 'commitMessage')
+      let deleteBranch = false
+      if (payload.deleteBranch !== undefined && payload.deleteBranch !== null) {
+        if (typeof payload.deleteBranch !== 'boolean') throw badRequest('deleteBranch 必须是布尔值')
+        deleteBranch = payload.deleteBranch
+      }
+      const result = await github.mergePull({
+        repo,
+        number,
+        method,
+        expectedHeadSha,
+        commitTitle,
+        commitMessage,
+        deleteBranch,
+        confirm: true,
+      })
+      // Guard 7: the merged head is no longer reachable, so drop its review jobs.
+      if (typeof engine.invalidate === 'function') engine.invalidate(repo, number)
+      return result
     },
   }
 }

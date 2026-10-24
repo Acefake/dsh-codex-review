@@ -37,6 +37,8 @@ const SCENES =
         'v11-inline-findings',
         'v11-settings',
         'v11-existing-comments',
+        'v2-merge-dialog',
+        'v2-chat',
       ]
 
 function findEdge() {
@@ -112,6 +114,21 @@ async function waitForHttp(url, attempts = 40) {
   throw new Error(`timed out waiting for ${url}`)
 }
 
+/** POST a dev-only mock route and return its `value` (null on any failure). */
+async function postDev(pathname) {
+  try {
+    const response = await fetch(`${BASE}${pathname}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    const envelope = await response.json()
+    return envelope && envelope.ok === true ? envelope.value : null
+  } catch {
+    return null
+  }
+}
+
 const LAYOUT_EXPRESSION = `(() => {
   const root = document.querySelector('[data-cr-root]')
   if (!root) return { ok: false, reason: 'no workbench root' }
@@ -181,6 +198,43 @@ const LAYOUT_EXPRESSION = `(() => {
       return node ? node.getAttribute('data-pr-number') : ''
     })(),
     fileLinks: document.querySelectorAll('[data-action="goto-file"]').length,
+    mergeOpen: Boolean(document.querySelector('[data-cr-merge-dialog]')),
+    mergePhase: (() => {
+      const node = document.querySelector('[data-merge-phase]')
+      return node ? node.getAttribute('data-merge-phase') : ''
+    })(),
+    mergeMethods: document.querySelectorAll('input[data-merge-method-value]').length,
+    mergeDelete: Boolean(document.querySelector('input[data-merge-delete]')),
+    mergeConfirm: Boolean(document.querySelector('[data-action="merge-confirm"]')),
+    mergeCancel: Boolean(document.querySelector('[data-action="merge-cancel"]')),
+    mergeSha: (() => {
+      const node = document.querySelector('[data-merge-sha]')
+      return node ? node.getAttribute('data-merge-sha') : ''
+    })(),
+    mergeRepoText: (() => {
+      const node = document.querySelector('[data-merge-repo]')
+      return node ? node.textContent || '' : ''
+    })(),
+    chatOpen: Boolean(document.querySelector('[data-cr-chat]')),
+    chatMessages: document.querySelectorAll('[data-chat-role]').length,
+    chatAssistantChars: (() => {
+      const nodes = document.querySelectorAll('[data-chat-role="assistant"] .cr-chat-bubble')
+      let total = 0
+      nodes.forEach((node) => {
+        total += (node.textContent || '').length
+      })
+      return total
+    })(),
+    chatStreaming: (() => {
+      const node = document.querySelector('[data-cr-chat]')
+      return node ? node.getAttribute('data-chat-streaming') === 'true' : false
+    })(),
+    chatError: Boolean(document.querySelector('[data-chat-error]')),
+    chatBubbles: document.querySelectorAll('.cr-chat-bubble').length,
+    composerValue: (() => {
+      const node = document.querySelector('[data-chat-input]')
+      return node ? node.value : ''
+    })(),
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
   }
 })()`
@@ -241,6 +295,14 @@ async function probeInteractions(send, scene) {
     settingsClosedByEsc: null,
     settingsStored: '',
     reviewOptionsText: '',
+    mergeFlow: '',
+    mergeClosedByCancel: null,
+    mergeSha: '',
+    chatCharsMid: -1,
+    chatCharsDone: -1,
+    chatStored: '',
+    chatStopped: null,
+    chatIsolation: '',
     invalid: '',
   }
   const evaluate = async (expression) => {
@@ -350,6 +412,191 @@ async function probeInteractions(send, scene) {
         result.invalid = 'review did not echo the new depth option'
       }
     }
+    if (scene === 'default') {
+      // Merge dialog (CONTRACT §5.3): cancel must not write; confirm sends the guarded body.
+      const beforeMerge = await postDev('/codex-review/dev-state')
+      await evaluate(`document.querySelector('[data-action="merge"]').click()`)
+      await sleep(500)
+      const dialogOpened = await evaluate(
+        `Boolean(document.querySelector('[data-cr-merge-dialog]'))`,
+      )
+      const dialogSha = await evaluate(
+        `(() => { const node = document.querySelector('[data-merge-sha]'); return node ? node.getAttribute('data-merge-sha') : '' })()`,
+      )
+      const methods = await evaluate(`document.querySelectorAll('input[data-merge-method-value]').length`)
+      result.mergeSha = dialogSha
+      await evaluate(`document.querySelector('[data-action="merge-cancel"]').click()`)
+      await sleep(350)
+      const dialogClosed = await evaluate(`!document.querySelector('[data-cr-merge-dialog]')`)
+      const afterCancel = await postDev('/codex-review/dev-state')
+      if (!dialogOpened || dialogClosed !== true) {
+        result.invalid = 'merge dialog did not open/cancel correctly'
+      } else if (!dialogSha || dialogSha.length !== 7) {
+        result.invalid = `merge dialog head sha "${dialogSha}"`
+      } else if (methods !== 3) {
+        result.invalid = `merge methods ${methods}`
+      } else if (!afterCancel || !beforeMerge || afterCancel.mergeCount !== beforeMerge.mergeCount) {
+        result.invalid = 'cancelling the merge dialog wrote to the merge route'
+      }
+      await evaluate(`document.querySelector('[data-action="merge"]').click()`)
+      await sleep(400)
+      await evaluate(`document.querySelector('[data-action="merge-confirm"]').click()`)
+      await sleep(1000)
+      const afterConfirm = await postDev('/codex-review/dev-state')
+      const lastMerge = afterConfirm ? afterConfirm.lastMerge : null
+      if (!lastMerge) {
+        result.invalid = 'merge confirm did not reach the host route'
+      } else if (lastMerge.confirm !== true || !lastMerge.expectedHeadSha) {
+        result.invalid = 'merge request fields: ' + JSON.stringify(lastMerge)
+      } else if (lastMerge.method !== 'squash' || lastMerge.deleteBranch !== false) {
+        result.invalid = 'merge defaults are not squash/keep-branch: ' + JSON.stringify(lastMerge)
+      } else if (!(afterConfirm.mergeCount > 0)) {
+        result.invalid = 'merge count did not grow'
+      }
+      result.mergeFlow = JSON.stringify({
+        opened: dialogOpened,
+        sha: dialogSha,
+        methods,
+        mergeCount: afterConfirm ? afterConfirm.mergeCount : null,
+        method: lastMerge ? lastMerge.method : '',
+        deleteBranch: lastMerge ? lastMerge.deleteBranch : null,
+      })
+    }
+    if (scene === 'v2-merge-dialog') {
+      const before = await postDev('/codex-review/dev-state')
+      result.mergeSha = await evaluate(
+        `(() => { const node = document.querySelector('[data-merge-sha]'); return node ? node.getAttribute('data-merge-sha') : '' })()`,
+      )
+      await evaluate(`document.querySelector('[data-action="merge-cancel"]').click()`)
+      await sleep(350)
+      result.mergeClosedByCancel = await evaluate(
+        `!document.querySelector('[data-cr-merge-dialog]')`,
+      )
+      const after = await postDev('/codex-review/dev-state')
+      if (result.mergeClosedByCancel !== true) result.invalid = 'cancel did not close the merge dialog'
+      if (after && before && after.mergeCount !== before.mergeCount) {
+        result.invalid = 'cancelling the merge dialog wrote to the merge route'
+      }
+      // Esc must close the dialog without writing either.
+      await evaluate(`document.querySelector('[data-action="merge"]').click()`)
+      await sleep(400)
+      await press('Escape')
+      await sleep(350)
+      result.mergeClosedByEsc = await evaluate(`!document.querySelector('[data-cr-merge-dialog]')`)
+      const afterEsc = await postDev('/codex-review/dev-state')
+      if (result.mergeClosedByEsc !== true) result.invalid = 'Esc did not close the merge dialog'
+      if (afterEsc && before && afterEsc.mergeCount !== before.mergeCount) {
+        result.invalid = 'Esc on the merge dialog wrote to the merge route'
+      }
+    }
+    if (scene === 'v2-chat') {
+      const readChat = () =>
+        evaluate(`(() => {
+          const nodes = document.querySelectorAll('[data-chat-role="assistant"] .cr-chat-bubble')
+          let total = 0
+          nodes.forEach((node) => { total += (node.textContent || '').length })
+          const chat = document.querySelector('[data-cr-chat]')
+          return {
+            chars: total,
+            messages: document.querySelectorAll('[data-chat-role]').length,
+            streaming: chat ? chat.getAttribute('data-chat-streaming') === 'true' : false,
+          }
+        })()`)
+      /** Type into the real composer and press send (the panel has no input of its own). */
+      const sendViaComposer = async (text) => {
+        await evaluate(`(() => {
+          const input = document.querySelector('[data-chat-input]')
+          if (!input) return false
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          setter.call(input, ${JSON.stringify(text)})
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+          return true
+        })()`)
+        await sleep(150)
+        await evaluate(`document.querySelector('[data-action="chat-send"]').click()`)
+      }
+      // 1) second answer (the preview scripts it as a slow stream): sample growth.
+      await sendViaComposer('请继续说明风险点')
+      await sleep(900)
+      const mid = await readChat()
+      let done = null
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        await sleep(150)
+        done = await readChat()
+        if (done && done.streaming === false && done.messages >= 4) break
+      }
+      result.chatCharsMid = mid ? mid.chars : -1
+      result.chatCharsDone = done ? done.chars : -1
+      if (!(mid && mid.chars > 0)) result.invalid = 'chat stream produced no incremental text'
+      else if (!(done && done.chars > mid.chars)) result.invalid = 'chat answer did not grow while streaming'
+      else if (!done || done.messages < 4) result.invalid = 'chat messages missing after done'
+      result.chatStored = await evaluate(
+        `(() => { try { return Object.keys(localStorage).filter((key) => key.indexOf('codex-review:chat:') === 0).join(',') } catch (error) { return 'error' } })()`,
+      )
+      if (!String(result.chatStored).includes('#129')) {
+        result.invalid = `chat history key missing: ${result.chatStored}`
+      }
+      // 2) stop a slow stream (third request).
+      await sendViaComposer('再详细一点')
+      await sleep(900)
+      const beforeStop = await readChat()
+      await evaluate(`document.querySelector('[data-action="chat-stop"]').click()`)
+      await sleep(800)
+      const afterStop = await readChat()
+      result.chatStopped = afterStop ? afterStop.streaming === false : false
+      if (!(beforeStop && beforeStop.streaming === true)) {
+        result.invalid = 'third chat request did not start streaming'
+      } else if (!result.chatStopped) {
+        result.invalid = 'stop did not end the stream'
+      }
+      // 3) history isolation: another PR starts empty, going back restores messages.
+      await evaluate(`(() => {
+        const rows = document.querySelectorAll('[data-pr-number]')
+        for (const row of rows) {
+          if (row.getAttribute('data-pr-number') !== '129') { row.click(); return true }
+        }
+        return false
+      })()`)
+      await sleep(1400)
+      const other = await evaluate(`(() => {
+        const root = document.querySelector('[data-cr-root]')
+        const selected = document.querySelector('[data-pr-number][aria-current="true"]')
+        return {
+          messages: root ? root.getAttribute('data-cr-chat-messages') : '',
+          selected: selected ? selected.getAttribute('data-pr-number') : '',
+        }
+      })()`)
+      await evaluate(`(() => {
+        const rows = document.querySelectorAll('[data-pr-number]')
+        for (const row of rows) {
+          if (row.getAttribute('data-pr-number') === '129') { row.click(); return true }
+        }
+        return false
+      })()`)
+      await sleep(1400)
+      const back = await evaluate(`(() => {
+        const root = document.querySelector('[data-cr-root]')
+        return { messages: root ? root.getAttribute('data-cr-chat-messages') : '' }
+      })()`)
+      await evaluate(`document.querySelector('[data-action="chat-open"]').click()`)
+      await sleep(400)
+      const reopened = await readChat()
+      await press('Escape')
+      await sleep(350)
+      result.chatClosedByEsc = await evaluate(`!document.querySelector('[data-cr-chat]')`)
+      result.chatIsolation = JSON.stringify({
+        otherMessages: other ? other.messages : '',
+        otherSelected: other ? other.selected : '',
+        backMessages: back ? back.messages : '',
+        reopenedMessages: reopened ? reopened.messages : -1,
+        closedByEsc: result.chatClosedByEsc,
+      })
+      if (!other || other.selected === '129') result.invalid = 'could not switch to another PR'
+      else if (other.messages !== '0') result.invalid = 'chat history leaked across PRs'
+      else if (!back || Number(back.messages) < 6) result.invalid = 'chat history was not restored'
+      else if (!reopened || reopened.messages < 6) result.invalid = 'restored chat did not reopen'
+      else if (result.chatClosedByEsc !== true) result.invalid = 'Esc did not close the chat panel'
+    }
   } catch (error) {
     result.invalid = String((error && error.message) || error)
   }
@@ -408,8 +655,50 @@ function assertScene(scene, layout, errors, interactions) {
   if (scene === 'v11-existing-comments') {
     if (layout.inlineComments < 2) problems.push(`inline comment cards ${layout.inlineComments}`)
   }
+  if (scene === 'v2-merge-dialog') {
+    if (!layout.mergeOpen) problems.push('merge dialog did not open')
+    if (layout.mergeMethods !== 3) problems.push(`merge methods ${layout.mergeMethods}`)
+    if (!layout.mergeDelete) problems.push('delete-branch toggle missing')
+    if (!layout.mergeConfirm) problems.push('confirm button missing')
+    if (!layout.mergeCancel) problems.push('cancel button missing')
+    if (layout.mergeSha.length !== 7) problems.push(`merge sha "${layout.mergeSha}"`)
+    if (!String(layout.mergeRepoText).includes('#129')) {
+      problems.push(`merge repo "${layout.mergeRepoText}"`)
+    }
+  }
+  if (scene === 'v2-chat') {
+    if (!layout.chatOpen) problems.push('chat panel did not open')
+    if (layout.chatMessages < 2) problems.push(`chat messages ${layout.chatMessages}`)
+    if (layout.chatAssistantChars < 40) {
+      problems.push(`chat answer too short (${layout.chatAssistantChars})`)
+    }
+    if (layout.chatStreaming) problems.push('chat still streaming after ready')
+    if (layout.chatError) problems.push('chat rendered an error bubble')
+  }
   if (interactions) {
     if (interactions.invalid) problems.push(interactions.invalid)
+    if (scene === 'v2-merge-dialog') {
+      if (interactions.mergeClosedByCancel !== true) {
+        problems.push('cancel did not close the merge dialog')
+      }
+      if (interactions.mergeClosedByEsc !== true) {
+        problems.push('Esc did not close the merge dialog')
+      }
+      if (interactions.mergeSha.length !== 7) problems.push('merge dialog head sha missing')
+    }
+    if (scene === 'v2-chat') {
+      if (!(interactions.chatCharsDone > interactions.chatCharsMid)) {
+        problems.push(`chat incremental rendering ${interactions.chatCharsMid} -> ${interactions.chatCharsDone}`)
+      }
+      if (interactions.chatStopped !== true) problems.push('stop did not end the chat stream')
+      if (interactions.chatClosedByEsc !== true) problems.push('Esc did not close the chat panel')
+      if (!String(interactions.chatStored).includes('#129')) {
+        problems.push('chat history was not persisted')
+      }
+      if (!String(interactions.chatIsolation).includes('"otherMessages":"0"')) {
+        problems.push(`chat history isolation ${interactions.chatIsolation}`)
+      }
+    }
     if (scene === 'default') {
       if (
         interactions.reviewRequested !== 'preparing' &&
@@ -468,9 +757,13 @@ async function main() {
           `${status} ${scene.padEnd(20)} side=${layout.sidebar ? layout.sidebar.width : '?'} main=${layout.main ? layout.main.width : '?'} ` +
             `doc=${layout.doc ? layout.doc.width : '?'} details=${layout.details ? layout.details.width : '?'} ` +
             `rows=${layout.rows} files=${layout.files} diffRows=${layout.diffRows} review=${layout.reviewState} ` +
-            `verdict=${layout.verdict || '-'} inline=${layout.inlineCards} comments=${layout.inlineComments}`,
+            `verdict=${layout.verdict || '-'} inline=${layout.inlineCards} comments=${layout.inlineComments} ` +
+            `merge=${layout.mergeOpen ? layout.mergeSha || 'open' : '-'} chat=${layout.chatMessages}/${layout.chatAssistantChars}`,
         )
         for (const problem of problems) console.log(`     - ${problem}`)
+        if (problems.length > 0) {
+          console.log(`     interactions: ${JSON.stringify(result.interactions)}`)
+        }
       }
     } finally {
       cdp.close()

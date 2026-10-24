@@ -203,6 +203,21 @@
         // The comments scene asks the mock /pr route for the inline-comment fixture.
         var mockScenario =
           params.get('mode') === 'comments' || scene === 'v11-existing-comments' ? 'comments' : ''
+        // v2 dev knobs: script the merge guard / chat SSE behaviour per request.
+        var mockMerge = params.get('mockMerge') || ''
+        var chatCalls = 0
+
+        // The v2 scenes start from a clean chat history so screenshots/tests are
+        // deterministic even when the preview profile has run before.
+        try {
+          if (scene === 'v2-chat' || scene === 'v2-merge-dialog') {
+            Object.keys(localStorage).forEach(function (key) {
+              if (key.indexOf('codex-review:chat:') === 0) localStorage.removeItem(key)
+            })
+          }
+        } catch (error) {
+          /* localStorage may be unavailable */
+        }
 
         // Route review-start to the mock server's mode (dev-only field).
         var nativeFetch = window.fetch.bind(window)
@@ -218,6 +233,18 @@
                 var prPayload = JSON.parse(init.body)
                 prPayload.mockScenario = mockScenario
                 init = Object.assign({}, init, { body: JSON.stringify(prPayload) })
+              }
+              if (input === 'codex-review/chat') {
+                var chatPayload = JSON.parse(init.body)
+                chatCalls += 1
+                chatPayload.mockChat =
+                  mockMerge === 'chat-error' ? 'error' : scene === 'v2-chat' && chatCalls > 1 ? 'slow' : 'stream'
+                init = Object.assign({}, init, { body: JSON.stringify(chatPayload) })
+              }
+              if (input === 'codex-review/merge' && mockMerge !== '' && mockMerge.indexOf('chat-') !== 0) {
+                var mergePayload = JSON.parse(init.body)
+                mergePayload.mockMerge = mockMerge
+                init = Object.assign({}, init, { body: JSON.stringify(mergePayload) })
               }
             }
             if (typeof input === 'string' && input.indexOf('codex-review/health') >= 0 && scene === 'health') {
@@ -433,6 +460,29 @@
                   return waitFor(function () {
                     return document.querySelectorAll('.cr-inline-comment').length >= 2
                   }, 12000)
+                })
+              }
+              if (scene === 'v2-merge-dialog') {
+                click('[data-action="merge"]')
+                return waitFor(function () { return document.querySelector('[data-cr-merge-dialog]') })
+              }
+              if (scene === 'v2-chat') {
+                click('[data-action="chat-open"]')
+                return waitFor(function () { return document.querySelector('[data-cr-chat]') }).then(function () {
+                  click('[data-action="chat-quick"][data-quick-index="0"]')
+                  return waitFor(function () {
+                    var root = document.querySelector('[data-cr-root]')
+                    return root && root.getAttribute('data-cr-chat-streaming') === 'true'
+                  }, 6000).then(function () {
+                    return waitFor(function () {
+                      var root = document.querySelector('[data-cr-root]')
+                      return (
+                        root &&
+                        root.getAttribute('data-cr-chat-streaming') === 'false' &&
+                        document.querySelectorAll('[data-chat-role="assistant"]').length > 0
+                      )
+                    }, 15000)
+                  })
                 })
               }
               return null

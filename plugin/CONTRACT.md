@@ -365,3 +365,84 @@ verdict?: 'block' | 'changes' | 'approve'   // P0>0 → block；P1>0 → changes
 5. deep 复核轮次在单测中用 fake stream 验证：证据不足（模型返回空保留列表）的 finding 被丢弃。
 6. 页面：diff 内 finding 卡片可展开、已有评论可见、设置弹层改设置后审查请求带对应 options、`j/k/r//` 生效、console 0 error。
 
+## 5. v2 契约：合并（写操作）与 PR 对话（2026-10-24 第三轮迭代，版本 0.3.0）
+
+用户要求把右侧「合并」与底部「就此 Pull Request 提问」真正接上。v1/v1.1 的只读约束在此解除，但**写操作必须有显式用户确认**，且默认不做任何自动写。
+
+### 5.1 合并路由（写操作）
+
+```ts
+// POST /codex-review/merge
+type MergeRequest = {
+  repo: string
+  number: number
+  method: 'merge' | 'squash' | 'rebase'   // 必填；无默认，由 UI 弹层选择
+  expectedHeadSha: string                  // 必填：用户看到的 head；服务端校验未移动
+  commitTitle?: string                     // squash/rebase 可覆盖标题；≤ 256
+  commitMessage?: string                   // ≤ 2000
+  deleteBranch?: boolean                   // 默认 false；合并后删 head 分支
+  confirm: true                            // 必填且必须为 true（缺省/否 → BAD_REQUEST）
+}
+// 成功 → { merged: true, sha: string, message: string, branchDeleted?: boolean }
+```
+
+服务端守卫（顺序执行，失败即返回错误信封）：
+1. `confirm !== true` → `BAD_REQUEST`（400 语义，信封 code）。
+2. 拉 PR：`state !== 'open'` → `MERGE_NOT_ALLOWED`（已合并/已关闭说明原因）；`isDraft` → `MERGE_NOT_ALLOWED`。
+3. `head.sha !== expectedHeadSha` → `MERGE_HEAD_MOVED` + `message` 带当前 headSha 前 12 位（客户端提示刷新后重试，**绝不合并**）。
+4. mergeable 检查：`mergeable === false` → `MERGE_CONFLICT`；`mergeable === null`（GitHub 计算中）最多重取 2 次、每次间隔 800ms，仍为 null 时按 `mergeStateStatus` 判断，无法判定 → `MERGE_NOT_ALLOWED`。
+5. 调 GitHub `PUT /repos/{o}/{r}/pulls/{n}/merge`，body `{ merge_method, sha: expectedHeadSha, commit_title?, commit_message? }`；HTTP 405/409 → `MERGE_CONFLICT`；403 → `GH_FORBIDDEN`；404 → `GH_NOT_FOUND`。
+6. `deleteBranch === true` 且 head 分支属于本仓库 → `DELETE /repos/{o}/{r}/git/refs/heads/{headRefName}`；失败（受保护分支/已删除）不改变合并成功结果，回 `branchDeleted: false` 并附 `branchWarning`。
+7. 成功后清掉该 PR 的详情缓存与 `repo#number@*` 审查 job（head 已失效）。
+
+错误码新增：`MERGE_CONFLICT`、`MERGE_NOT_ALLOWED`、`MERGE_HEAD_MOVED`。所有分支必须有单测（fake GitHub client），**成功合并路径只做单测，不在真实 PR 上执行**。
+
+### 5.2 PR 对话（流式）
+
+- 路由：`POST /codex-review/chat`，`kind: 'exact'` 独立注册；响应 `text/event-stream`，帧格式：
+  - 文本：`data: {"delta":"…"}\n\n`
+  - 结束：`data: {"done":true,"model":{"provider","model"},"usage"?:…}\n\n`
+  - 错误：`data: {"error":{"code","message"}}\n\n` 后关闭
+- 请求：
+```ts
+type ChatRequest = {
+  repo: string
+  number: number
+  messages: Array<{ role: 'user' | 'assistant', content: string }> // 客户端持有历史，最后一条必须是 user
+  focusFile?: string        // 可选：当前展开文件的路径，附带该文件 patch 作为上下文
+}
+```
+- 服务端上下文（总预算 ≤ 24 000 字）：
+  1. system：`你是该 Pull Request 的代码审查助手。只依据给出的 PR 信息回答；不确定就直说，不要编造文件或行号。回答用中文、简洁，可用列表/代码片段。`
+  2. PR 元信息：标题、编号、作者、状态、head→base、增删行数、变更文件清单（路径 + 状态 + +/−）。
+  3. PR 正文（≤ 3000 字）。
+  4. 最近一次 AI 审查结果摘要（若有缓存）：overview + findings 的 severity/file:line/title（≤ 30 条）。
+  5. `focusFile` 存在时附该文件 patch（≤ 4000 字）。
+  6. 对话历史：最多取最后 10 条、每条 ≤ 4000 字。
+- 模型：沿用 prepared-call seam；`sessionId = chat-<repo>#<number>`（同一 PR 对话复用 provider 路由缓存）；`maxTokens` 用配置默认；单次回答 180s deadline；请求级 5 分钟 deadline。
+- 限流/防护：同时最多 2 个 chat 流（超出返回 `BUSY`）；客户端 abort 时 Host 中止上游模型流。
+- 错误码：`LLM_UNAVAILABLE`、`LLM_ERROR`、`BUSY`、`BAD_REQUEST`。
+- 客户端：
+  - 底部输入框接入：占位「就此 Pull Request 提问」，Enter 发送、Shift+Enter 换行；
+  - 右侧浮动对话面板（宽 ≤ 420、高 ≤ 60%），消息气泡（user/assistant）、流式光标、停止按钮、清空对话、错误气泡与重试；
+  - 快捷提问：`总结这个 PR 的改动`、`有哪些风险点`、`怎么测试`；
+  - 每个 PR 的对话历史存 `localStorage['codex-review:chat:<repo>#<number>']`（≤ 20 条，切换 PR 时恢复）；
+  - 「定位到 diff」等既有能力不受影响。
+
+### 5.3 合并 UI
+
+- 顶栏「合并」按钮：`state=open && !merged` 时可点；点击打开确认弹层：
+  - 展示 `repo#number`、标题、`head → base`、headSha 前 7 位；
+  - 合并方式单选：Squash（推荐）/ Merge commit / Rebase；删除源分支 checkbox（默认关）；
+  - 风险提示：这是写操作，会真实改变 GitHub 仓库；
+  - 确认按钮「确认合并」→ `POST /codex-review/merge`（带 `expectedHeadSha`）；成功 toast + 刷新详情；`MERGE_HEAD_MOVED` 时提示「PR 有新提交，已刷新」并刷新；
+  - 失败展示 code/message；按钮在处理中禁用并显示进度。
+- 已合并/已关闭/草稿：按钮禁用并给出 title 说明。
+
+### 5.4 v2 验收补充
+
+1. 单测：合并路由 confirm 缺失、head 移动、mergeable=false、成功（fake client）、deleteBranch 失败降级、错误码映射；chat 的上下文拼装（预算/历史裁剪/focusFile/审查摘要注入）与 SSE 帧编码。
+2. 真实环境：**不做真实合并**；只验证守卫（`confirm:false` → BAD_REQUEST；stale `expectedHeadSha` → MERGE_HEAD_MOVED）与 UI 弹层字段/取消。
+3. 真实 chat：对 #129 提一个真实问题（如「这个 PR 改了什么」），验证流式返回非空、含 PR 上下文、无 console error。
+4. 页面：合并按钮可点并打开弹层、取消不写入；输入框发送 → 面板出现流式回答；历史按 PR 隔离；`Esc` 关闭面板；console 0 error。
+

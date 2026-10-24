@@ -46,6 +46,38 @@ const MOCKS = {
 
 const reviewJobs = new Map()
 
+/** Dev-only bookkeeping used by check-preview to assert what the client sent. */
+const devState = {
+  mergeCount: 0,
+  lastMerge: null,
+  chatCount: 0,
+  lastChat: null,
+}
+
+/** Deterministic mock answer for /codex-review/chat, streamed frame by frame. */
+function chatAnswerParts(payload) {
+  const messages = Array.isArray(payload.messages) ? payload.messages : []
+  let question = ''
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message && message.role === 'user' && typeof message.content === 'string') {
+      question = message.content
+      break
+    }
+  }
+  const number = Number(payload.number) || 129
+  const focus = typeof payload.focusFile === 'string' && payload.focusFile !== '' ? payload.focusFile : ''
+  return [
+    `关于 #${number}「${question.slice(0, 40) || '这个 PR'}」：\n\n`,
+    '这个 PR 主要做了三件事：\n',
+    '1. 音频指纹提取与两两比对（`ffmpeg.ts` / `match.ts`）；\n',
+    '2. 多集投票与结果合并（`vote.ts` / `skip-store.ts`）；\n',
+    '3. 播放器侧跳过与手动标记优先级（`detect-merge.ts`）。\n\n',
+    '风险点集中在队列取消与长季全量扫描，建议先补回归测试。',
+    focus === '' ? '' : `\n\n当前聚焦文件：\`${focus}\`。`,
+  ]
+}
+
 /** depth presets from CONTRACT.md §4.1; the mock echoes them like the Host does. */
 const DEPTH_PRESETS = {
   fast: { depth: 'fast', chunkChars: 16000, maxChunks: 6, concurrency: 4 },
@@ -232,9 +264,107 @@ async function handleApi(req, res, pathname) {
       ok(res, { cancelled: true })
       return
     }
+    // v2 write route (CONTRACT §5.1): mirrors the Host guards, never touches GitHub.
+    case '/codex-review/merge': {
+      devState.mergeCount += 1
+      devState.lastMerge = {
+        repo: payload.repo,
+        number: payload.number,
+        method: payload.method,
+        expectedHeadSha: payload.expectedHeadSha,
+        deleteBranch: Boolean(payload.deleteBranch),
+        commitTitle: payload.commitTitle || '',
+        confirm: payload.confirm,
+      }
+      if (payload.confirm !== true) {
+        fail(res, 'BAD_REQUEST', 'confirm 必须为 true')
+        return
+      }
+      const detail = readMock('pr-129.json')
+      const currentHead = typeof detail.headSha === 'string' ? detail.headSha : ''
+      const mockMerge = typeof payload.mockMerge === 'string' ? payload.mockMerge : ''
+      if (mockMerge === 'head-moved' || (currentHead !== '' && String(payload.expectedHeadSha) !== currentHead)) {
+        fail(res, 'MERGE_HEAD_MOVED', `PR 有新提交（当前 ${currentHead.slice(0, 12)}）`)
+        return
+      }
+      if (mockMerge === 'conflict') {
+        fail(res, 'MERGE_CONFLICT', '存在合并冲突')
+        return
+      }
+      if (mockMerge === 'not-allowed') {
+        fail(res, 'MERGE_NOT_ALLOWED', '该 PR 当前不可合并')
+        return
+      }
+      ok(res, {
+        merged: true,
+        sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+        message: `Mock ${String(payload.method || 'squash')} merge done`,
+        branchDeleted: payload.deleteBranch === true,
+      })
+      return
+    }
+    // v2 streaming route (CONTRACT §5.2): scripts SSE frames for preview/tests.
+    case '/codex-review/chat': {
+      devState.chatCount += 1
+      devState.lastChat = {
+        repo: payload.repo,
+        number: payload.number,
+        focusFile: typeof payload.focusFile === 'string' ? payload.focusFile : '',
+        messages: Array.isArray(payload.messages)
+          ? payload.messages.map((message) => ({
+              role: message && message.role,
+              content: message && typeof message.content === 'string' ? message.content.slice(0, 200) : '',
+            }))
+          : [],
+      }
+      const mode = typeof payload.mockChat === 'string' ? payload.mockChat : 'stream'
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      })
+      if (mode === 'error') {
+        res.write(`data: ${JSON.stringify({ error: { code: 'LLM_UNAVAILABLE', message: '宿主没有可用的模型。' } })}\n\n`)
+        res.end()
+        return
+      }
+      const parts = chatAnswerParts(payload)
+      const delayMs = mode === 'slow' ? 450 : 90
+      let index = 0
+      let closed = false
+      const stop = () => {
+        closed = true
+        clearInterval(timer)
+      }
+      const timer = setInterval(() => {
+        if (closed) return
+        if (index < parts.length) {
+          res.write(`data: ${JSON.stringify({ delta: parts[index] })}\n\n`)
+          index += 1
+          return
+        }
+        clearInterval(timer)
+        res.write(
+          `data: ${JSON.stringify({ done: true, model: { provider: 'mock', model: 'mock-review-chat' } })}\n\n`,
+        )
+        res.end()
+      }, delayMs)
+      req.on('close', stop)
+      return
+    }
+    // dev-only: what the client sent (used by check-preview assertions)
+    case '/codex-review/dev-state': {
+      ok(res, devState)
+      return
+    }
     // dev-only: forget cached jobs so each screenshot/mock run starts clean
     case '/codex-review/dev-reset': {
       reviewJobs.clear()
+      devState.mergeCount = 0
+      devState.lastMerge = null
+      devState.chatCount = 0
+      devState.lastChat = null
       ok(res, { reset: true })
       return
     }
@@ -299,6 +429,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Code Review preview: http://${HOST}:${PORT}/`)
-  console.log('  ?scene=default|changes|review|running|error|empty|health')
+  console.log(
+    '  ?scene=default|changes|review|running|error|empty|health|v11-*|v2-merge-dialog|v2-chat',
+  )
   console.log('  ?theme=dark|light')
 })

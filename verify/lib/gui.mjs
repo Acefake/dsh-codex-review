@@ -104,4 +104,96 @@ export class GuiClient {
       parseError,
     }
   }
+
+  /**
+   * POST one Server-Sent-Events route (v2 `codex-review/chat`) and collect every
+   * `data: {...}` frame. Non-SSE responses (guard rejections) are returned as
+   * `json`/`text` with `contentType` so callers can assert the error envelope.
+   * @param {string} routePath
+   * @param {Record<string, unknown>} [body]
+   * @param {{timeoutMs?: number, maxBytes?: number}} [options]
+   * @returns {Promise<{status: number, contentType: string, elapsedMs: number, events: Array<Record<string, unknown>>, raw: string, parseErrors: string[], json?: unknown, text: string}>}
+   */
+  async postSse(routePath, body = {}, { timeoutMs = 300_000, maxBytes = 4_000_000 } = {}) {
+    const auth = await this.authenticate()
+    const url = new URL(routePath, this.#baseUrl)
+    const startedAt = Date.now()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+          cookie: auth.cookie,
+          origin: this.#origin,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+    } catch (error) {
+      clearTimeout(timer)
+      const elapsedMs = Date.now() - startedAt
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new GuiHttpError(`POST ${routePath} 流式超时（${timeoutMs}ms）`, { elapsedMs })
+      throw new GuiHttpError(`POST ${routePath} 流式网络错误：${error.message}`, { elapsedMs })
+    }
+    const contentType = response.headers.get('content-type') ?? ''
+    const events = []
+    const parseErrors = []
+    let raw = ''
+    const isSse = /text\/event-stream/i.test(contentType)
+    try {
+      if (isSse && response.body) {
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let bytes = 0
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          bytes += value?.byteLength ?? 0
+          if (bytes > maxBytes) {
+            await reader.cancel().catch(() => {})
+            parseErrors.push(`SSE 超过 ${maxBytes} 字节上限`)
+            break
+          }
+          const chunk = decoder.decode(value, { stream: true })
+          raw += chunk
+          buffer += chunk
+          for (;;) {
+            const at = buffer.indexOf('\n\n')
+            if (at === -1) break
+            const frame = buffer.slice(0, at)
+            buffer = buffer.slice(at + 2)
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue
+              const payload = line.slice(5).trim()
+              if (payload === '') continue
+              try {
+                events.push(JSON.parse(payload))
+              } catch (error) {
+                parseErrors.push(`SSE data 帧不是 JSON：${payload.slice(0, 120)}`)
+              }
+            }
+          }
+        }
+      } else {
+        raw = await response.text()
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+    const elapsedMs = Date.now() - startedAt
+    let json
+    if (!isSse) {
+      try {
+        json = raw === '' ? undefined : JSON.parse(raw)
+      } catch {
+        json = undefined
+      }
+    }
+    return { status: response.status, contentType, elapsedMs, events, raw, parseErrors, json, text: isSse ? raw : raw }
+  }
 }

@@ -8,6 +8,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import { applyWithDeps, VERSION } from '../index.js'
+import { AppError } from '../lib/errors.js'
+import { buildChatContext, createChatLimiter } from '../lib/chat.js'
 
 /**
  * Fake Cordis context: captures webServer registrations and effects.
@@ -107,11 +109,13 @@ const DETAIL = {
 
 /**
  * Build the fake GitHub client + fake review engine pair.
- * @returns {{ github: any, engine: any, started: any[], guidelineCalls: string[] }} doubles.
+ * @returns {{ github: any, engine: any, started: any[], guidelineCalls: string[], mergeCalls: any[], invalidated: any[] }} doubles.
  */
 function createDoubles() {
   const started = []
   const guidelineCalls = []
+  const mergeCalls = []
+  const invalidated = []
   let disposed = false
   const github = {
     async ghStatus() {
@@ -131,6 +135,13 @@ function createDoubles() {
     async getGuidelines(repo) {
       guidelineCalls.push(repo)
       return { loaded: true, files: ['AGENTS.md'], chars: 12, text: '仓库专属约定' }
+    },
+    async mergePull(input) {
+      mergeCalls.push(input)
+      return { merged: true, sha: 'merge-sha-001', message: 'Pull Request successfully merged' }
+    },
+    async chatContext(input) {
+      return buildChatContext(input)
     },
   }
   const engine = {
@@ -156,6 +167,13 @@ function createDoubles() {
     cancel() {
       return true
     },
+    resolveModel() {
+      return { provider: 'opencode-go', model: 'deepseek-v4.1-flash' }
+    },
+    invalidate(repo, number) {
+      invalidated.push({ repo, number })
+      return 1
+    },
     dispose() {
       disposed = true
     },
@@ -163,7 +181,7 @@ function createDoubles() {
       return disposed
     },
   }
-  return { github, engine, started, guidelineCalls }
+  return { github, engine, started, guidelineCalls, mergeCalls, invalidated }
 }
 
 /**
@@ -182,10 +200,12 @@ function mount(options = {}) {
   return { handler: route.handler, routes, disposers, doubles }
 }
 
-test('mount registers the prefix route and the engine disposer', () => {
+test('mount registers the prefix route, the exact chat route and the engine disposer', () => {
   const { routes, disposers } = mount()
-  assert.deepEqual([...routes.keys()], ['/codex-review'])
-  assert.equal(disposers.length, 2)
+  assert.deepEqual([...routes.keys()].sort(), ['/codex-review', '/codex-review/chat'])
+  assert.equal(routes.get('/codex-review').kind, 'prefix')
+  assert.equal(routes.get('/codex-review/chat').kind, 'exact')
+  assert.equal(disposers.length, 4)
 })
 
 test('health reports gh, llm and version', async () => {
@@ -541,5 +561,254 @@ test('review-start through the route layer returns v1.1 status fields and option
   assert.deepEqual(detail.body.value.review.options, other.body.value.options)
   assert.equal(detail.body.value.review.reusedFiles, 1)
   assert.equal(detail.body.value.review.verdict, 'changes')
+  for (const dispose of disposers) dispose()
+})
+
+// ---------------------------------------------------------------------------
+// v2 merge route (CONTRACT §5.1)
+// ---------------------------------------------------------------------------
+
+/** A complete valid merge request body. */
+const MERGE_BODY = {
+  repo: 'Acefake/yingbox',
+  number: 129,
+  method: 'squash',
+  expectedHeadSha: 'f31cec5c712d88c5f26bb0e6fcbf2e09e3954585',
+  confirm: true,
+}
+
+test('merge route forwards the validated request and answers the merge result', async () => {
+  const { handler, doubles } = mount()
+  const answer = await call(handler, '/codex-review/merge', {
+    ...MERGE_BODY,
+    commitTitle: '  自定义标题  ',
+    commitMessage: '说明',
+    deleteBranch: true,
+  })
+  assert.deepEqual(answer.body, {
+    ok: true,
+    value: { merged: true, sha: 'merge-sha-001', message: 'Pull Request successfully merged' },
+  })
+  assert.equal(doubles.mergeCalls.length, 1)
+  assert.deepEqual(doubles.mergeCalls[0], {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    method: 'squash',
+    expectedHeadSha: 'f31cec5c712d88c5f26bb0e6fcbf2e09e3954585',
+    commitTitle: '自定义标题',
+    commitMessage: '说明',
+    deleteBranch: true,
+    confirm: true,
+  })
+  // A merged head must drop its review jobs too (guard 7).
+  assert.deepEqual(doubles.invalidated, [{ repo: 'Acefake/yingbox', number: 129 }])
+})
+
+test('merge route validates confirmation, method, head SHA and field limits', async () => {
+  const { handler, doubles } = mount()
+  /** @type {Array<[string, Record<string, unknown>]>} */
+  const invalid = [
+    ['confirm missing', { ...MERGE_BODY, confirm: undefined }],
+    ['confirm false', { ...MERGE_BODY, confirm: false }],
+    ['method missing', { ...MERGE_BODY, method: undefined }],
+    ['method unknown', { ...MERGE_BODY, method: 'fast' }],
+    ['head sha missing', { ...MERGE_BODY, expectedHeadSha: '' }],
+    ['commitTitle too long', { ...MERGE_BODY, commitTitle: 'x'.repeat(257) }],
+    ['commitMessage too long', { ...MERGE_BODY, commitMessage: 'x'.repeat(2001) }],
+    ['deleteBranch not boolean', { ...MERGE_BODY, deleteBranch: 'yes' }],
+    ['bad repo', { ...MERGE_BODY, repo: 'nope' }],
+    ['bad number', { ...MERGE_BODY, number: 0 }],
+  ]
+  for (const [label, payload] of invalid) {
+    const answer = await call(handler, '/codex-review/merge', payload)
+    assert.equal(answer.body.ok, false, label)
+    assert.equal(answer.body.error.code, 'BAD_REQUEST', label)
+  }
+  assert.equal(doubles.mergeCalls.length, 0)
+})
+
+test('merge route passes the guard error codes through unchanged', async () => {
+  const { ctx, routes } = createFakeContext()
+  const doubles = createDoubles()
+  doubles.github.mergePull = async () => {
+    throw new AppError('MERGE_HEAD_MOVED', 'PR 已有新提交（当前 head f31cec5c712d），请刷新后重试')
+  }
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine })
+  const handler = routes.get('/codex-review').handler
+  const answer = await call(handler, '/codex-review/merge', MERGE_BODY)
+  assert.equal(answer.body.ok, false)
+  assert.equal(answer.body.error.code, 'MERGE_HEAD_MOVED')
+  assert.ok(answer.body.error.message.includes('f31cec5c712d'))
+  assert.equal(doubles.invalidated.length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// v2 chat exact route (CONTRACT §5.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an event-capable SSE response stub.
+ * @returns {any} response stub.
+ */
+function makeSseResponse() {
+  /** @type {Map<string, Function[]>} */
+  const listeners = new Map()
+  return {
+    statusCode: 0,
+    headers: {},
+    body: '',
+    headersSent: false,
+    ended: false,
+    writeHead(status, headers) {
+      this.statusCode = status
+      this.headers = headers
+      this.headersSent = true
+    },
+    write(chunk) {
+      this.body += String(chunk)
+      return true
+    },
+    end(chunk) {
+      if (chunk !== undefined) this.body += String(chunk)
+      this.ended = true
+    },
+    on(event, handler) {
+      const list = listeners.get(event) ?? []
+      list.push(handler)
+      listeners.set(event, list)
+    },
+    removeListener(event, handler) {
+      listeners.set(event, (listeners.get(event) ?? []).filter((entry) => entry !== handler))
+    },
+    emit(event, ...args) {
+      for (const handler of [...(listeners.get(event) ?? [])]) handler(...args)
+    },
+    destroy() {},
+  }
+}
+
+/**
+ * Mount the plugin with a fake LLM seam so the chat route can stream.
+ * @param {{ limiter?: any, answer?: { deltas?: string[], finish?: Record<string, unknown> } }} [options] - wiring overrides.
+ * @returns {{ chatHandler: any, prefixHandler: any, requests: any[], doubles: ReturnType<typeof createDoubles>, disposers: Function[] }} harness.
+ */
+function mountChat(options = {}) {
+  const { ctx, routes, disposers } = createFakeContext()
+  const requests = []
+  const deltas = options.answer?.deltas ?? ['这个 PR ', '增加了片头检测。']
+  const finish = options.answer?.finish ?? { kind: 'stop' }
+  ctx.inject = (deps, callback) => {
+    callback({
+      llm: {
+        stream(request) {
+          requests.push(request)
+          return (async function* generate() {
+            for (const delta of deltas) yield { type: 'text-delta', index: 0, text: delta }
+            yield { type: 'finish', reason: finish }
+          })()
+        },
+      },
+      agentDefaultModel: {
+        currentSelection() {
+          return { provider: 'opencode-go', model: 'deepseek-v4.1-flash' }
+        },
+      },
+      effect(callback) {
+        callback()
+      },
+    })
+    return { dispose() {} }
+  }
+  const doubles = createDoubles()
+  const deps = { github: doubles.github, engine: doubles.engine }
+  if (options.limiter !== undefined) deps.chatLimiter = options.limiter
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, deps)
+  return {
+    chatHandler: routes.get('/codex-review/chat').handler,
+    prefixHandler: routes.get('/codex-review').handler,
+    requests,
+    doubles,
+    disposers,
+  }
+}
+
+/**
+ * POST one JSON body to the SSE chat handler.
+ * @param {any} handler - exact route handler.
+ * @param {unknown} body - JSON body.
+ * @returns {Promise<any>} response stub.
+ */
+async function callChat(handler, body) {
+  const request = Readable.from([Buffer.from(JSON.stringify(body))])
+  request.url = '/codex-review/chat'
+  request.method = 'POST'
+  request.headers = { host: '127.0.0.1:2632', 'content-type': 'application/json' }
+  request.socket = { remoteAddress: '127.0.0.1' }
+  const response = makeSseResponse()
+  await handler(request, response)
+  return response
+}
+
+/**
+ * Decode an SSE body into parsed frames.
+ * @param {string} body - raw SSE text.
+ * @returns {any[]} frames.
+ */
+function parseSseFrames(body) {
+  return body.split('\n\n').filter((part) => part.startsWith('data: ')).map((part) => JSON.parse(part.slice('data: '.length)))
+}
+
+test('chat route streams SSE frames through the prepared-call seam', async () => {
+  const { chatHandler, requests, disposers } = mountChat()
+  const response = await callChat(chatHandler, {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    messages: [{ role: 'user', content: '这个 PR 改了什么？' }],
+    focusFile: 'src/a.ts',
+  })
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.headers['content-type'], 'text/event-stream; charset=utf-8')
+  assert.equal(response.headers['cache-control'], 'no-store')
+  assert.equal(response.ended, true)
+  const frames = parseSseFrames(response.body)
+  assert.deepEqual(frames.slice(0, 2), [{ delta: '这个 PR ' }, { delta: '增加了片头检测。' }])
+  assert.equal(frames[2].done, true)
+  assert.deepEqual(frames[2].model, { provider: 'opencode-go', model: 'deepseek-v4.1-flash' })
+  assert.equal(requests.length, 1)
+  const request = requests[0]
+  assert.equal(request.sessionId, 'chat-Acefake/yingbox#129')
+  assert.equal(request.provider, 'opencode-go')
+  assert.equal(request.model, 'deepseek-v4.1-flash')
+  assert.ok(request.messages[request.messages.length - 1].content[0].text.includes('这个 PR 改了什么'))
+  for (const dispose of disposers) dispose()
+})
+
+test('chat route answers validation errors and BUSY as SSE error frames', async () => {
+  const { chatHandler, requests, disposers } = mountChat()
+  const invalid = await callChat(chatHandler, { repo: 'Acefake/yingbox', number: 129, messages: [] })
+  assert.equal(parseSseFrames(invalid.body)[0].error.code, 'BAD_REQUEST')
+  assert.equal(requests.length, 0)
+
+  const limiter = createChatLimiter(1)
+  const busyController = new AbortController()
+  limiter.tryAcquire(busyController)
+  const busyMount = mountChat({ limiter })
+  const busy = await callChat(busyMount.chatHandler, {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    messages: [{ role: 'user', content: 'q' }],
+  })
+  assert.equal(parseSseFrames(busy.body)[0].error.code, 'BUSY')
+  assert.equal(busyMount.requests.length, 0)
+  limiter.release(busyController)
+  for (const dispose of [...disposers, ...busyMount.disposers]) dispose()
+})
+
+test('the prefix route does not answer the chat path', async () => {
+  const { prefixHandler, disposers } = mountChat()
+  const request = makeRequest('/codex-review/chat', { repo: 'a/b', number: 1, messages: [{ role: 'user', content: 'q' }] })
+  const response = makeResponse()
+  await prefixHandler(request, response)
+  assert.equal(response.statusCode, 404)
   for (const dispose of disposers) dispose()
 })

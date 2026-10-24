@@ -715,8 +715,329 @@ test('normalizePrDetail carries the v1.1 review extras and options', () => {
 })
 
 // ---------------------------------------------------------------------------
+// v2: merge guards + request body (CONTRACT §5.1 / §5.3)
+// ---------------------------------------------------------------------------
+
+test('mergeAvailability gates the merge button on state / draft / merged', () => {
+  assert.deepEqual(api.mergeAvailability({ state: 'open', isDraft: false }), { enabled: true, reason: '' })
+  assert.deepEqual(api.mergeAvailability({ state: 'open', isDraft: true }), { enabled: false, reason: 'draft' })
+  assert.deepEqual(api.mergeAvailability({ state: 'closed' }), { enabled: false, reason: 'closed' })
+  assert.deepEqual(api.mergeAvailability({ state: 'open', merged: true }), { enabled: false, reason: 'merged' })
+  assert.deepEqual(api.mergeAvailability({ state: 'merged' }), { enabled: false, reason: 'merged' })
+  assert.deepEqual(api.mergeAvailability({ state: 'open', mergedAt: '2026-10-24T00:00:00Z' }), {
+    enabled: false,
+    reason: 'merged',
+  })
+  assert.deepEqual(api.mergeAvailability(null), { enabled: false, reason: 'unavailable' })
+})
+
+test('resolveHeadSha prefers the detail payload then summary/review', () => {
+  assert.equal(api.resolveHeadSha({ headSha: 'abc123def456' }), 'abc123def456')
+  assert.equal(api.resolveHeadSha({ summary: { headSha: 'def456' } }), 'def456')
+  assert.equal(api.resolveHeadSha({ review: { headSha: 'aaa111' } }), 'aaa111')
+  assert.equal(api.resolveHeadSha({ headSha: '', summary: { headSha: 'bbb222' } }), 'bbb222')
+  assert.equal(api.resolveHeadSha(null), '')
+  assert.equal(api.resolveHeadSha({}), '')
+})
+
+test('shortSha trims to the dialog width', () => {
+  assert.equal(api.shortSha('abcdef1234567890', 7), 'abcdef1')
+  assert.equal(api.shortSha('abcdef1234567890'), 'abcdef1')
+  assert.equal(api.shortSha('  abc  ', 7), 'abc')
+  assert.equal(api.shortSha('', 7), '')
+  assert.equal(api.shortSha(null, 7), '')
+  assert.equal(api.shortSha('abcdef', 3), 'abc')
+})
+
+test('normalizeMergeMethod whitelists squash/merge/rebase', () => {
+  assert.equal(api.normalizeMergeMethod('squash'), 'squash')
+  assert.equal(api.normalizeMergeMethod('merge'), 'merge')
+  assert.equal(api.normalizeMergeMethod('rebase'), 'rebase')
+  assert.equal(api.normalizeMergeMethod('fast-forward'), 'squash')
+  assert.equal(api.normalizeMergeMethod(undefined), 'squash')
+  assert.deepEqual(api.MERGE_METHODS, ['squash', 'merge', 'rebase'])
+})
+
+test('buildMergeRequest emits the guarded write body', () => {
+  const request = api.buildMergeRequest({
+    summary: { repo: 'Acefake/yingbox', number: 129 },
+    headSha: 'f31cec5c712d88c5f26bb0e6fcbf2e09e3954585',
+    method: 'rebase',
+    deleteBranch: true,
+  })
+  assert.deepEqual(request, {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    method: 'rebase',
+    expectedHeadSha: 'f31cec5c712d88c5f26bb0e6fcbf2e09e3954585',
+    deleteBranch: true,
+    confirm: true,
+  })
+  const defaults = api.buildMergeRequest({
+    summary: { repo: 'Acefake/yingbox', number: 129 },
+    headSha: 'abc',
+  })
+  assert.equal(defaults.method, 'squash')
+  assert.equal(defaults.deleteBranch, false)
+  assert.equal(defaults.confirm, true)
+  assert.equal(Object.prototype.hasOwnProperty.call(defaults, 'commitTitle'), false)
+
+  const withTitle = api.buildMergeRequest({
+    summary: { repo: 'Acefake/yingbox', number: 129 },
+    headSha: 'abc',
+    commitTitle: 'x'.repeat(400),
+    commitMessage: 'y'.repeat(2500),
+  })
+  assert.equal(withTitle.commitTitle.length, 256)
+  assert.equal(withTitle.commitMessage.length, 2000)
+
+  // Missing repo / number / head sha must never send a half-formed write.
+  assert.equal(api.buildMergeRequest({ summary: { number: 1 }, headSha: 'abc' }), null)
+  assert.equal(api.buildMergeRequest({ summary: { repo: 'a/b' }, headSha: 'abc' }), null)
+  assert.equal(api.buildMergeRequest({ summary: { repo: 'a/b', number: 1 }, headSha: '' }), null)
+  assert.equal(api.buildMergeRequest(null), null)
+})
+
+test('mergeErrorKey maps host error codes to locale keys', () => {
+  assert.equal(api.mergeErrorKey('MERGE_HEAD_MOVED'), 'mergeHeadMoved')
+  assert.equal(api.mergeErrorKey('MERGE_CONFLICT'), 'mergeConflict')
+  assert.equal(api.mergeErrorKey('MERGE_NOT_ALLOWED'), 'mergeNotAllowed')
+  assert.equal(api.mergeErrorKey('GH_FORBIDDEN'), 'mergeForbidden')
+  assert.equal(api.mergeErrorKey('GH_NOT_FOUND'), 'mergeNotFound')
+  assert.equal(api.mergeErrorKey('BAD_REQUEST'), 'mergeBadRequest')
+  assert.equal(api.mergeErrorKey('INTERNAL'), '')
+  assert.equal(api.mergeErrorKey(null), '')
+})
+
+// ---------------------------------------------------------------------------
+// v2: chat SSE parser + per-PR history (CONTRACT §5.2)
+// ---------------------------------------------------------------------------
+
+test('createSseParser reads multiple data frames in one chunk', () => {
+  const parser = api.createSseParser()
+  const events = parser.push(
+    'data: {"delta":"你好"}\n\ndata: {"delta":"，世界"}\n\ndata: {"done":true,"model":{"provider":"p","model":"m"}}\n\n',
+  )
+  assert.equal(events.length, 3)
+  assert.deepEqual(events[0], { type: 'delta', text: '你好' })
+  assert.deepEqual(events[1], { type: 'delta', text: '，世界' })
+  assert.equal(events[2].type, 'done')
+  assert.equal(events[2].model.model, 'm')
+})
+
+test('createSseParser buffers frames split across chunks', () => {
+  const parser = api.createSseParser()
+  assert.deepEqual(parser.push('data: {"delta":"he'), [])
+  assert.equal(parser.pending, 'data: {"delta":"he')
+  assert.deepEqual(parser.push('llo"}\n'), [])
+  const events = parser.push('\n')
+  assert.deepEqual(events, [{ type: 'delta', text: 'hello' }])
+  assert.equal(parser.pending, '')
+})
+
+test('createSseParser tolerates CRLF, comments and garbage frames', () => {
+  const parser = api.createSseParser()
+  const events = parser.push(
+    ': keep-alive\r\n\r\ndata: {"delta":"a"}\r\n\r\ndata: not-json\n\ndata: {"delta":"b"}\n\n',
+  )
+  assert.deepEqual(events, [
+    { type: 'delta', text: 'a' },
+    { type: 'invalid' },
+    { type: 'delta', text: 'b' },
+  ])
+  assert.deepEqual(parser.push(''), [])
+})
+
+test('createSseParser surfaces error frames and flush() emits trailing frames', () => {
+  const failing = api.createSseParser()
+  const errorEvents = failing.push('data: {"error":{"code":"BUSY","message":"忙"}}\n\n')
+  assert.equal(errorEvents.length, 1)
+  assert.equal(errorEvents[0].type, 'error')
+  assert.equal(errorEvents[0].error.code, 'BUSY')
+
+  const parser = api.createSseParser()
+  assert.deepEqual(parser.push('data: {"delta":"tail"}'), [])
+  assert.deepEqual(parser.flush(), [{ type: 'delta', text: 'tail' }])
+  assert.deepEqual(parser.flush(), [])
+
+  const doneOnly = api.createSseParser()
+  assert.deepEqual(doneOnly.push('data: [DONE]\n\n'), [{ type: 'done', model: null, usage: null }])
+})
+
+test('normalizeChatHistory keeps valid turns and caps at 20', () => {
+  assert.deepEqual(api.normalizeChatHistory(undefined), [])
+  assert.deepEqual(api.normalizeChatHistory('nope'), [])
+  const messages = api.normalizeChatHistory([
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'hello' },
+    { role: 'system', content: 'drop' },
+    { role: 'user', content: '   ' },
+    { role: 'assistant', content: 'ok' },
+    null,
+    'raw',
+  ])
+  assert.deepEqual(messages, [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'hello' },
+    { role: 'assistant', content: 'ok' },
+  ])
+  const many = []
+  for (let index = 0; index < 30; index += 1) {
+    many.push({ role: index % 2 === 0 ? 'user' : 'assistant', content: 'm' + index })
+  }
+  const capped = api.normalizeChatHistory(many)
+  assert.equal(capped.length, api.CHAT_HISTORY_LIMIT)
+  assert.equal(capped[0].content, 'm10')
+  assert.equal(capped[capped.length - 1].content, 'm29')
+})
+
+test('chatHistoryKey / readChatHistory / writeChatHistory are per-PR and never throw', () => {
+  assert.equal(api.chatHistoryKey('Acefake/yingbox', 129), 'codex-review:chat:Acefake/yingbox#129')
+  assert.equal(api.chatHistoryKey('', 129), '')
+  assert.equal(api.chatHistoryKey('a/b', 'nope'), '')
+  assert.equal(api.chatHistoryKey('a/b', undefined), '')
+  assert.equal(api.CHAT_KEY_PREFIX, 'codex-review:chat:')
+
+  const storage = memoryStorage()
+  assert.deepEqual(api.readChatHistory(storage, 'a/b', 1), [])
+  assert.equal(
+    api.writeChatHistory(storage, 'a/b', 1, [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+    ]),
+    true,
+  )
+  assert.deepEqual(api.readChatHistory(storage, 'a/b', 1), [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'a' },
+  ])
+  assert.deepEqual(api.readChatHistory(storage, 'a/b', 2), [], 'history is isolated per PR')
+  storage.setItem('codex-review:chat:a/b#1', '{broken')
+  assert.deepEqual(api.readChatHistory(storage, 'a/b', 1), [])
+  const throwing = {
+    getItem() {
+      throw new Error('blocked')
+    },
+    setItem() {
+      throw new Error('blocked')
+    },
+  }
+  assert.deepEqual(api.readChatHistory(throwing, 'a/b', 1), [])
+  assert.equal(api.writeChatHistory(throwing, 'a/b', 1, [{ role: 'user', content: 'q' }]), false)
+  assert.equal(api.writeChatHistory(null, 'a/b', 1, []), false)
+})
+
+test('chatRequestMessages keeps the last 10 turns and caps each at 4000 chars', () => {
+  const messages = []
+  for (let index = 0; index < 14; index += 1) {
+    messages.push({ role: index % 2 === 0 ? 'user' : 'assistant', content: 'm' + index })
+  }
+  messages.push({ role: 'user', content: 'x'.repeat(5000) })
+  const request = api.chatRequestMessages(messages)
+  assert.equal(request.length, api.CHAT_REQUEST_MESSAGES)
+  assert.equal(request[request.length - 1].role, 'user')
+  assert.equal(request[request.length - 1].content.length, api.CHAT_MESSAGE_CHARS)
+  assert.deepEqual(api.chatRequestMessages(undefined), [])
+})
+
+test('applyChatDelta only touches the trailing assistant bubble', () => {
+  const base = [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'he' },
+  ]
+  const next = api.applyChatDelta(base, 'llo')
+  assert.equal(next[1].content, 'hello')
+  assert.equal(base[1].content, 'he', 'input must not be mutated')
+  assert.deepEqual(api.applyChatDelta([{ role: 'user', content: 'q' }], 'x'), [
+    { role: 'user', content: 'q' },
+  ])
+  assert.deepEqual(api.applyChatDelta([], 'x'), [])
+  assert.deepEqual(api.applyChatDelta(undefined, 'x'), [])
+})
+
+test('chat settle helpers drop empty answers, flag stops and find the last user turn', () => {
+  const pending = [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '' },
+  ]
+  assert.deepEqual(api.dropEmptyAssistant(pending), [{ role: 'user', content: 'q' }])
+  assert.deepEqual(api.settleChatMessages(pending), [{ role: 'user', content: 'q' }])
+  assert.deepEqual(api.settleChatMessages([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a', stopped: true }]), [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'a' },
+  ])
+  const stopped = api.markChatStopped([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'partial' },
+  ])
+  assert.equal(stopped[1].stopped, true)
+  assert.deepEqual(api.markChatStopped(pending), [{ role: 'user', content: 'q' }])
+  assert.deepEqual(api.chatLastUserMessage([{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]), {
+    role: 'user',
+    content: 'c',
+  })
+  assert.equal(api.chatLastUserMessage([{ role: 'assistant', content: 'b' }]), null)
+  assert.equal(api.chatLastUserMessage(undefined), null)
+})
+
+// ---------------------------------------------------------------------------
 // transport envelope
 // ---------------------------------------------------------------------------
+
+test('streamPost decodes SSE deltas/done and degrades on JSON or network errors', async () => {
+  loaded.sandbox.TextDecoder = TextDecoder
+  const chunks = [
+    'data: {"delta":"你"}\n\ndata: {"delta":"好"}\n\n',
+    'data: {"done":true,"model":{"provider":"p","model":"m"}}\n\n',
+  ].map((text) => new Uint8Array(Buffer.from(text, 'utf8')))
+  let index = 0
+  const events = []
+  loaded.sandbox.fetch = async () => ({
+    ok: true,
+    headers: { get: () => 'text/event-stream; charset=utf-8' },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (index >= chunks.length) return { done: true }
+            const value = chunks[index]
+            index += 1
+            return { done: false, value }
+          },
+          releaseLock() {},
+        }
+      },
+    },
+  })
+  const result = await api.streamPost(
+    'codex-review/chat',
+    { repo: 'a/b', number: 1 },
+    { onEvent: (event) => events.push(event) },
+  )
+  assert.equal(result.ok, true)
+  assert.equal(result.done.type, 'done')
+  assert.deepEqual(
+    events.filter((event) => event.type === 'delta').map((event) => event.text),
+    ['你', '好'],
+  )
+
+  // Old Host / missing route answers with the JSON envelope instead of a stream.
+  loaded.sandbox.fetch = async () => ({
+    ok: false,
+    headers: { get: () => 'application/json' },
+    json: async () => ({ ok: false, error: { code: 'GH_NOT_FOUND', message: '没有这个路由' } }),
+  })
+  const legacy = await api.streamPost('codex-review/chat', {}, {})
+  assert.equal(legacy.ok, false)
+  assert.equal(legacy.error.code, 'GH_NOT_FOUND')
+
+  loaded.sandbox.fetch = async () => {
+    throw new Error('offline')
+  }
+  const offline = await api.streamPost('codex-review/chat', {}, {})
+  assert.equal(offline.ok, false)
+  assert.equal(offline.error.code, 'INTERNAL')
+})
 
 test('post() decodes ok/error envelopes and never throws', async () => {
   loaded.sandbox.fetch = async () => ({

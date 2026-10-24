@@ -22,6 +22,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { AppError, USER_MESSAGES, isAbortError } from './errors.js'
+import { buildChatContext } from './chat.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,6 +69,20 @@ const MAX_ISSUE_COMMENTS = 20
 const MAX_REVIEWS = 20
 const MAX_INLINE_COMMENTS = 50
 const MAX_COMMENT_BODY_CHARS = 4_000
+
+/** Merge methods accepted by the merge route (CONTRACT §5.1). */
+export const MERGE_METHODS = Object.freeze(['merge', 'squash', 'rebase'])
+
+/** Commit title/message caps of the merge request (CONTRACT §5.1). */
+export const MERGE_COMMIT_TITLE_MAX_CHARS = 256
+export const MERGE_COMMIT_MESSAGE_MAX_CHARS = 2_000
+
+/** How often the merge guard re-reads a PR whose `mergeable` GitHub is still computing. */
+const MERGE_RETRY_MAX = 2
+const MERGE_RETRY_DELAY_MS = 800
+
+/** `mergeable_state` values that still allow the merge attempt (CONTRACT §5.1). */
+const MERGE_ALLOWED_STATES = Object.freeze(['CLEAN', 'HAS_HOOKS', 'UNSTABLE'])
 
 /** How many parent PRs one stack walk follows before it stops. */
 const MAX_STACK_DEPTH = 5
@@ -535,12 +550,24 @@ function splitRepo(repo) {
 }
 
 /**
+ * Default pause between merge-guard retries; injectable so tests never sleep.
+ * @param {number} ms - delay in milliseconds.
+ * @returns {Promise<void>} resolves after the delay.
+ */
+function defaultSleep(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    if (typeof timer.unref === 'function') timer.unref()
+  })
+}
+
+/**
  * GitHub data client. All terminals are injectable so tests exercise the
  * cache, transport and normalization without a network or a real `gh`.
  */
 export class GitHubClient {
   /**
-   * @param {{ config?: any, ghPath?: string, fetchImpl?: typeof fetch, execFileImpl?: Function, logger?: any, now?: () => number }} [options] - wiring.
+   * @param {{ config?: any, ghPath?: string, fetchImpl?: typeof fetch, execFileImpl?: Function, logger?: any, now?: () => number, sleep?: (ms: number) => Promise<void> }} [options] - wiring.
    */
   constructor(options = {}) {
     const config = options.config ?? {}
@@ -556,6 +583,8 @@ export class GitHubClient {
     this.logger = options.logger
     /** Clock override for deterministic cache tests. */
     this.now = options.now ?? Date.now
+    /** Merge-guard retry pause override (tests never sleep). */
+    this.sleep = options.sleep ?? defaultSleep
     this.requestTimeoutMs = config.requestTimeoutMs ?? 15_000
     this.maxPatchChars = config.maxPatchChars ?? 24_000
     this.maxBodyChars = config.maxBodyChars ?? 50_000
@@ -668,10 +697,11 @@ export class GitHubClient {
   }
 
   /**
-   * GET one REST endpoint and parse JSON, retrying a 401 once after a token
+   * Call one REST endpoint and parse JSON, retrying a 401 once after a token
    * refresh and falling back to the gh CLI when no token is available.
+   * Writes (`method !== 'GET'`) travel the same transports and are never cached.
    * @param {string} path - REST path beginning with `/`.
-   * @param {{ accept?: string, signal?: AbortSignal }} [options] - request knobs.
+   * @param {{ accept?: string, signal?: AbortSignal, method?: string, body?: Record<string, unknown> }} [options] - request knobs.
    * @returns {Promise<{ data: any, headers: any }>} parsed body and headers.
    */
   async requestJson(path, options = {}) {
@@ -693,14 +723,18 @@ export class GitHubClient {
   }
 
   /**
-   * Primary transport: authenticated Node fetch.
+   * Primary transport: authenticated Node fetch. GET reads and JSON writes
+   * share one implementation; non-2xx answers carry the HTTP status in
+   * `AppError#details` so feature layers can map it (e.g. merge 405/409).
    * @param {string} token - access token.
    * @param {string} path - REST path.
-   * @param {{ accept?: string, signal?: AbortSignal }} [options] - request knobs.
+   * @param {{ accept?: string, signal?: AbortSignal, method?: string, body?: Record<string, unknown> }} [options] - request knobs.
    * @returns {Promise<{ data: any, headers: any }>} parsed body and headers.
    */
   async fetchJson(token, path, options = {}) {
     const url = path.startsWith('http') ? path : API_BASE_URL + path
+    const method = typeof options.method === 'string' && options.method !== '' ? options.method.toUpperCase() : 'GET'
+    const hasBody = options.body !== undefined && options.body !== null
     /** @type {Record<string, string>} */
     const headers = {
       accept: options.accept ?? 'application/vnd.github+json',
@@ -709,10 +743,17 @@ export class GitHubClient {
       'x-github-api-version': GITHUB_API_VERSION,
       authorization: `Bearer ${token}`,
     }
+    if (hasBody) headers['content-type'] = 'application/json'
     /** @type {any} */
     let response
     try {
-      response = await this.fetchImpl(url, { method: 'GET', headers, redirect: 'follow', signal: options.signal })
+      response = await this.fetchImpl(url, {
+        method,
+        headers,
+        redirect: 'follow',
+        signal: options.signal,
+        ...(hasBody ? { body: JSON.stringify(options.body) } : {}),
+      })
     } catch (error) {
       throw appErrorFromNetwork(error, options.signal)
     }
@@ -732,7 +773,7 @@ export class GitHubClient {
       }
       const code = httpStatusToCode(response.status, headerValue(response.headers, 'x-ratelimit-remaining'), message)
       const suffix = message === '' ? '' : `（GitHub: ${message.slice(0, 200)}）`
-      throw new AppError(code, `${USER_MESSAGES[code]}${suffix}`)
+      throw new AppError(code, `${USER_MESSAGES[code]}${suffix}`, { details: { status: response.status } })
     }
     let text
     try {
@@ -749,15 +790,25 @@ export class GitHubClient {
   }
 
   /**
-   * Fallback transport: `gh api` through the async subprocess seam.
+   * Fallback transport: `gh api` through the async subprocess seam. Writes pass
+   * `--method` plus their body fields as raw string fields (gh serializes them
+   * into the JSON body for non-GET requests).
    * @param {string} path - REST path.
-   * @param {{ accept?: string, signal?: AbortSignal }} [options] - request knobs.
+   * @param {{ accept?: string, signal?: AbortSignal, method?: string, body?: Record<string, unknown> }} [options] - request knobs.
    * @returns {Promise<{ data: any, headers: undefined }>} parsed body.
    */
   async cliJson(path, options = {}) {
     const endpoint = path.replace(/^\//, '')
     const args = ['api', endpoint]
+    const method = typeof options.method === 'string' && options.method !== '' ? options.method.toUpperCase() : 'GET'
+    if (method !== 'GET') args.push('--method', method)
     if (options.accept !== undefined) args.push('-H', `Accept: ${options.accept}`)
+    if (options.body !== undefined && options.body !== null && typeof options.body === 'object') {
+      for (const [key, value] of Object.entries(options.body)) {
+        if (value === undefined || value === null) continue
+        args.push('-f', `${key}=${String(value)}`)
+      }
+    }
     const { stdout } = await this.runGh(args, { signal: options.signal })
     const text = stdout.trim()
     if (text === '') return { data: null, headers: undefined }
@@ -880,6 +931,170 @@ export class GitHubClient {
       // guidelines: answer empty now but let the next call retry.
       if (options.signal?.aborted !== true) this.cache.set(key, value, GUIDELINE_TTL_MS, this.now())
       return value
+    })
+  }
+
+  /**
+   * Read one PR from the REST API **without** the detail cache: the merge
+   * guards must see the current state, head SHA and GitHub-computed
+   * `mergeable`/`mergeable_state`, so a cached snapshot is worthless here.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {Promise<any>} raw REST pull body.
+   * @throws {AppError} GH_NOT_FOUND when GitHub answers with no object.
+   */
+  async loadPullForMerge(repo, number) {
+    const [owner, name] = splitRepo(repo)
+    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`)
+    if (data === null || typeof data !== 'object') throw new AppError('GH_NOT_FOUND')
+    return data
+  }
+
+  /**
+   * Merge one PR under the seven CONTRACT §5.1 guards:
+   * confirm → open/non-draft → head SHA unchanged → mergeable (retrying
+   * twice while GitHub computes it) → `PUT .../merge` → optional branch delete
+   * (a failure there never invalidates the merge) → cache invalidation.
+   * The caller (route) performs the user-confirmation check as well.
+   * @param {{ repo: string, number: number, method: 'merge' | 'squash' | 'rebase', expectedHeadSha: string, commitTitle?: string, commitMessage?: string, deleteBranch?: boolean, confirm?: boolean }} input - merge request.
+   * @returns {Promise<{ merged: true, sha: string, message: string, branchDeleted?: boolean, branchWarning?: string }>} merge result.
+   * @throws {AppError} BAD_REQUEST / MERGE_NOT_ALLOWED / MERGE_HEAD_MOVED / MERGE_CONFLICT / GH_*.
+   */
+  async mergePull(input = {}) {
+    if (input?.confirm !== true) throw new AppError('BAD_REQUEST', '合并操作需要 confirm: true')
+    const repo = typeof input.repo === 'string' ? input.repo.trim() : ''
+    const [owner, name] = splitRepo(repo)
+    const number = typeof input.number === 'number' ? input.number : Number(input.number)
+    if (!Number.isInteger(number) || number <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
+    const method = typeof input.method === 'string' ? input.method.trim().toLowerCase() : ''
+    if (!MERGE_METHODS.includes(method)) throw new AppError('BAD_REQUEST', 'method 必须是 merge|squash|rebase')
+    const expectedHeadSha = typeof input.expectedHeadSha === 'string' ? input.expectedHeadSha.trim() : ''
+    if (expectedHeadSha === '') throw new AppError('BAD_REQUEST', '缺少 expectedHeadSha')
+    const commitTitle = normalizeOptionalCommitField(input.commitTitle, MERGE_COMMIT_TITLE_MAX_CHARS, 'commitTitle')
+    const commitMessage = normalizeOptionalCommitField(input.commitMessage, MERGE_COMMIT_MESSAGE_MAX_CHARS, 'commitMessage')
+    const deleteBranch = input.deleteBranch === true
+
+    /**
+     * Guards 2 and 3 for one freshly read PR.
+     * @param {any} pull - raw REST pull body.
+     * @returns {void}
+     */
+    const assertMergeableSnapshot = (pull) => {
+      const merged = pull.merged === true || (pull.merged_at !== null && pull.merged_at !== undefined)
+      if (pull.state !== 'open' || merged) {
+        throw new AppError('MERGE_NOT_ALLOWED', merged ? '该 PR 已合并，无法再次合并' : '该 PR 已关闭，无法合并')
+      }
+      if (pull.draft === true) throw new AppError('MERGE_NOT_ALLOWED', '草稿 PR 不能合并，请先标记为可合并')
+      const currentHead = typeof pull.head?.sha === 'string' ? pull.head.sha : ''
+      if (currentHead === '' || currentHead !== expectedHeadSha) {
+        throw new AppError('MERGE_HEAD_MOVED', `PR 已有新提交（当前 head ${currentHead.slice(0, 12) || 'unknown'}），请刷新后重试`)
+      }
+    }
+
+    let pull = await this.loadPullForMerge(repo, number)
+    assertMergeableSnapshot(pull)
+    let mergeable = pull.mergeable
+    for (let attempt = 0; mergeable === null && attempt < MERGE_RETRY_MAX; attempt += 1) {
+      await this.sleep(MERGE_RETRY_DELAY_MS)
+      pull = await this.loadPullForMerge(repo, number)
+      assertMergeableSnapshot(pull)
+      mergeable = pull.mergeable
+    }
+    if (mergeable === false) throw new AppError('MERGE_CONFLICT')
+    if (mergeable !== true) {
+      // GitHub still had not computed `mergeable`: fall back to `mergeable_state`.
+      const mergeState = String(pull.mergeable_state ?? pull.merge_state_status ?? pull.mergeStateStatus ?? '').toUpperCase()
+      if (mergeState === 'DIRTY') throw new AppError('MERGE_CONFLICT')
+      if (!MERGE_ALLOWED_STATES.includes(mergeState)) {
+        throw new AppError('MERGE_NOT_ALLOWED', `${USER_MESSAGES.MERGE_NOT_ALLOWED}（mergeable_state=${mergeState || 'unknown'}）`)
+      }
+    }
+
+    /** @type {{ merge_method: string, sha: string, commit_title?: string, commit_message?: string }} */
+    const mergeBody = { merge_method: method, sha: expectedHeadSha }
+    if (commitTitle !== undefined) mergeBody.commit_title = commitTitle
+    if (commitMessage !== undefined) mergeBody.commit_message = commitMessage
+    /** @type {any} */
+    let data
+    try {
+      const response = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`, {
+        method: 'PUT',
+        body: mergeBody,
+      })
+      data = response.data ?? {}
+    } catch (error) {
+      throw mapMergeWriteError(error)
+    }
+    if (data.merged !== true) {
+      throw new AppError('MERGE_NOT_ALLOWED', typeof data.message === 'string' && data.message !== '' ? data.message : USER_MESSAGES.MERGE_NOT_ALLOWED)
+    }
+    const sha = typeof data.sha === 'string' ? data.sha : ''
+    const message = typeof data.message === 'string' && data.message !== '' ? data.message : '合并成功'
+    /** @type {{ merged: true, sha: string, message: string, branchDeleted?: boolean, branchWarning?: string }} */
+    const result = { merged: true, sha, message }
+
+    if (deleteBranch) {
+      const headRef = typeof pull.head?.ref === 'string' ? pull.head.ref : ''
+      const headRepo = typeof pull.head?.repo?.full_name === 'string' ? pull.head.repo.full_name : ''
+      const sameRepo = headRepo !== '' && headRepo.toLowerCase() === repo.toLowerCase()
+      if (headRef !== '' && sameRepo) {
+        const refPath = headRef.split('/').map((segment) => encodeURIComponent(segment)).join('/')
+        try {
+          await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs/heads/${refPath}`, { method: 'DELETE' })
+          result.branchDeleted = true
+        } catch (error) {
+          // A protected/already-deleted branch must not turn a successful merge
+          // into a failure: report the degradation instead.
+          result.branchDeleted = false
+          result.branchWarning = `源分支删除失败：${error instanceof AppError ? error.message : USER_MESSAGES.INTERNAL}`
+        }
+      } else {
+        result.branchDeleted = false
+        result.branchWarning = '源分支不在本仓库（fork）或未知，未删除'
+      }
+    }
+
+    this.invalidatePullCache(repo, number)
+    return result
+  }
+
+  /**
+   * Drop every cached view that a successful merge invalidates: the PR detail
+   * and its file/check entries (the head commit is no longer the branch head).
+   * Review jobs are invalidated by the route through the engine.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {number} number of cache entries removed.
+   */
+  invalidatePullCache(repo, number) {
+    const [owner, name] = splitRepo(repo)
+    let removed = this.cache.delete(`pr:${repo}#${number}`) ? 1 : 0
+    const filePrefix = `files:${owner}/${name}#${number}@`
+    const checksPrefix = `checks:${owner}/${name}@`
+    for (const key of [...this.cache.entries.keys()]) {
+      // The PR list also changes when a PR leaves the open set.
+      if (key.startsWith(filePrefix) || key.startsWith(checksPrefix) || key.startsWith('list:')) {
+        this.cache.delete(key)
+        removed += 1
+      }
+    }
+    return removed
+  }
+
+  /**
+   * Build the bounded PR-chat context (CONTRACT §5.2) from an already-loaded
+   * detail snapshot plus the latest review snapshot. Used by the chat route; the
+   * pure rendering/budgeting lives in `lib/chat.js`.
+   * @param {{ repo?: string, number?: number, detail?: any, review?: any, focusFile?: string, messages?: Array<{ role: 'user' | 'assistant', content: string }> }} input - chat context input.
+   * @returns {Promise<{ system: string, messages: Array<{ role: 'user' | 'assistant', content: string }>, stats: { systemChars: number, historyChars: number, totalChars: number } }>} model-ready context.
+   */
+  async chatContext(input = {}) {
+    const detail = input.detail ?? await this.getPull(input.repo, input.number)
+    return buildChatContext({
+      detail,
+      review: input.review,
+      focusFile: input.focusFile,
+      messages: input.messages,
     })
   }
 
@@ -1066,4 +1281,41 @@ export class GitHubClient {
  */
 function settled(result, fallback) {
   return result.status === 'fulfilled' ? result.value : fallback
+}
+
+/**
+ * Normalize one optional merge commit field: absent/blank means "not provided",
+ * a non-string or an over-long value is a BAD_REQUEST.
+ * @param {unknown} value - raw `commitTitle` / `commitMessage`.
+ * @param {number} maxChars - contract cap.
+ * @param {string} label - field label used in the error message.
+ * @returns {string | undefined} trimmed value or undefined.
+ * @throws {AppError} BAD_REQUEST for an invalid value.
+ */
+function normalizeOptionalCommitField(value, maxChars, label) {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new AppError('BAD_REQUEST', `${label} 必须是字符串`)
+  const text = value.trim()
+  if (text === '') return undefined
+  if (text.length > maxChars) throw new AppError('BAD_REQUEST', `${label} 超过 ${maxChars} 字`)
+  return text
+}
+
+/**
+ * Map a failed merge write onto the contract codes: GitHub answers 405/409 for
+ * a PR that cannot be merged, 403/404 map to the existing GH codes. The gh CLI
+ * fallback only exposes the status in its message, so both carriers are read.
+ * @param {unknown} error - thrown value from the merge request.
+ * @returns {unknown} a mapped AppError (or the original value).
+ */
+function mapMergeWriteError(error) {
+  if (!(error instanceof AppError)) return error
+  const status = error.details?.status
+  const message = typeof error.message === 'string' ? error.message : ''
+  if (status === 405 || status === 409 || /HTTP 405|HTTP 409|not mergeable|merge conflict|cannot be merged/i.test(message)) {
+    return new AppError('MERGE_CONFLICT', `${USER_MESSAGES.MERGE_CONFLICT}${message === '' ? '' : `（${message.slice(0, 200)}）`}`)
+  }
+  if (status === 403 || /HTTP 403/.test(message)) return new AppError('GH_FORBIDDEN', message || USER_MESSAGES.GH_FORBIDDEN)
+  if (status === 404 || /HTTP 404/.test(message)) return new AppError('GH_NOT_FOUND', message || USER_MESSAGES.GH_NOT_FOUND)
+  return error
 }

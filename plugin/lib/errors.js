@@ -21,6 +21,10 @@ export const USER_MESSAGES = {
   LLM_UNAVAILABLE: '当前 profile 没有可用的模型服务，暂时无法运行 AI 审查',
   LLM_ERROR: 'AI 审查调用失败，请稍后重试',
   REVIEW_TIMEOUT: 'AI 审查超时，请重试或缩小审查范围',
+  MERGE_CONFLICT: 'PR 存在冲突，无法合并，请先在本地解决冲突',
+  MERGE_NOT_ALLOWED: 'PR 当前状态不允许合并',
+  MERGE_HEAD_MOVED: 'PR 已有新提交，请刷新后重试',
+  BUSY: '当前请求过多，请稍后再试',
   INTERNAL: '插件内部错误',
 }
 

@@ -367,6 +367,9 @@ const pr129Detail = {
     changedFiles: files.length,
   },
   body: probe.pr?.body ?? '',
+  // v2: the Host exposes the head SHA on the detail payload; the merge dialog
+  // shows its first 7 chars and sends the full value as expectedHeadSha.
+  headSha,
   bodyTruncated: Boolean(probe.pr?.bodyTruncation?.truncated),
   files,
   filesTruncated: false,

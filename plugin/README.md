@@ -28,6 +28,8 @@
 5. **齿轮「审查设置」**（v1.1）：审查深度（快 / 标准 / 深）、严重度阈值（P0 / P1 / P2+）、是否叠加仓库 `AGENTS.md` 审查指引；设置存浏览器 `localStorage['codex-review:settings']`，随 `review-start` 的 `options` 发给 Host。
 6. **键盘**：`j`/`k` 上下切 PR，`/` 聚焦搜索，`r` 用当前设置审查，`Esc` 关闭弹层；所有交互元素有 aria-label 与 focus-visible。
 7. 刷新/切面板不丢数据（Host 缓存），审查结果按 head SHA 失效。
+8. **合并 PR**（v2，写操作）：右上「合并」→ 确认弹层（合并方式 Squash / Merge commit / Rebase、删除源分支、head 版本、风险提示）→「确认合并」才会真正调用 GitHub。服务端会校验 `confirm===true`、`expectedHeadSha` 未移动、mergeable 状态；失败给出 `MERGE_HEAD_MOVED` / `MERGE_CONFLICT` / `MERGE_NOT_ALLOWED` 等明确原因。
+9. **就此 PR 提问**（v2）：底部输入框输入问题 → 右侧浮起对话面板，流式回答（可停止、清空、重试、三枚快捷提问）；回答上下文包含 PR 元信息/正文/文件清单/最近一次 AI 审查摘要/当前展开文件 patch；每个 PR 的历史独立保存在 `localStorage['codex-review:chat:<repo>#<number>']`（≤20 条）。
 
 ## v1.1 新增（0.2.0）
 
@@ -37,6 +39,12 @@
 - **发现更可核验**：新增 `evidence`（支持结论的 diff 行原文，≤200 字）与 `confidence`（high/medium/low）；`verdict` 由严重度派生（P0→阻塞、P1→需要修改、否则建议合并）。
 - **diff 行内卡片 + 已有评论**：GitHub 行内评论按 `path+line` 渲染为只读卡片，与 AI 发现视觉区分。
 - 版本 0.2.0；测试 115 例。
+
+## v2 新增（0.3.0）
+
+- **合并写操作**：`POST /codex-review/merge`；显式确认 + head SHA 校验 + mergeable 守卫，成功后清缓存；删除源分支失败只降级告警、不影响合并结果。
+- **PR 对话（流式）**：`POST /codex-review/chat`（text/event-stream）；上下文含 PR 元信息/正文/文件清单/最近审查摘要/当前文件 patch，总预算 ≤24000 字；并发上限 2，客户端可中止上游。
+- **安全边界**：合并只在用户点击「确认合并」后执行；插件自身不做任何自动写；README 与契约均记录了网络围栏与请求校验。
 
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
@@ -59,36 +67,39 @@
 
 > v1.1 的 `depth` / `severityThreshold` / `includeGuidelines` 由页面里的「审查设置」弹层控制（存浏览器 localStorage），无需改配置；Host 侧 `Config` 只决定 standard 深度的预算与模型路由。
 
-## Host HTTP 路由（同源 POST JSON，`{ok,value}|{ok:false,error}` 信封）
+## Host HTTP 路由
 
-`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel}`，契约见 [CONTRACT.md](CONTRACT.md) §1。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB、15s 请求 deadline；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
+JSON 路由（同源 POST，`{ok,value}|{ok:false,error}` 信封）：`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel,merge}`；SSE 路由：`POST /codex-review/chat`（`text/event-stream`，`data: {"delta"}` / `{"done":true}` / `{"error"}`）。契约见 [CONTRACT.md](CONTRACT.md) §1 与 §5。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB、15s 请求 deadline（chat 单独 5 分钟）、合并必须 `confirm:true` + head SHA 校验；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
 
 ## 结构
 
 ```
-index.js           Host 入口：Config、路由注册、(llm, agentDefaultModel) 可选注入
+index.js           Host 入口：Config、路由注册、(llm, agentDefaultModel) 可选注入、merge/SSE chat 路由
 lib/http.js        路由分发、信任围栏、body 限长、deadline、JSON 信封
-lib/github.js      gh token→fetch（accept-encoding: identity）+ gh CLI 兜底、缓存、截断、stack 推断
+lib/github.js      gh token→fetch + gh CLI 兜底、缓存、截断、stack 推断、合并写操作、对话上下文
 lib/review.js      v1.1：审查选项/深度预设、文件级增量缓存、分块并发、复核轮、证据校验、job 状态机
 lib/config.js      Standard Schema（Schemastery 或自带兜底）+ 代码级 resolveConfig
-client.js          浏览器半边（module-loader bundle，React.createElement）：三栏工作台 + 行内发现卡 + 设置弹层
-test/              node --test：115 例（含真实 gh 冒烟、指引读取、缓存/选项/复核全路径）
+client.js          浏览器半边（module-loader bundle，React.createElement）：三栏工作台 + 行内发现卡 + 设置弹层 + 合并确认 + PR 对话
+test/              node --test：v2 新增合并守卫/对话上下文/SSE 编码等用例
 dev/               开发预览（preview.html + mock 路由 + Edge/CDP 截图校验），不进安装产物
 locale/            Plugin Manager 显示元数据（zh/en）
 ```
 
 ## 验证
 
-- `node --test` → **115/115**；`node --check` 全部通过。
-- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由，v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
+- `node --test` → **163/163**（v1 74 → v1.1 115 → v2 163；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码）；`node --check` 全部通过。
+- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
 - AI 审查实测：v1.1 `depth=fast` 真实运行 + 同设置 `cached=true`；`severityThreshold=P0` 服务端过滤；文件级复用 `reusedFiles=24` 且 0 次额外模型调用（见 REPORT）。
+- 合并：**只做守卫测试，未对真实 PR 执行合并**（避免误操作）；对话：真实流式问答验证（SSE delta→done，1.4s 返回 603 字上下文相关回答）。
 
 ## 已知限制
 
-- 只读：合并 / 评论 / reviewer / 提问框均禁用展示（v2 计划）。
+- 合并：需要 GitHub 仓库写权限；受保护分支/合并队列策略由 GitHub 决定，失败会回显 code/message。成功后不自动推送本地分支。
+- 对话：回答基于 PR 上下文（元信息/正文/文件清单/最近审查摘要/当前文件 patch），不是全仓库检索；上下文预算 24k 字。
+- 评论功能（发评论/回复/解决评论线程）仍未接入（只读展示已有评论）。
 - 列表接口（GitHub search）不返回 head/base 分支，列表不显示分支；详情头有真实值。
 - GitHub 仓库无 CI 时 Checks 显示“No checks reported”。
 - 目标仓库没有评论/Reviewers 时右栏对应卡片为空态。
 - `deep` 深度更慢（多一轮复核调用）；`fast` 更适合大 PR 的快速巡检。
 - 审查质量取决于当前默认模型；可在配置里覆盖 `provider/model` 或切换页面设置。
-- 大 PR 审查耗时数分钟（有进度与取消）；需要更强模型可在配置里覆盖 `provider/model`。
+- 大 PR 审查耗时数分钟（有进度与取消）。

@@ -47,6 +47,14 @@ import {
   v11Surface,
 } from './lib/v11-dom.mjs'
 import {
+  chatInputTarget,
+  chatPanelProbe,
+  chatSendTarget,
+  chatStorageProbe,
+  mergeDialogProbe,
+  v2Surface,
+} from './lib/v2-dom.mjs'
+import {
   cookieForUrl,
   EXIT,
   fail,
@@ -77,6 +85,9 @@ const USAGE = `用法: node verify/click-panel.mjs [选项]
   --v11                   启用 v1.1 页面断言：Changes diff finding 卡、行内评论、设置弹层、j/k/r// 键盘
   --v11-select <text>     v1.1 finding 断言使用的 PR（列表标题包含该文本，默认 "自动检测片头片尾" = #129）
   --v11-inline-select <text> 行内评论断言指定的 PR（默认自动挑一个有 inline 评论的 PR）
+  --v11-skip-review-key   v1.1 跳过键盘 r 的真实 review-start（避免与 Lead 冒烟抢 job）
+  --v2                    启用 v2 页面断言：合并弹层字段/取消不写入、PR 对话流式面板、历史隔离、v2-*.png
+  --v2-select <text>      v2 断言使用的 PR 列表标题关键字（默认用当前自动选中的 open PR）
   --token <token>         DSH 启动 URL 里的 token（不传则用本机凭据自动认证）
   --no-auth               不注入 DSH 浏览器会话 cookie
   --headful               有窗口模式启动 Edge
@@ -107,6 +118,8 @@ function parseCli() {
         'v11-select': { type: 'string', default: '自动检测片头片尾' },
         'v11-inline-select': { type: 'string', default: '' },
         'v11-skip-review-key': { type: 'boolean', default: false },
+        v2: { type: 'boolean', default: false },
+        'v2-select': { type: 'string', default: '' },
         token: { type: 'string' },
         'no-auth': { type: 'boolean', default: false },
         headful: { type: 'boolean', default: false },
@@ -152,6 +165,16 @@ function parseCli() {
     v11Select: String(values['v11-select'] ?? '').trim(),
     v11InlineSelect: String(values['v11-inline-select'] ?? '').trim(),
     v11SkipReviewKey: values['v11-skip-review-key'],
+    v2: values.v2,
+    v2Select: String(values['v2-select'] ?? '').trim(),
+    v2Paths: {
+      mergeDialog: path.resolve(outDir, 'v2-merge-dialog.png'),
+      mergeCancel: path.resolve(outDir, 'v2-merge-cancel.png'),
+      chatStreaming: path.resolve(outDir, 'v2-chat-streaming.png'),
+      chatDone: path.resolve(outDir, 'v2-chat-done.png'),
+      chatClosed: path.resolve(outDir, 'v2-chat-closed.png'),
+      chatIsolation: path.resolve(outDir, 'v2-chat-isolation.png'),
+    },
     v11Paths: {
       workbench: path.resolve(outDir, 'v11-workbench.png'),
       changes: path.resolve(outDir, 'v11-changes.png'),
@@ -600,6 +623,172 @@ async function runV11Checks() {
 }
 
 
+// ---------------------------------------------------------------------------
+// v2 page checks (CONTRACT §5.3/§5.4): merge dialog (cancel ONLY, never confirm)
+// and the PR chat panel.
+// ---------------------------------------------------------------------------
+const v2Checks = []
+function v2Check(name, pass, detail = '') {
+  v2Checks.push({ name, pass: Boolean(pass), detail })
+}
+function v2Pending(name, detail) {
+  v2Checks.push({ name, pass: null, pending: true, detail })
+}
+
+async function runV2Checks() {
+  const v2 = { enabled: true, checks: v2Checks, screenshots: {}, network: {} }
+  report.v2 = v2
+  try {
+    // --- surface -----------------------------------------------------------
+    let surface = await page.evaluate(v2Surface())
+    v2.surface = surface
+    const mergeReady = Boolean(surface.mergeButton && !surface.mergeButton.disabled)
+    v2Check('v2 合并按钮存在且可点（open PR）', mergeReady, JSON.stringify(surface.mergeButton ?? null))
+    v2Check('v2 底部对话输入框存在（placeholder 就此 Pull Request 提问）', Boolean(surface.chatInput), JSON.stringify(surface.chatInput ?? null))
+    if (!mergeReady && !surface.chatInput) {
+      v2Pending('v2 合并弹层 / 对话流程', 'v2 UI 未就绪')
+    }
+
+    // --- merge dialog: inspect then CANCEL (never confirm) ------------------
+    if (mergeReady) {
+      const beforeText = (await page.evaluate(pageState())).bodyTextSample ?? ''
+      const networkBefore = page.networkRequests.length
+      await clickRect(page, surface.mergeButton.rect)
+      await page.waitFor(
+        'document.querySelector("[role=\\"dialog\\"], [data-merge-dialog], [data-cr-merge]") !== null',
+        { timeoutMs: 8000, label: '合并弹层' },
+      ).catch(() => {})
+      await delay(700)
+      const dialog = await page.evaluate(mergeDialogProbe())
+      v2.mergeDialog = dialog
+      v2Check('v2 合并弹层打开', dialog.open, JSON.stringify(dialog).slice(0, 500))
+      if (dialog.open) {
+        const methodLabels = (dialog.methods ?? []).map((entry) => String(entry.label ?? entry.text ?? ''))
+        v2Check('v2 合并方式三选（Squash / Merge commit / Rebase）', methodLabels.length >= 3, JSON.stringify(methodLabels))
+        v2Check('v2 删除源分支 checkbox 存在', (dialog.deleteBranch ?? []).length >= 1, JSON.stringify(dialog.deleteBranch ?? []))
+        v2Check('v2 风险提示文案存在（写操作/真实改变仓库）', dialog.hasRiskWarning, dialog.dialogText?.slice(0, 200))
+        v2Check(
+          'v2 弹层展示 repo#number / head→base / headSha',
+          dialog.hasRepoNumber && dialog.hasBranches && dialog.hasHeadSha,
+          JSON.stringify({ repo: dialog.hasRepoNumber, branches: dialog.hasBranches, sha: dialog.hasHeadSha }),
+        )
+        v2Check('v2 弹层含取消按钮（只点取消）', Boolean(dialog.cancel), JSON.stringify(dialog.cancel))
+        await page.screenshot(options.v2Paths.mergeDialog)
+        v2.screenshots.mergeDialog = options.v2Paths.mergeDialog
+        if (dialog.cancel) {
+          await clickRect(page, dialog.cancel.rect)
+          await delay(900)
+          const closed = await page.evaluate(mergeDialogProbe())
+          v2Check('v2 点击取消后弹层关闭', !closed.open, `open=${closed.open}`)
+        }
+        const mergeRequests = page.networkRequests.slice(networkBefore).filter((request) => request.url.includes('/codex-review/merge'))
+        v2.network.mergeRequestsAfterCancel = mergeRequests.length
+        v2Check('v2 取消后未发出任何 /codex-review/merge 请求（无写操作）', mergeRequests.length === 0, JSON.stringify(mergeRequests.map((request) => request.url)))
+        const afterText = (await page.evaluate(pageState())).bodyTextSample ?? ''
+        v2Check('v2 取消后 PR 详情未被改写（仍显示同一 PR）', /#\d+/.test(afterText) && afterText.length > 0, `beforeLen=${beforeText.length} afterLen=${afterText.length}`)
+        await page.screenshot(options.v2Paths.mergeCancel)
+        v2.screenshots.mergeCancel = options.v2Paths.mergeCancel
+      }
+    }
+
+    // --- PR chat: real question over the streaming panel -------------------
+    if (surface.chatInput) {
+      const inputTarget = await page.evaluate(chatInputTarget())
+      v2.chatInput = inputTarget
+      if (!inputTarget.found) {
+        v2Check('v2 定位对话输入框', false, 'not found')
+      } else {
+        await clickRect(page, inputTarget.rect)
+        await delay(400)
+        await page.insertText('总结这个 PR 的改动')
+        const sendTarget = await page.evaluate(chatSendTarget())
+        v2.sendTarget = sendTarget
+        if (sendTarget.found && !sendTarget.disabled) {
+          await clickRect(page, sendTarget.rect)
+        } else {
+          await page.pressKey('Enter', { code: 'Enter', windowsVirtualKeyCode: 13 })
+        }
+        let streamingSeen = false
+        let capturedStreaming = false
+        let panel = null
+        const deadline = Date.now() + 240_000
+        while (Date.now() < deadline) {
+          panel = await page.evaluate(chatPanelProbe())
+          if (panel.streaming && !capturedStreaming) {
+            capturedStreaming = true
+            streamingSeen = true
+            await page.screenshot(options.v2Paths.chatStreaming)
+            v2.screenshots.chatStreaming = options.v2Paths.chatStreaming
+          }
+          const assistantLen = String(panel.assistantText ?? '').trim().length
+          if (panel.userBubbleCount >= 1 && !panel.streaming && assistantLen >= 10) break
+          if (panel.error) break
+          await delay(1200)
+        }
+        v2.chat = panel
+        v2Check('v2 对话面板出现 user 气泡（提问已发送）', Boolean(panel && panel.userBubbleCount >= 1), JSON.stringify({ bubbles: panel?.bubbleCount, user: panel?.userBubbleCount }))
+        v2Check('v2 assistant 气泡流式输出并最终非空（≥10 字）', Boolean(panel && String(panel.assistantText ?? '').trim().length >= 10), `len=${String(panel?.assistantText ?? '').trim().length}`)
+        v2Check('v2 流式期间出现停止按钮 / streaming 状态', streamingSeen || Boolean(panel?.stop), JSON.stringify(panel?.stop))
+        v2Check('v2 对话无 error 气泡', !panel?.error, JSON.stringify(panel?.error))
+        v2Check(
+          'v2 回答包含 PR 相关内容（文件/改动/PR/代码）',
+          /(PR|文件|改动|diff|代码|审查|修改)/iu.test(String(panel?.assistantText ?? '')),
+          String(panel?.assistantText ?? '').slice(0, 200),
+        )
+        await page.screenshot(options.v2Paths.chatDone)
+        v2.screenshots.chatDone = options.v2Paths.chatDone
+        await page.pressKey('Escape', { code: 'Escape', windowsVirtualKeyCode: 27 })
+        await delay(700)
+        const closedPanel = await page.evaluate(chatPanelProbe())
+        v2Check('v2 Esc 关闭对话面板', !closedPanel.open, `open=${closedPanel.open}`)
+        await page.screenshot(options.v2Paths.chatClosed)
+        v2.screenshots.chatClosed = options.v2Paths.chatClosed
+        const storage = await page.evaluate(chatStorageProbe())
+        v2.chatStorage = storage
+        v2Check('v2 对话历史按 PR 持久化（localStorage codex-review:chat:*）', (storage.keys ?? []).length >= 1, JSON.stringify(storage.keys))
+        try {
+          const apiClient = new GuiClient(options.url, { token: options.token })
+          const listResponse = await apiClient.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+          const items = listResponse.json?.value?.items ?? []
+          if (items.length >= 2) {
+            const other = items[1]
+            const row = await page.evaluate(findPrRow(String(other.title).slice(0, 12)))
+            if (row.found) {
+              await clickRect(page, row.rect)
+              await page.waitForNetworkIdle({ timeoutMs: 15_000, idleMs: 600 }).catch(() => false)
+              await delay(800)
+              const input2 = await page.evaluate(chatInputTarget())
+              if (input2.found) {
+                await clickRect(page, input2.rect)
+                await delay(500)
+              }
+              const panel2 = await page.evaluate(chatPanelProbe())
+              v2Check(
+                'v2 切换 PR 后对话历史隔离（另一 PR 面板为空）',
+                panel2.bubbleCount === 0 || String(panel2.assistantText ?? '').trim() === '',
+                JSON.stringify({ bubbles: panel2.bubbleCount, user: panel2.userBubbleCount }),
+              )
+              await page.screenshot(options.v2Paths.chatIsolation)
+              v2.screenshots.chatIsolation = options.v2Paths.chatIsolation
+            } else {
+              v2Pending('v2 切换 PR 后对话历史隔离', '第二个 PR 行未找到')
+            }
+          } else {
+            v2Pending('v2 切换 PR 后对话历史隔离', `当前 open PR 仅 ${items.length} 个，无法切换`)
+          }
+        } catch (error) {
+          v2Pending('v2 切换 PR 后对话历史隔离', error instanceof Error ? error.message : String(error))
+        }
+      }
+    }
+  } catch (error) {
+    v2Check('v2 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    v2.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  }
+  v2.pendingCount = v2Checks.filter((entry) => entry.pending === true).length
+  v2.failedCount = v2Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
 const options = parseCli()
 const startedAt = Date.now()
 const report = {
@@ -738,6 +927,8 @@ try {
 
   // v1.1 page checks (opt-in): run against the already-rendered workbench.
   if (options.v11) await runV11Checks()
+  // v2 page checks (opt-in): merge dialog (cancel only) + PR chat panel.
+  if (options.v2) await runV2Checks()
   const finalConsoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
   const finalConsoleWarnings = page.consoleMessages.filter((message) => message.type === 'warning')
   const finalPageErrors = page.pageErrors
@@ -766,6 +957,7 @@ try {
     { name: '无 console.error', pass: finalConsoleErrors.length === 0, detail: `${finalConsoleErrors.length} 条` },
     { name: '无 slot entry crashed', pass: !slotCrashed, detail: String(slotCrashed) },
     ...v11Checks,
+    ...v2Checks,
   ]
   const decisive = checks.filter((check) => check.pending !== true)
   const ok = decisive.every((check) => check.pass)
@@ -802,6 +994,16 @@ try {
           failedCount: report.v11?.failedCount ?? 0,
           pendingCount: report.v11?.pendingCount ?? 0,
           screenshots: report.v11?.screenshots ?? {},
+        }
+      : null,
+    v2: options.v2
+      ? {
+          enabled: true,
+          failedCount: report.v2?.failedCount ?? 0,
+          pendingCount: report.v2?.pendingCount ?? 0,
+          screenshots: report.v2?.screenshots ?? {},
+          mergeRequestsAfterCancel: report.v2?.network?.mergeRequestsAfterCancel ?? null,
+          chatAssistantLength: String(report.v2?.chat?.assistantText ?? '').trim().length,
         }
       : null,
   }

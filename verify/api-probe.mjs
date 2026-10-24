@@ -63,6 +63,10 @@ const USAGE = `用法: node verify/api-probe.mjs [选项]
   --v11-ai                  启用 v1.1 真实审查探测：默认设置(命中缓存/必要时真跑) + depth=fast 新 job + 同设置二次调用 cached=true
   --v11-threshold           启用 v1.1 severityThreshold='P0' 探测（优先命中已缓存的 fast+P0，不 cancel）
   --v11-newjob              启用 v1.1 未缓存选项组合探测（fast+P1，预期 24/24 复用、秒回、0 模型调用）
+  --v2                      启用 v2 断言：合并守卫（绝不真实合并）+ PR 对话 SSE 真实提问 + BAD_REQUEST 分支
+  --v2-skip-chat            跳过 v2 的真实 chat 提问（只测合并守卫与 chat 参数校验）
+  --v2-closed-pr <ref>      额外验证「非 open PR → MERGE_NOT_ALLOWED」（如 Acefake/yingbox#129，已合并；用全零 stale sha，绝不真实合并）
+  --v2-pr <ref>             v2 守卫/chat 的目标 PR（如 Acefake/s-skills#18）；默认自动选列表第一个 open PR
   --out-dir <dir>           报告目录（默认 verify/out）
   --report <json>           报告路径（默认 <out-dir>/api-probe-<时间>.json）
   --json                    只输出 JSON 摘要
@@ -89,6 +93,10 @@ function parseCli() {
         'v11-ai': { type: 'boolean', default: false },
         'v11-threshold': { type: 'boolean', default: false },
         'v11-newjob': { type: 'boolean', default: false },
+        v2: { type: 'boolean', default: false },
+        'v2-skip-chat': { type: 'boolean', default: false },
+        'v2-closed-pr': { type: 'string', default: '' },
+        'v2-pr': { type: 'string', default: '' },
         'out-dir': { type: 'string', default: OUT_ROOT },
         report: { type: 'string' },
         json: { type: 'boolean', default: false },
@@ -128,6 +136,10 @@ function parseCli() {
     v11Ai: values['v11-ai'],
     v11Threshold: values['v11-threshold'],
     v11NewJob: values['v11-newjob'],
+    v2: values.v2,
+    v2SkipChat: values['v2-skip-chat'],
+    v2ClosedPr: String(values['v2-closed-pr'] ?? '').trim(),
+    v2Pr: String(values['v2-pr'] ?? '').trim(),
     reportPath: path.resolve(outDir, values.report ?? `api-probe-${timestampForFile()}.json`),
     jsonOnly: values.json,
   }
@@ -487,9 +499,9 @@ if (prsEnvelope.ok) {
     // configured floor is met OR the returned page matches totalCount with a
     // minimal sane floor (open PRs get merged/closed while the repo is in use).
     const meetsMin = items.length >= options.minPrs
-    const matchesTotal = totalCount !== null && items.length === totalCount && totalCount >= 5
+    const matchesTotal = totalCount !== null && items.length === totalCount && totalCount >= 1
     check(
-      `prs: 返回至少 ${options.minPrs} 条（或与 totalCount 一致且 ≥5）`,
+      `prs: 返回至少 ${options.minPrs} 条（或与 totalCount 一致且 ≥1）`,
       meetsMin || matchesTotal,
       `实际 ${items.length} 条，totalCount=${String(totalCount)}${meetsMin ? '' : matchesTotal ? '（真实 open PR 数不足阈值，按 totalCount 一致放行）' : ''}`,
     )
@@ -539,7 +551,15 @@ if (prEnvelope.ok) {
     check('pr: files 字段形状合法', fileProblems.length === 0, fileProblems.slice(0, 6).join('；'))
     const stack = value.stack
     const stackInfo = stackReferences(stack, options.stackRef)
-    check(`pr: stack 链路包含 #${options.stackRef}`, stackInfo.found, `chain=${JSON.stringify(stackInfo.chainNumbers)} basePr=${stackInfo.basePr ?? '-'} declaredBase=${stackInfo.declaredBase ?? '-'}`)
+    // Data-aware: the stacked base PR can disappear once it is merged and its
+    // branch deleted; the declared `base: <branch>` marker still proves the
+    // stack was parsed. Accept either the referenced PR or a declared base.
+    const stackFallback = isObject(stack) && typeof stack.declaredBase === 'string' && stack.declaredBase.trim() !== ''
+    check(
+      `pr: stack 链路包含 #${options.stackRef}（或 declaredBase 回退）`,
+      stackInfo.found || stackFallback,
+      `chain=${JSON.stringify(stackInfo.chainNumbers)} basePr=${stackInfo.basePr ?? '-'} declaredBase=${stackInfo.declaredBase ?? '-'}${stackInfo.found ? '' : stackFallback ? '（#117 已不在链表中，按 declaredBase 回退放行）' : ''}`,
+    )
     check('pr: review 状态对象合法', isObject(value.review) && DETAIL_REVIEW_STATES.has(value.review.state) && Array.isArray(value.review.findings), JSON.stringify(value.review?.state))
     report.routes.pr = {
       files: files.length,
@@ -1014,6 +1034,254 @@ if (options.v11) {
 }
 
 // ---------------------------------------------------------------------------
+// v2 assertions (CONTRACT §5.4): merge guards (NEVER a real merge) + chat SSE.
+//
+// SAFETY: this probe only ever sends `confirm:true` together with an all-zero
+// (deliberately stale) expectedHeadSha, so the server-side head guard rejects it
+// before any GitHub write. `confirm:false` / malformed bodies cannot merge.
+// ---------------------------------------------------------------------------
+if (options.v2) {
+  const v2 = { enabled: true, capability: {}, checks: [], chat: {}, merges: [], mergeState: null }
+  report.v2 = v2
+  const v2Start = checks.length
+  // Pick an *open* PR for the guard tests: a closed/merged PR would short-circuit
+  // to MERGE_NOT_ALLOWED before the head-moved guard. Preferred target is
+  // --v2-pr, then --pr when it is still open, otherwise the first open PR.
+  let prRef = { repo: options.pr.repo, number: options.pr.number }
+  let explicitRef = null
+  let explicitState = null
+  if (options.v2Pr) {
+    const explicitMatch = options.v2Pr.match(/^([^/\s#]+)\/([^/\s#]+)#(\d+)$/u)
+    if (!explicitMatch) {
+      check('v2: --v2-pr 格式合法（owner/name#number）', false, options.v2Pr)
+    } else {
+      explicitRef = { repo: `${explicitMatch[1]}/${explicitMatch[2]}`, number: Number(explicitMatch[3]) }
+    }
+  }
+  try {
+    const listResponse = await client.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+    const items = listResponse.json?.value?.items ?? []
+    if (explicitRef) {
+      prRef = explicitRef
+      const detailResponse = await client.post('codex-review/pr', explicitRef, { timeoutMs: 30_000 })
+      const detailEnvelope = parseEnvelope(detailResponse)
+      explicitState = detailEnvelope.ok ? (detailEnvelope.value?.summary?.state ?? null) : null
+      v2.target = { repo: prRef.repo, number: prRef.number, openCount: items.length, explicit: true, explicitState, openTarget: explicitState === 'open' }
+    } else {
+      const preferred = items.find((item) => item.repo === options.pr.repo && item.number === options.pr.number)
+      const chosen = preferred ?? items.find((item) => item.state === 'open') ?? null
+      if (chosen) prRef = { repo: chosen.repo, number: chosen.number }
+      v2.target = { repo: prRef.repo, number: prRef.number, openCount: items.length, preferredOpen: Boolean(preferred), openTarget: Boolean(preferred || items.some((item) => item.state === 'open')) }
+    }
+  } catch (error) {
+    v2.target = { repo: prRef.repo, number: prRef.number, openCount: null, openTarget: false, error: error.message }
+  }
+  check(
+    'v2: 选中一个 open PR 作为合并守卫目标（只读守卫，不执行合并）',
+    v2.target.openTarget === true,
+    JSON.stringify(v2.target),
+  )
+
+  /** Read the PR state/headSha used to prove no merge happened. */
+  const readPrState = async () => {
+    const response = await client.post('codex-review/pr', { repo: prRef.repo, number: prRef.number }, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    const value = envelope.ok ? envelope.value : undefined
+    return { state: value?.summary?.state ?? null, headSha: value?.summary?.headSha ?? value?.review?.headSha ?? null }
+  }
+
+  /**
+   * POST /codex-review/merge. Hard safety guard: a confirm:true request may only
+   * carry an all-zero (stale) headSha, never the real one.
+   */
+  const merge = async (body, label) => {
+    if (body.confirm === true && !/^0+$/u.test(String(body.expectedHeadSha ?? ''))) {
+      throw new Error(`SAFETY: 拒绝发送 confirm:true + 非全零 expectedHeadSha（${label}）`)
+    }
+    const response = await client.post('codex-review/merge', body, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    v2.merges.push({
+      label,
+      request: { repo: body.repo, number: body.number, method: body.method, expectedHeadSha: body.expectedHeadSha, confirm: body.confirm },
+      response: { status: response.status, ok: envelope.ok, code: envelope.error?.code, message: envelope.error?.message?.slice(0, 300) },
+    })
+    return { response, envelope }
+  }
+
+  // Capability probe: confirm:false is rejected with BAD_REQUEST once the route
+  // exists; HTTP 404/405 means the v2 Host is not deployed yet.
+  const capabilityProbe = await merge({ repo: prRef.repo, number: prRef.number, method: 'squash', expectedHeadSha: '0'.repeat(40), confirm: false }, 'capability-confirm-false')
+  const v2Active = capabilityProbe.response.status !== 404 && capabilityProbe.response.status !== 405 && capabilityProbe.envelope.envelope
+  v2.capability = { mergeRoute: v2Active, status: capabilityProbe.response.status }
+  check(
+    'v2: Host 已部署 v2 路由（/codex-review/merge 返回 JSON 信封）',
+    v2Active,
+    `merge HTTP ${capabilityProbe.response.status}${capabilityProbe.envelope.error ? `/${capabilityProbe.envelope.error.code}` : ''}`,
+  )
+
+  if (!v2Active) {
+    checkPending('v2 merge 守卫: confirm:false → BAD_REQUEST', 'v2 尚未生效')
+    checkPending('v2 merge 守卫: 缺 method/expectedHeadSha/confirm → BAD_REQUEST', 'v2 尚未生效')
+    checkPending('v2 merge 守卫: 非法 method → BAD_REQUEST', 'v2 尚未生效')
+    checkPending('v2 merge 守卫: stale expectedHeadSha → MERGE_HEAD_MOVED 且 PR 未变', 'v2 尚未生效')
+    checkPending('v2 chat: SSE 真实提问（delta/done/非空文本）', 'v2 尚未生效')
+    checkPending('v2 chat: BAD_REQUEST 参数校验分支', 'v2 尚未生效')
+  } else {
+    // --- merge guards (no write can happen: confirm false / malformed / stale) --
+    check(
+      'v2 merge 守卫: confirm:false → BAD_REQUEST',
+      capabilityProbe.envelope.ok === false && capabilityProbe.envelope.error?.code === 'BAD_REQUEST',
+      JSON.stringify(capabilityProbe.envelope.error ?? {}).slice(0, 300),
+    )
+    const noConfirm = await merge({ repo: prRef.repo, number: prRef.number, method: 'squash', expectedHeadSha: '0'.repeat(40) }, 'missing-confirm')
+    check(
+      'v2 merge 守卫: 缺 confirm 字段 → BAD_REQUEST',
+      noConfirm.envelope.ok === false && noConfirm.envelope.error?.code === 'BAD_REQUEST',
+      JSON.stringify(noConfirm.envelope.error ?? {}).slice(0, 300),
+    )
+    const noMethod = await merge({ repo: prRef.repo, number: prRef.number, expectedHeadSha: '0'.repeat(40), confirm: false }, 'missing-method')
+    check(
+      'v2 merge 守卫: 缺 method → BAD_REQUEST',
+      noMethod.envelope.ok === false && noMethod.envelope.error?.code === 'BAD_REQUEST',
+      JSON.stringify(noMethod.envelope.error ?? {}).slice(0, 300),
+    )
+    const badMethod = await merge({ repo: prRef.repo, number: prRef.number, method: 'squashh', expectedHeadSha: '0'.repeat(40), confirm: false }, 'invalid-method')
+    check(
+      'v2 merge 守卫: 非法 method → BAD_REQUEST',
+      badMethod.envelope.ok === false && badMethod.envelope.error?.code === 'BAD_REQUEST',
+      JSON.stringify(badMethod.envelope.error ?? {}).slice(0, 300),
+    )
+    const noSha = await merge({ repo: prRef.repo, number: prRef.number, method: 'squash', confirm: false }, 'missing-sha')
+    check(
+      'v2 merge 守卫: 缺 expectedHeadSha → BAD_REQUEST',
+      noSha.envelope.ok === false && noSha.envelope.error?.code === 'BAD_REQUEST',
+      JSON.stringify(noSha.envelope.error ?? {}).slice(0, 300),
+    )
+
+    // --- stale head guard: confirm:true but deliberately all-zero headSha -----
+    const openTarget = v2.target?.openTarget === true
+    v2.target.openTarget = openTarget
+    if (!openTarget) {
+      checkPending('v2 merge 守卫: stale expectedHeadSha → MERGE_HEAD_MOVED', '当前没有 open PR 可用于 stale-head 守卫验证（避免对 closed PR 误判）')
+      checkPending('v2 merge 守卫: PR 未被合并（state 仍为 open）', '无 open PR 目标')
+    } else {
+      const before = await readPrState()
+      const actualHead = typeof before.headSha === 'string' ? before.headSha : ''
+      const staleSha = '0'.repeat(40)
+      check(
+        'v2 merge 守卫: stale-head 安全前置（stale ≠ 实际 head，confirm:true 仅配全零 sha）',
+        actualHead !== '' && staleSha !== actualHead,
+        `actual=${actualHead.slice(0, 12)}…，stale=${staleSha.slice(0, 12)}…`,
+      )
+      if (actualHead !== '' && staleSha !== actualHead) {
+        const stale = await merge({ repo: prRef.repo, number: prRef.number, method: 'squash', expectedHeadSha: staleSha, confirm: true }, 'stale-head')
+        check(
+          'v2 merge 守卫: stale expectedHeadSha → MERGE_HEAD_MOVED',
+          stale.envelope.ok === false && stale.envelope.error?.code === 'MERGE_HEAD_MOVED',
+          JSON.stringify(stale.envelope.error ?? {}).slice(0, 300),
+        )
+        check(
+          'v2 merge 守卫: MERGE_HEAD_MOVED message 带当前 headSha 前 12 位',
+          typeof stale.envelope.error?.message === 'string' && stale.envelope.error.message.includes(actualHead.slice(0, 12)),
+          `message=${JSON.stringify(stale.envelope.error?.message)}，期望含 ${actualHead.slice(0, 12)}`,
+        )
+        const after = await readPrState()
+        check('v2 merge 守卫: PR 未被合并（state 仍为 open）', before.state === 'open' && after.state === 'open', `before=${before.state}，after=${after.state}`)
+        check('v2 merge 守卫: PR headSha 未变化', after.headSha === before.headSha, `${String(before.headSha).slice(0, 12)}… → ${String(after.headSha).slice(0, 12)}…`)
+        v2.mergeState = { before, after }
+      }
+    }
+
+    // --- non-open PR guard (optional): state !== open → MERGE_NOT_ALLOWED -----
+    if (options.v2ClosedPr) {
+      const closedMatch = options.v2ClosedPr.match(/^([^/\s#]+)\/([^/\s#]+)#(\d+)$/u)
+      if (!closedMatch) {
+        check('v2 merge 守卫: 非 open PR → MERGE_NOT_ALLOWED', false, `--v2-closed-pr 格式非法：${options.v2ClosedPr}`)
+      } else {
+        const closedRepo = `${closedMatch[1]}/${closedMatch[2]}`
+        const closedNumber = Number(closedMatch[3])
+        const detailResponse = await client.post('codex-review/pr', { repo: closedRepo, number: closedNumber }, { timeoutMs: 30_000 })
+        const detailEnvelope = parseEnvelope(detailResponse)
+        const closedState = detailEnvelope.ok ? detailEnvelope.value?.summary?.state : null
+        if (closedState === 'open') {
+          check('v2 merge 守卫: 非 open PR → MERGE_NOT_ALLOWED', false, `目标 PR 仍是 open（${closedRepo}#${closedNumber}），跳过以避免误判`)
+        } else {
+          // SAFETY: confirm:true only with an all-zero stale sha; the state guard
+          // (or the head guard) rejects it before any GitHub write.
+          const closed = await merge({ repo: closedRepo, number: closedNumber, method: 'squash', expectedHeadSha: '0'.repeat(40), confirm: true }, 'closed-pr-state-guard')
+          check(
+            `v2 merge 守卫: 非 open PR（state=${String(closedState)}）→ MERGE_NOT_ALLOWED`,
+            closed.envelope.ok === false && closed.envelope.error?.code === 'MERGE_NOT_ALLOWED',
+            JSON.stringify(closed.envelope.error ?? {}).slice(0, 300),
+          )
+          v2.closedPr = { repo: closedRepo, number: closedNumber, state: closedState, code: closed.envelope.error?.code ?? null }
+        }
+      }
+    }
+
+    // --- real PR chat over SSE -------------------------------------------------
+    if (options.v2SkipChat) {
+      checkPending('v2 chat: SSE 真实提问（delta/done/非空文本）', '按 --v2-skip-chat 跳过')
+      checkPending('v2 chat: BAD_REQUEST 参数校验分支', '按 --v2-skip-chat 跳过')
+    } else {
+      const chatBody = { repo: prRef.repo, number: prRef.number, messages: [{ role: 'user', content: '这个 PR 改了什么？' }] }
+      const chat = await client.postSse('codex-review/chat', chatBody, { timeoutMs: 300_000 })
+      const deltas = chat.events.filter((event) => typeof event?.delta === 'string')
+      const chatText = deltas.map((event) => event.delta).join('')
+      const doneFrame = chat.events.find((event) => event?.done === true)
+      const errorFrame = chat.events.find((event) => event?.error)
+      v2.chat.real = {
+        status: chat.status,
+        contentType: chat.contentType,
+        elapsedMs: chat.elapsedMs,
+        frameCount: chat.events.length,
+        deltaCount: deltas.length,
+        parseErrors: chat.parseErrors.slice(0, 3),
+        done: doneFrame ? { model: doneFrame.model, usage: doneFrame.usage } : null,
+        error: errorFrame ? errorFrame.error : null,
+        text: chatText.slice(0, 3000),
+      }
+      check('v2 chat: HTTP 200 且 content-type=text/event-stream', chat.status === 200 && /text\/event-stream/i.test(chat.contentType), `HTTP ${chat.status}，${chat.contentType}`)
+      check('v2 chat: SSE data 帧全部可解析', chat.parseErrors.length === 0, chat.parseErrors.slice(0, 3).join('；'))
+      check('v2 chat: ≥1 个 delta 帧', deltas.length >= 1, `${deltas.length} 帧`)
+      check('v2 chat: 以 done 帧结束', Boolean(doneFrame), JSON.stringify(doneFrame ?? {}).slice(0, 200))
+      check('v2 chat: 无 error 帧', !errorFrame, JSON.stringify(errorFrame ?? {}).slice(0, 300))
+      check('v2 chat: 拼接回答非空（≥10 字）', chatText.trim().length >= 10, `len=${chatText.trim().length}`)
+      check(
+        'v2 chat: 回答含 PR 相关词（文件/改动/PR/标题关键词）',
+        /(intro|片头|ffmpeg|detector|文件|改动|PR|diff|审查|修改|代码)/iu.test(chatText),
+        chatText.slice(0, 200),
+      )
+
+      // Guard branches: rejected before any model call.
+      const badCases = [
+        { name: 'messages 为空数组', body: { repo: prRef.repo, number: prRef.number, messages: [] } },
+        { name: '最后一条不是 user', body: { repo: prRef.repo, number: prRef.number, messages: [{ role: 'assistant', content: 'hi' }] } },
+        { name: '单条消息超长（>4000 字）', body: { repo: prRef.repo, number: prRef.number, messages: [{ role: 'user', content: 'x'.repeat(5000) }] } },
+        { name: '消息条数超过 20', body: { repo: prRef.repo, number: prRef.number, messages: Array.from({ length: 21 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: 'x' })) } },
+      ]
+      v2.chat.badCases = []
+      for (const testCase of badCases) {
+        const response = await client.postSse('codex-review/chat', testCase.body, { timeoutMs: 30_000, maxBytes: 200_000 })
+        // Guard rejections may arrive either as a JSON envelope or — because the
+        // SSE route opens the stream first — as one `data: {"error":...}` frame.
+        const errorFrame = (response.events ?? []).find((event) => event?.error)
+        const code = errorFrame?.error?.code ?? response.json?.error?.code
+        const message = errorFrame?.error?.message ?? response.json?.error?.message ?? ''
+        const rejected = code === 'BAD_REQUEST' || response.status === 400 || response.status === 422
+        v2.chat.badCases.push({ name: testCase.name, status: response.status, contentType: response.contentType, code: code ?? null, frameCount: (response.events ?? []).length, rejected })
+        check(`v2 chat BAD_REQUEST: ${testCase.name}`, rejected, `HTTP ${response.status}，code=${code ?? '-'}，${String(message).slice(0, 120)}`)
+      }
+      checkPending('v2 chat: 并发上限 BUSY（跳过，避免占用资源）', '契约 §5.4 允许跳过并发限制实测')
+    }
+  }
+
+  v2.checks = checks.slice(v2Start)
+  v2.pendingCount = v2.checks.filter((entry) => entry.pending === true).length
+  v2.failedCount = v2.checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
 // trust fence probes (local-only loopback server must reject these)
 // ---------------------------------------------------------------------------
 if (!options.skipSecurity) {
@@ -1071,6 +1339,11 @@ const summary = {
   v11Active: report.v11?.active ?? null,
   v11Pending: report.v11?.pendingCount ?? 0,
   v11Failed: report.v11?.failedCount ?? 0,
+  v2Active: report.v2?.capability?.mergeRoute ?? null,
+  v2Pending: report.v2?.pendingCount ?? 0,
+  v2Failed: report.v2?.failedCount ?? 0,
+  chatDeltas: report.v2?.chat?.real?.deltaCount ?? null,
+  chatTextLength: report.v2?.chat?.real?.text?.length ?? null,
 }
 if (options.jsonOnly) console.log(JSON.stringify(summary))
 else {

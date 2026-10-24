@@ -16,6 +16,7 @@ import path from 'node:path'
 import { launchBrowser, PageSession } from './lib/cdp.mjs'
 import { findSidebarTargets, interactiveSnapshot, pageState } from './lib/dom.mjs'
 import { v11Surface } from './lib/v11-dom.mjs'
+import { v2Surface } from './lib/v2-dom.mjs'
 import {
   cookieForUrl,
   EXIT,
@@ -44,6 +45,7 @@ const USAGE = `用法: node verify/page-check.mjs [选项]
   --headful               有窗口模式启动 Edge
   --allow-console-errors  存在 console/page error 时仍以 0 退出（报告中仍记录）
   --v11                   启用 v1.1 页面断言：左栏「代码审查」入口、工作台「用 AI 审查」/设置按钮、截图 v11-page-check.png
+  --v2                    启用 v2 页面断言：合并按钮可点、对话输入框 placeholder、截图 v2-page-check.png
   --json                  只输出 JSON 摘要
   -h, --help              显示本帮助`
 
@@ -66,6 +68,7 @@ function parseCli() {
         headful: { type: 'boolean', default: false },
         'allow-console-errors': { type: 'boolean', default: false },
         v11: { type: 'boolean', default: false },
+        v2: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -101,6 +104,8 @@ function parseCli() {
     allowConsoleErrors: values['allow-console-errors'],
     v11: values.v11,
     v11ShotPath: path.resolve(outDir, 'v11-page-check.png'),
+    v2: values.v2,
+    v2ShotPath: path.resolve(outDir, 'v2-page-check.png'),
     jsonOnly: values.json,
   }
 }
@@ -247,6 +252,57 @@ try {
     report.verdict.v11Pending = v11.pendingCount
   }
 
+  // -------------------------------------------------------------------------
+  // v2 page assertions (CONTRACT §5.3/§5.4): merge button clickable + chat input.
+  // -------------------------------------------------------------------------
+  if (options.v2) {
+    const v2Checks = []
+    const v2 = { enabled: true, checks: v2Checks, screenshots: {} }
+    report.v2 = v2
+    const v2Check = (name, pass, detail = '') => v2Checks.push({ name, pass: Boolean(pass), detail })
+    try {
+      const rootReady = await page.evaluate(`Boolean(document.querySelector('[data-cr-root]'))`)
+      if (!rootReady) {
+        const entryLookup = await page.evaluate(findSidebarTargets(['代码审查', 'Code Review']))
+        const entry = entryLookup.targets?.[0]
+        if (entry) {
+          await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
+          await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 700 }).catch(() => false)
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+        }
+      }
+      const surface = await page.evaluate(v2Surface())
+      v2.surface = surface
+      v2Check(
+        'v2 合并按钮存在且可点（非 disabled）',
+        Boolean(surface.mergeButton && !surface.mergeButton.disabled),
+        JSON.stringify(surface.mergeButton ?? null),
+      )
+      v2Check(
+        'v2 底部输入框 placeholder=就此 Pull Request 提问',
+        Boolean(surface.chatInput),
+        JSON.stringify(surface.chatInput ?? null),
+      )
+      await page.screenshot(options.v2ShotPath)
+      v2.screenshots.page = options.v2ShotPath
+      const finalErrors = page.consoleMessages.filter((message) => message.type === 'error')
+      const finalPageErrors = page.pageErrors
+      report.consoleMessages = page.consoleMessages
+      report.consoleErrors = finalErrors
+      report.pageErrors = finalPageErrors
+      v2Check('v2 页面流程期间无 console.error', finalErrors.length === 0, `${finalErrors.length} 条`)
+      v2Check('v2 页面流程期间无 pageerror', finalPageErrors.length === 0, `${finalPageErrors.length} 条`)
+    } catch (error) {
+      v2Check('v2 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    }
+    v2.pendingCount = v2Checks.filter((check) => check.pending === true).length
+    v2.failedCount = v2Checks.filter((check) => check.pending !== true && check.pass === false).length
+    ok = ok && v2.failedCount === 0
+    report.verdict.ok = ok
+    report.verdict.v2Failed = v2.failedCount
+    report.verdict.v2Pending = v2.pendingCount
+  }
+
   report.screenshotBytes = statSync(options.shotPath).size
   writeJson(options.reportPath, report)
   await page.close()
@@ -269,6 +325,14 @@ try {
           failedCount: report.v11?.failedCount ?? 0,
           pendingCount: report.v11?.pendingCount ?? 0,
           screenshot: report.v11?.screenshots?.page ?? null,
+        }
+      : null,
+    v2: options.v2
+      ? {
+          failedCount: report.v2?.failedCount ?? 0,
+          pendingCount: report.v2?.pendingCount ?? 0,
+          screenshot: report.v2?.screenshots?.page ?? null,
+          checks: (report.v2?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass })),
         }
       : null,
   }

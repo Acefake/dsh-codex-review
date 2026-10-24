@@ -163,3 +163,18 @@ token 只在 Host 的 gh 子进程环境；前端只收发 `repo/number/query`�
 
 验收结论：真实 DSH 页面 + 真实路由 **v1.1 PASS（90/90 路由断言 + 页面 12 项 PASS + 0 console/pageerror）**；`node --test` 115/115。已知观察项（P3）：真实 open PR 数随仓库活动变化（列表断言已数据感知）、行内评论只对当前展开文件渲染、deep 复核轮的模型侧行为以单测覆盖为主。
 
+## 15. v2 回填：合并与 PR 对话（2026-10-24 第三轮，版本 0.3.0）
+
+v1/v1.1 按约定保持只读；用户确认要接上 Codex 窗口里的「合并」与「就此 Pull Request 提问」后实现 v2。契约见 `plugin/CONTRACT.md` §5。
+
+1. **合并（写操作，显式确认）**：`POST /codex-review/merge`。7 步守卫：`confirm:true` → PR 必须 open 且非 draft → `expectedHeadSha` 必须等于当前 head（`MERGE_HEAD_MOVED`，绝不合并）→ mergeable 检查（null 重试 2×800ms，回退 `mergeable_state`）→ GitHub `PUT .../merge`（method/commit title/sha）→ 可选删除 head 分支（失败降级为 `branchDeleted:false + branchWarning`）→ 清理 PR 详情与审查缓存。UI 为确认弹层（Squash 推荐 / Merge commit / Rebase、删源分支、head SHA、风险提示）。
+2. **PR 对话（流式）**：`POST /codex-review/chat`，`text/event-stream`（exact 路由）。上下文 = PR 元信息 + 正文 ≤3000 字 + 文件清单 + 最近一次 AI 审查摘要（≤30 条）+ 当前展开文件 patch（≤4000）+ 最后 10 条历史，总预算 ≤24000 字；`sessionId = chat-<repo>#<n>` 复用 provider 路由缓存；并发上限 2（`BUSY`），客户端断开通过 `res.on('close')` 中止上游，15s 心跳注释帧。UI 为底部输入框 + 右侧浮动对话面板（流式光标、停止、清空、重试、快捷提问、按 PR 隔离 localStorage 历史）。
+3. **安全**：合并只在用户点击「确认合并」后执行（`confirm` 必填、head SHA 校验），插件自身无自动写；成功路径只做单测，验收阶段**未对真实 PR 执行合并**；chat 的 SSE 与 merge 路由都沿用 v1 的 loopback/代理头/CSRF 围栏。
+4. **实现中被真实环境修正的点**：
+   - chat 请求体上限提高到 512KiB（契约允许 20×4000 字历史，UTF-8 下超过 64KiB）；
+   - 客户端断开检测用 `res.on('close')`（`req` 的 close 在请求体读完就会触发，会误杀流）；
+   - mergeable 为 null 时按 GitHub `mergeable_state` 回退判断；
+   - 验收期间目标仓库 #129 被合并、yingbox 暂无 open PR → 集成 smoke 改为从默认查询里自动挑 open PR（实际命中 `Acefake/s-skills#18`），`#129` 则按守卫顺序正确返回 `MERGE_NOT_ALLOWED`。
+5. **验证**：`node --test` 147/147；集成 smoke：`confirm:false→BAD_REQUEST`、非法 method→`BAD_REQUEST`、stale head→`MERGE_HEAD_MOVED` 且 PR 状态未变、真实流式 chat 1.4s 返回 603 字上下文相关回答；页面验收见 `verify/REPORT.md` §12。
+
+

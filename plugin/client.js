@@ -32,6 +32,16 @@ window.__ModuleLoader__.load({
     const COMMENT_PREVIEW_CHARS = 400
     /** A single file patch larger than this is collapsed by default (huge diff guard). */
     const MAX_VISIBLE_ROWS = 1600
+    /** Merge methods accepted by /codex-review/merge (CONTRACT §5.1); squash is the default. */
+    const MERGE_METHODS = ['squash', 'merge', 'rebase']
+    const DEFAULT_MERGE_METHOD = 'squash'
+    /** Per-PR chat history (CONTRACT §5.2): localStorage key prefix + caps. */
+    const CHAT_KEY_PREFIX = 'codex-review:chat:'
+    const CHAT_HISTORY_LIMIT = 20
+    const CHAT_REQUEST_MESSAGES = 10
+    const CHAT_MESSAGE_CHARS = 4000
+    /** Locale keys for the three quick questions shown in an empty chat panel. */
+    const CHAT_QUICK_PROMPTS = ['chatSummarize', 'chatRisks', 'chatTest']
 
     // ---------------------------------------------------------------------
     // Locale dictionaries
@@ -109,9 +119,7 @@ window.__ModuleLoader__.load({
       pin: 'Pin to top',
       pinned: 'Pinned',
       merge: 'Merge',
-      mergeDisabled: 'Read-only v1: merging lands later',
       askPlaceholder: 'Ask about this pull request',
-      askDisabled: 'Read-only v1: only AI review is available',
       healthGhMissing: 'gh CLI not found: showing cached data only',
       healthGhNotLoggedIn: 'gh is not signed in. Run "gh auth login" in a terminal.',
       healthLlm: 'No model is configured, so AI review is unavailable',
@@ -182,6 +190,66 @@ window.__ModuleLoader__.load({
       verdictBlockHint: 'P0 findings block merging',
       keyboardHint: 'j / k switch PR · / search · r review',
       lineLabel: 'line {line}',
+      mergeNotAllowed: 'Only open, non-draft pull requests can be merged',
+      mergeDraft: 'Draft pull requests cannot be merged',
+      mergeClosed: 'This pull request is closed',
+      mergeMerged: 'This pull request is already merged',
+      mergeDialogTitle: 'Merge pull request',
+      mergeRepo: 'Repository',
+      mergePrTitle: 'Title',
+      mergeTarget: 'Target',
+      mergeHeadSha: 'Head commit',
+      mergeMethodLabel: 'Merge method',
+      mergeSquash: 'Squash',
+      mergeSquashHint: 'One commit on the base branch (recommended)',
+      mergeCommit: 'Merge commit',
+      mergeCommitHint: 'Keep the full history with a merge commit',
+      mergeRebase: 'Rebase',
+      mergeRebaseHint: 'Replay commits onto the base branch, no merge commit',
+      mergeDeleteBranch: 'Delete the source branch after merging',
+      mergeDeleteBranchHint: 'Only possible while the branch belongs to this repository',
+      mergeRisk: 'This is a write operation: it merges the pull request on GitHub for real.',
+      mergeConfirm: 'Confirm merge',
+      mergeSubmitting: 'Merging…',
+      mergeSuccess: 'Merged as {sha}',
+      mergeHeadMoved: 'The pull request has new commits. Refreshed — review and confirm again.',
+      mergeConflict: 'GitHub reports merge conflicts; resolve them first',
+      mergeForbidden: 'No permission to merge this pull request',
+      mergeNotFound: 'Pull request or branch was not found',
+      mergeBadRequest: 'The merge request was rejected as invalid',
+      mergeUnavailable: 'The merge route is unavailable in this host version',
+      mergeBranchWarning: 'Merged, but the source branch could not be deleted: {message}',
+      mergeMethodRequired: 'Choose a merge method',
+      mergeHeadMissing: 'The current head commit is unknown; refresh the pull request first',
+      mergeErrorTitle: 'Merge failed',
+      mergeStepConfirm: 'Confirm',
+      mergeStepSubmit: 'Submitting',
+      chatTitle: 'PR chat',
+      chatOpen: 'Open PR chat',
+      chatClose: 'Close PR chat',
+      chatClear: 'Clear conversation',
+      chatCleared: 'Conversation cleared',
+      chatStop: 'Stop',
+      chatRetry: 'Retry',
+      chatSend: 'Send',
+      chatInputLabel: 'Ask about this pull request',
+      chatEmpty: 'Ask anything about this pull request',
+      chatEmptyHint: 'Answers use the PR body, diff and the latest AI review.',
+      chatQuick: 'Quick questions',
+      chatSummarize: 'Summarize the changes in this PR',
+      chatRisks: 'What are the risk points?',
+      chatTest: 'How should this be tested?',
+      chatThinking: 'Thinking…',
+      chatStreaming: 'Answering…',
+      chatAssistant: 'AI assistant',
+      chatYou: 'You',
+      chatErrorTitle: 'Chat failed',
+      chatStopped: 'Stopped',
+      chatBusy: 'Another chat is still answering; try again shortly',
+      chatUnavailable: 'Chat is unavailable in this host version',
+      chatNoSelection: 'Select a pull request first',
+      chatUnsupported: 'This browser cannot read streaming responses',
+      chatHistoryHint: 'Saved in this browser for this pull request',
     }
 
     const zh = {
@@ -256,9 +324,7 @@ window.__ModuleLoader__.load({
       pin: '钉住到顶部',
       pinned: '已钉住',
       merge: '合并',
-      mergeDisabled: 'v1 只读，合并功能后续开放',
       askPlaceholder: '就此 Pull Request 提问',
-      askDisabled: 'v1 仅支持 AI 审查，提问功能在后续版本',
       healthGhMissing: '未检测到 gh CLI：只能查看缓存数据',
       healthGhNotLoggedIn: 'gh 未登录，请在终端执行 gh auth login',
       healthLlm: '宿主没有可用模型，AI 审查不可用',
@@ -329,6 +395,66 @@ window.__ModuleLoader__.load({
       verdictBlockHint: '存在 P0 问题，不建议合并',
       keyboardHint: 'j / k 切换 PR · / 搜索 · r 审查',
       lineLabel: '第 {line} 行',
+      mergeNotAllowed: '只有 open 且非草稿的 PR 可以合并',
+      mergeDraft: '草稿 PR 不能合并',
+      mergeClosed: '该 PR 已关闭',
+      mergeMerged: '该 PR 已合并',
+      mergeDialogTitle: '合并 Pull Request',
+      mergeRepo: '仓库',
+      mergePrTitle: '标题',
+      mergeTarget: '目标',
+      mergeHeadSha: '当前 head',
+      mergeMethodLabel: '合并方式',
+      mergeSquash: 'Squash',
+      mergeSquashHint: '压成一个提交落到目标分支（推荐）',
+      mergeCommit: 'Merge commit',
+      mergeCommitHint: '保留完整历史，生成合并提交',
+      mergeRebase: 'Rebase',
+      mergeRebaseHint: '把提交逐个重放到目标分支，不生成合并提交',
+      mergeDeleteBranch: '合并后删除源分支',
+      mergeDeleteBranchHint: '仅当源分支属于本仓库时可行',
+      mergeRisk: '这是写操作：会真的在 GitHub 上合并这个 PR。',
+      mergeConfirm: '确认合并',
+      mergeSubmitting: '合并中…',
+      mergeSuccess: '已合并为 {sha}',
+      mergeHeadMoved: 'PR 有新提交，已刷新；请确认最新 head 后重试。',
+      mergeConflict: 'GitHub 报告合并冲突，请先解决冲突',
+      mergeForbidden: '没有权限合并该 PR',
+      mergeNotFound: '找不到该 PR 或分支',
+      mergeBadRequest: '合并请求被判定为不合法',
+      mergeUnavailable: '当前宿主版本没有合并路由',
+      mergeBranchWarning: '已合并，但源分支删除失败：{message}',
+      mergeMethodRequired: '请选择合并方式',
+      mergeHeadMissing: '当前 head 未知，请先刷新 PR 详情',
+      mergeErrorTitle: '合并失败',
+      mergeStepConfirm: '确认',
+      mergeStepSubmit: '提交中',
+      chatTitle: 'PR 对话',
+      chatOpen: '打开 PR 对话',
+      chatClose: '关闭 PR 对话',
+      chatClear: '清空对话',
+      chatCleared: '对话已清空',
+      chatStop: '停止',
+      chatRetry: '重试',
+      chatSend: '发送',
+      chatInputLabel: '就此 Pull Request 提问',
+      chatEmpty: '可以就这个 PR 提问',
+      chatEmptyHint: '回答会参考 PR 正文、diff 和最近一次 AI 审查结果。',
+      chatQuick: '快捷提问',
+      chatSummarize: '总结这个 PR 的改动',
+      chatRisks: '有哪些风险点',
+      chatTest: '怎么测试',
+      chatThinking: '思考中…',
+      chatStreaming: '回答中…',
+      chatAssistant: 'AI 助手',
+      chatYou: '我',
+      chatErrorTitle: '对话失败',
+      chatStopped: '已停止',
+      chatBusy: '已有对话在回答中，请稍后再试',
+      chatUnavailable: '当前宿主版本没有对话路由',
+      chatNoSelection: '请先选择一个 PR',
+      chatUnsupported: '当前浏览器无法读取流式响应',
+      chatHistoryHint: '本机缓存，仅对该 PR 生效',
     }
 
     // ---------------------------------------------------------------------
@@ -1065,6 +1191,279 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
+    // v2 helpers: merge guards + streaming chat (CONTRACT §5)
+    // ---------------------------------------------------------------------
+
+    /** Whether the toolbar merge button is actionable for this PR summary. */
+    function mergeAvailability(summary) {
+      const source = summary && typeof summary === 'object' ? summary : null
+      if (!source) return { enabled: false, reason: 'unavailable' }
+      const state = typeof source.state === 'string' && source.state !== '' ? source.state : 'open'
+      const merged =
+        source.merged === true ||
+        state === 'merged' ||
+        (typeof source.mergedAt === 'string' && source.mergedAt !== '')
+      if (merged) return { enabled: false, reason: 'merged' }
+      if (state !== 'open') return { enabled: false, reason: 'closed' }
+      if (source.isDraft) return { enabled: false, reason: 'draft' }
+      return { enabled: true, reason: '' }
+    }
+
+    /** The head SHA shown in the merge dialog and sent as expectedHeadSha. */
+    function resolveHeadSha(detail) {
+      const source = detail && typeof detail === 'object' ? detail : {}
+      const summary = source.summary && typeof source.summary === 'object' ? source.summary : {}
+      const review = source.review && typeof source.review === 'object' ? source.review : {}
+      for (const candidate of [source.headSha, summary.headSha, review.headSha]) {
+        if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+      }
+      return ''
+    }
+
+    /** First N characters of a SHA, or '' when there is nothing to show. */
+    function shortSha(sha, length) {
+      const source = typeof sha === 'string' ? sha.trim() : ''
+      const limit = Number.isFinite(length) ? Math.max(1, Math.trunc(length)) : 7
+      return source === '' ? '' : source.slice(0, limit)
+    }
+
+    /** Whitelist the merge method; anything unknown falls back to squash. */
+    function normalizeMergeMethod(value) {
+      return MERGE_METHODS.indexOf(value) >= 0 ? value : DEFAULT_MERGE_METHOD
+    }
+
+    /**
+     * Build the write request sent to /codex-review/merge. Returns null when a
+     * required field (repo / number / head sha) is missing so the UI can show a
+     * clear error instead of sending a half-formed write.
+     */
+    function buildMergeRequest(input) {
+      const source = input && typeof input === 'object' ? input : {}
+      const summary = source.summary && typeof source.summary === 'object' ? source.summary : {}
+      const repo = typeof summary.repo === 'string' ? summary.repo.trim() : ''
+      const number = Number(summary.number)
+      const headSha = typeof source.headSha === 'string' ? source.headSha.trim() : ''
+      if (repo === '' || !Number.isFinite(number) || headSha === '') return null
+      const request = {
+        repo,
+        number: Math.trunc(number),
+        method: normalizeMergeMethod(source.method),
+        expectedHeadSha: headSha,
+        deleteBranch: Boolean(source.deleteBranch),
+        confirm: true,
+      }
+      const commitTitle = typeof source.commitTitle === 'string' ? source.commitTitle.trim() : ''
+      const commitMessage =
+        typeof source.commitMessage === 'string' ? source.commitMessage.trim() : ''
+      if (commitTitle !== '') request.commitTitle = commitTitle.slice(0, 256)
+      if (commitMessage !== '') request.commitMessage = commitMessage.slice(0, 2000)
+      return request
+    }
+
+    /** Locale key for a merge error code; '' means "show the host message". */
+    const MERGE_ERROR_KEYS = {
+      MERGE_HEAD_MOVED: 'mergeHeadMoved',
+      MERGE_CONFLICT: 'mergeConflict',
+      MERGE_NOT_ALLOWED: 'mergeNotAllowed',
+      GH_FORBIDDEN: 'mergeForbidden',
+      GH_NOT_FOUND: 'mergeNotFound',
+      BAD_REQUEST: 'mergeBadRequest',
+    }
+
+    function mergeErrorKey(code) {
+      const key = String(code === undefined || code === null ? '' : code)
+      return Object.prototype.hasOwnProperty.call(MERGE_ERROR_KEYS, key) ? MERGE_ERROR_KEYS[key] : ''
+    }
+
+    /**
+     * Incremental parser for the chat SSE stream (`data: {...}\n\n` frames).
+     * push() returns finished events; a partially received frame stays buffered.
+     */
+    function createSseParser() {
+      let buffer = ''
+      const parseFrame = (rawFrame) => {
+        const lines = String(rawFrame === undefined || rawFrame === null ? '' : rawFrame)
+          .replace(/\r\n?/g, '\n')
+          .split('\n')
+        const data = []
+        for (const line of lines) {
+          if (line === '' || line.charAt(0) === ':') continue
+          if (line.indexOf('data:') === 0) data.push(line.slice(5).replace(/^ /, ''))
+        }
+        if (data.length === 0) return null
+        const text = data.join('\n').trim()
+        if (text === '' || text === '[DONE]') return { type: 'done', model: null, usage: null }
+        let payload
+        try {
+          payload = JSON.parse(text)
+        } catch {
+          return { type: 'invalid' }
+        }
+        if (!payload || typeof payload !== 'object') return { type: 'invalid' }
+        if (typeof payload.delta === 'string') return { type: 'delta', text: payload.delta }
+        if (payload.done === true) {
+          return {
+            type: 'done',
+            model: payload.model && typeof payload.model === 'object' ? payload.model : null,
+            usage: payload.usage && typeof payload.usage === 'object' ? payload.usage : null,
+          }
+        }
+        if (payload.error && typeof payload.error === 'object') {
+          return {
+            type: 'error',
+            error: {
+              code: String(payload.error.code || 'INTERNAL'),
+              message: String(payload.error.message || ''),
+            },
+          }
+        }
+        return { type: 'invalid' }
+      }
+      return {
+        /** Feed decoded text; returns the events completed by this chunk. */
+        push(chunk) {
+          buffer = (buffer + String(chunk === undefined || chunk === null ? '' : chunk)).replace(
+            /\r\n/g,
+            '\n',
+          )
+          const events = []
+          let index = buffer.indexOf('\n\n')
+          while (index >= 0) {
+            const frame = buffer.slice(0, index)
+            buffer = buffer.slice(index + 2)
+            const event = parseFrame(frame)
+            if (event) events.push(event)
+            index = buffer.indexOf('\n\n')
+          }
+          return events
+        },
+        /** Emit a trailing frame that was never followed by the blank line. */
+        flush() {
+          const frame = buffer
+          buffer = ''
+          if (frame.trim() === '') return []
+          const event = parseFrame(frame)
+          return event ? [event] : []
+        },
+        get pending() {
+          return buffer
+        },
+      }
+    }
+
+    /** Coerce persisted chat history into [{role, content}], newest kept. */
+    function normalizeChatHistory(value) {
+      const list = Array.isArray(value) ? value : []
+      const messages = []
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object') continue
+        const role = entry.role === 'assistant' ? 'assistant' : entry.role === 'user' ? 'user' : ''
+        const content = typeof entry.content === 'string' ? entry.content : ''
+        if (role === '' || content.trim() === '') continue
+        messages.push({ role, content })
+      }
+      return messages.slice(-CHAT_HISTORY_LIMIT)
+    }
+
+    /** localStorage key for one PR's chat history; '' when the PR is unknown. */
+    function chatHistoryKey(repo, number) {
+      const repoName = typeof repo === 'string' ? repo.trim() : ''
+      const prNumber = Number(number)
+      if (repoName === '' || !Number.isFinite(prNumber)) return ''
+      return CHAT_KEY_PREFIX + repoName + '#' + Math.trunc(prNumber)
+    }
+
+    /** Read one PR's chat history; anything corrupt degrades to an empty list. */
+    function readChatHistory(store, repo, number) {
+      try {
+        const key = chatHistoryKey(repo, number)
+        if (key === '' || !store || typeof store.getItem !== 'function') return []
+        const raw = store.getItem(key)
+        if (typeof raw !== 'string' || raw === '') return []
+        return normalizeChatHistory(JSON.parse(raw))
+      } catch {
+        return []
+      }
+    }
+
+    /** Persist one PR's chat history (cap 20); never throws. */
+    function writeChatHistory(store, repo, number, messages) {
+      const key = chatHistoryKey(repo, number)
+      if (key === '') return false
+      try {
+        if (!store || typeof store.setItem !== 'function') return false
+        store.setItem(key, JSON.stringify(normalizeChatHistory(messages)))
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    /** Messages sent to /codex-review/chat: last 10 turns, each capped at 4000 chars. */
+    function chatRequestMessages(messages) {
+      return normalizeChatHistory(messages)
+        .slice(-CHAT_REQUEST_MESSAGES)
+        .map((message) => ({
+          role: message.role,
+          content: message.content.slice(0, CHAT_MESSAGE_CHARS),
+        }))
+    }
+
+    /** Append streamed text to the trailing assistant message (pure, for tests). */
+    function applyChatDelta(messages, text) {
+      const list = Array.isArray(messages) ? messages.slice() : []
+      const delta = typeof text === 'string' ? text : ''
+      if (list.length === 0) return list
+      const last = list[list.length - 1]
+      if (!last || last.role !== 'assistant') return list
+      list[list.length - 1] = Object.assign({}, last, {
+        content: String(last.content === undefined || last.content === null ? '' : last.content) + delta,
+      })
+      return list
+    }
+
+    /** Most recent user message, used by the retry button. */
+    function chatLastUserMessage(messages) {
+      const list = Array.isArray(messages) ? messages : []
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        const message = list[index]
+        if (message && message.role === 'user' && typeof message.content === 'string') return message
+      }
+      return null
+    }
+
+    /** Drop a trailing empty assistant bubble (failed/stopped before any delta). */
+    function dropEmptyAssistant(messages) {
+      const list = Array.isArray(messages) ? messages.slice() : []
+      while (list.length > 0) {
+        const last = list[list.length - 1]
+        if (last && last.role === 'assistant' && String(last.content || '').trim() === '') list.pop()
+        else break
+      }
+      return list
+    }
+
+    /** Normal completion: drop transient streaming flags before persisting. */
+    function settleChatMessages(messages) {
+      return dropEmptyAssistant(messages).map((message) => {
+        const next = Object.assign({}, message)
+        delete next.stopped
+        delete next.streaming
+        return next
+      })
+    }
+
+    /** User stopped the stream: keep the partial answer and flag the bubble. */
+    function markChatStopped(messages) {
+      const list = dropEmptyAssistant(messages)
+      if (list.length === 0) return list
+      const last = list[list.length - 1]
+      if (!last || last.role !== 'assistant') return list
+      list[list.length - 1] = Object.assign({}, last, { stopped: true })
+      return list
+    }
+
+    // ---------------------------------------------------------------------
     // Transport: one document-relative POST, never throws
     // ---------------------------------------------------------------------
 
@@ -1108,6 +1507,168 @@ window.__ModuleLoader__.load({
         }
       } finally {
         if (timer !== null) clearTimeout(timer)
+      }
+    }
+
+    /**
+     * POST a JSON payload and consume a `text/event-stream` response with the
+     * incremental SSE parser (CONTRACT §5.2). Returns {ok:true, done} or
+     * {ok:false, error, aborted}; never throws. The caller's AbortSignal stops
+     * the stream (the Host aborts the upstream model call).
+     */
+    async function streamPost(path, payload, options) {
+      const settings = options && typeof options === 'object' ? options : {}
+      const onEvent = typeof settings.onEvent === 'function' ? settings.onEvent : null
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      const forwardAbort = () => {
+        try {
+          if (controller) controller.abort()
+        } catch {
+          /* abort is best effort */
+        }
+      }
+      let removeAbortListener = () => {}
+      if (settings.signal) {
+        if (settings.signal.aborted) {
+          forwardAbort()
+        } else if (typeof settings.signal.addEventListener === 'function') {
+          settings.signal.addEventListener('abort', forwardAbort)
+          removeAbortListener = () => {
+            try {
+              settings.signal.removeEventListener('abort', forwardAbort)
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+      const abortedError = () => ({
+        ok: false,
+        aborted: true,
+        error: { code: 'ABORTED', message: '已停止。' },
+      })
+      let response
+      try {
+        response = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+          body: JSON.stringify(payload === undefined ? {} : payload),
+          cache: 'no-store',
+          signal: controller !== null ? controller.signal : undefined,
+        })
+      } catch (error) {
+        removeAbortListener()
+        const aborted =
+          Boolean(settings.signal && settings.signal.aborted) ||
+          Boolean(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'))
+        if (aborted) return abortedError()
+        return {
+          ok: false,
+          error: { code: 'INTERNAL', message: '无法连接宿主路由，请刷新页面后重试。' },
+        }
+      }
+      const contentType =
+        response && response.headers && typeof response.headers.get === 'function'
+          ? String(response.headers.get('content-type') || '')
+          : ''
+      if (
+        !response ||
+        response.ok === false ||
+        (contentType !== '' && contentType.indexOf('text/event-stream') < 0)
+      ) {
+        // Old Host / missing route: decode the JSON envelope so the UI can explain it.
+        let envelope = null
+        try {
+          envelope = await response.json()
+        } catch {
+          envelope = null
+        }
+        removeAbortListener()
+        const error =
+          envelope && envelope.error && typeof envelope.error === 'object'
+            ? envelope.error
+            : {
+                code: 'INTERNAL',
+                message: '宿主没有返回流式响应（可能是旧版本插件）。',
+              }
+        return { ok: false, error }
+      }
+      if (!response.body || typeof response.body.getReader !== 'function') {
+        removeAbortListener()
+        return {
+          ok: false,
+          error: { code: 'INTERNAL', message: '当前浏览器无法读取流式响应。' },
+        }
+      }
+      const reader = response.body.getReader()
+      const decoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null
+      const parser = createSseParser()
+      const emit = (event) => {
+        if (!event) return null
+        if (onEvent) {
+          try {
+            onEvent(event)
+          } catch {
+            /* a rendering callback must never break the stream */
+          }
+        }
+        return event
+      }
+      try {
+        for (;;) {
+          const chunk = await reader.read()
+          if (!chunk || chunk.done) break
+          let text = ''
+          try {
+            text = decoder
+              ? decoder.decode(chunk.value, { stream: true })
+              : String.fromCharCode.apply(null, chunk.value || [])
+          } catch {
+            text = ''
+          }
+          for (const event of parser.push(text)) {
+            const emitted = emit(event)
+            if (emitted && emitted.type === 'done') return { ok: true, done: emitted }
+            if (emitted && emitted.type === 'error') return { ok: false, error: emitted.error }
+          }
+        }
+        if (decoder) {
+          try {
+            const tail = decoder.decode()
+            if (tail) {
+              for (const event of parser.push(tail)) {
+                const emitted = emit(event)
+                if (emitted && emitted.type === 'done') return { ok: true, done: emitted }
+                if (emitted && emitted.type === 'error') return { ok: false, error: emitted.error }
+              }
+            }
+          } catch {
+            /* ignore decode tail errors */
+          }
+        }
+        for (const event of parser.flush()) {
+          const emitted = emit(event)
+          if (emitted && emitted.type === 'done') return { ok: true, done: emitted }
+          if (emitted && emitted.type === 'error') return { ok: false, error: emitted.error }
+        }
+        return { ok: true, done: null }
+      } catch (error) {
+        const aborted =
+          Boolean(settings.signal && settings.signal.aborted) ||
+          Boolean(controller && controller.signal && controller.signal.aborted) ||
+          Boolean(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'))
+        if (aborted) return abortedError()
+        return {
+          ok: false,
+          error: { code: 'INTERNAL', message: '流式响应中断，请重试。' },
+        }
+      } finally {
+        removeAbortListener()
+        try {
+          if (reader && typeof reader.releaseLock === 'function') reader.releaseLock()
+        } catch {
+          /* ignore */
+        }
       }
     }
 
@@ -1207,8 +1768,10 @@ window.__ModuleLoader__.load({
 .cr-btn:disabled{cursor:not-allowed;opacity:.5}
 .cr-btn--merge{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);padding:0 11px 0 13px}
 .cr-btn--merge:hover{background:var(--dsw-alias-button-primary-fill)}
-.cr-btn--merge:disabled{opacity:1;cursor:not-allowed}
+.cr-btn--merge:disabled{opacity:.5;cursor:not-allowed}
 .cr-root .cr-btn--merge{color:var(--dsw-alias-label-primary-foreground)}
+.cr-root .cr-btn--primary{color:var(--dsw-alias-label-primary-foreground)}
+.cr-root .cr-btn--primary:hover{background:var(--dsw-alias-button-primary-hover)}
 .cr-btn--ghost{background:transparent;color:var(--cr-text-2);height:26px;padding:0 9px;font-size:12px;border-radius:6px}
 .cr-btn--ghost:hover{background:var(--cr-hover);color:var(--cr-text)}
 .cr-btn--primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
@@ -1459,11 +2022,73 @@ window.__ModuleLoader__.load({
 .cr-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:13px}
 .cr-modal-actions .cr-btn--ghost{margin-right:auto}
 
-/* ---------------- composer (read-only placeholder) ---------------- */.cr-composer{position:absolute;right:21px;bottom:21px;z-index:3;display:flex;align-items:center;gap:10px;height:43px;padding:0 12px 0 14px;border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 11%,var(--dsw-alias-bg-base));box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2);pointer-events:none}
-.cr-composer-plus{color:var(--cr-text-3);display:grid;place-items:center}
-.cr-composer-text{font-size:13.5px;color:var(--cr-text-3);white-space:nowrap}
-.cr-composer-icons{display:flex;align-items:center;gap:10px;margin-left:10px;color:var(--cr-text-3)}
-.cr-composer-send{display:grid;place-items:center;width:27px;height:27px;border-radius:50%;background:color-mix(in srgb,var(--cr-blue) 45%,var(--cr-bg));color:var(--cr-text-3)}
+/* ---------------- v2: merge confirmation dialog ---------------- */
+.cr-modal-backdrop--center{align-items:center;justify-content:center;padding:24px}
+.cr-modal--merge{width:460px}
+.cr-merge-rows{display:flex;flex-direction:column;gap:6px;margin:2px 0 12px}
+.cr-merge-row{display:flex;gap:10px;font-size:12px;line-height:18px;align-items:baseline}
+.cr-merge-row-key{flex:none;width:64px;color:var(--cr-text-3)}
+.cr-merge-row-val{flex:1;min-width:0;color:var(--cr-text-2);overflow-wrap:anywhere}
+.cr-merge-row-val--mono{font-family:var(--cr-mono);font-size:11.5px;color:var(--cr-text-3)}
+.cr-merge-row-val--title{color:var(--cr-text);font-weight:500}
+.cr-merge-risk{margin-top:11px;padding:8px 10px;border-radius:8px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-state-warn-label);background:color-mix(in srgb,var(--cr-orange) 10%,transparent);border:1px solid color-mix(in srgb,var(--cr-orange) 24%,transparent)}
+.cr-merge-error{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:11.5px;line-height:17px;color:var(--cr-text-2);background:color-mix(in srgb,var(--cr-red) 8%,transparent);border:1px solid color-mix(in srgb,var(--cr-red) 22%,transparent)}
+.cr-merge-error b{color:var(--cr-red);font-weight:600;margin-right:5px}
+.cr-merge-ok{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:11.5px;line-height:17px;color:var(--cr-text-2);background:color-mix(in srgb,var(--cr-green) 9%,transparent);border:1px solid color-mix(in srgb,var(--cr-green) 24%,transparent)}
+
+/* ---------------- v2: PR chat panel ---------------- */
+.cr-chat{position:absolute;right:21px;bottom:80px;z-index:9;width:420px;max-width:calc(100% - 42px);max-height:60%;display:flex;flex-direction:column;border:1px solid var(--cr-border-strong);border-radius:12px;background:var(--cr-card);box-shadow:0 12px 32px var(--dsw-alias-bg-mask-2);overflow:hidden}
+.cr-chat-head{flex:none;display:flex;align-items:center;gap:6px;padding:9px 8px 8px 13px;border-bottom:1px solid var(--cr-border)}
+.cr-chat-title{flex:1;min-width:0;display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--cr-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-chat-status{flex:none;font-size:11px;color:var(--cr-text-3);font-variant-numeric:tabular-nums}
+.cr-chat-head-btn{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--cr-text-2);cursor:pointer}
+.cr-chat-head-btn:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-chat-head-btn:disabled{opacity:.45;cursor:not-allowed}
+.cr-chat-body{flex:1;min-height:0;overflow-y:auto;padding:12px 13px 8px;display:flex;flex-direction:column;gap:10px}
+.cr-chat-msg{display:flex;flex-direction:column;gap:3px;max-width:100%}
+.cr-chat-msg--user{align-items:flex-end}
+.cr-chat-who{font-size:10.5px;line-height:15px;color:var(--cr-text-3);padding:0 2px}
+.cr-chat-bubble{padding:8px 11px;border-radius:10px;font-size:12.5px;line-height:19px;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;color:var(--cr-text-2);background:var(--cr-panel);border:1px solid var(--cr-border)}
+.cr-chat-msg--user .cr-chat-bubble{background:color-mix(in srgb,var(--cr-blue) 12%,transparent);border-color:color-mix(in srgb,var(--cr-blue) 26%,transparent);color:var(--cr-text)}
+.cr-chat-msg--assistant .cr-chat-bubble{background:var(--cr-bg)}
+.cr-chat-caret{display:inline-block;width:6px;height:12px;margin-left:2px;vertical-align:-2px;background:var(--cr-text-2);animation:cr-blink 1s steps(1) infinite}
+@keyframes cr-blink{50%{opacity:0}}
+.cr-chat-empty{display:flex;flex-direction:column;gap:6px;padding:8px 2px}
+.cr-chat-empty-title{font-size:13px;font-weight:600;color:var(--cr-text)}
+.cr-chat-empty-text{font-size:12px;line-height:18px;color:var(--cr-text-3)}
+.cr-chat-quick{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.cr-chat-quick-btn{display:flex;align-items:center;gap:7px;width:100%;text-align:left;padding:7px 9px;border:1px solid var(--cr-border-2);border-radius:8px;background:transparent;color:var(--cr-text-2);font-size:12px;line-height:18px;cursor:pointer}
+.cr-chat-quick-btn:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-chat-error{padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--cr-red) 9%,transparent);border:1px solid color-mix(in srgb,var(--cr-red) 24%,transparent);font-size:11.5px;line-height:17px;color:var(--cr-text-2)}
+.cr-chat-error-head{display:flex;align-items:center;gap:6px;color:var(--cr-red);font-weight:600;margin-bottom:2px}
+.cr-chat-error-actions{display:flex;gap:6px;margin-top:6px}
+.cr-chat-foot{flex:none;display:flex;align-items:center;gap:8px;padding:6px 8px 8px 12px;border-top:1px solid var(--cr-border);font-size:10.5px;line-height:15px;color:var(--cr-text-3)}
+.cr-chat-foot-spacer{flex:1}
+.cr-chat-stop{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border:1px solid var(--cr-border-strong);border-radius:6px;background:transparent;color:var(--cr-text-2);font-size:11px;cursor:pointer}
+.cr-chat-stop:hover{background:var(--cr-hover);color:var(--cr-text)}
+
+/* ---------------- v2: interactive composer (real PR chat input) ---------------- */
+.cr-composer{position:absolute;right:21px;bottom:21px;z-index:8;display:flex;align-items:flex-end;gap:7px;width:min(560px,calc(100% - 42px));min-height:43px;padding:5px 6px 5px 12px;border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 11%,var(--dsw-alias-bg-base));box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2)}
+.cr-composer:focus-within{outline:2px solid color-mix(in srgb,var(--cr-green) 45%,transparent);outline-offset:1px}
+.cr-composer-plus{flex:none;align-self:center;display:grid;place-items:center;color:var(--cr-text-3)}
+.cr-composer-input{flex:1;min-width:0;max-height:92px;padding:8px 0;border:0;outline:none;background:transparent;color:var(--cr-text);font:13.5px/20px ${SANS};resize:none;overflow-y:auto}
+.cr-composer-input::placeholder{color:var(--cr-text-3)}
+.cr-composer-input:disabled{opacity:.6}
+.cr-composer-icons{flex:none;display:flex;align-items:center;gap:1px;align-self:center;color:var(--cr-text-3)}
+.cr-composer-iconbtn{display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--cr-text-3);cursor:pointer}
+.cr-composer-iconbtn:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-composer-iconbtn:disabled{opacity:.4;cursor:not-allowed}
+.cr-composer-send{flex:none;align-self:center;display:grid;place-items:center;width:31px;height:31px;border:0;border-radius:50%;background:color-mix(in srgb,var(--cr-blue) 55%,var(--cr-bg));color:var(--cr-text);cursor:pointer}
+.cr-composer-send:hover:not(:disabled){background:color-mix(in srgb,var(--cr-blue) 72%,var(--cr-bg))}
+.cr-composer-send:disabled{opacity:.45;cursor:not-allowed}
+@container (max-width: 900px){
+  .cr-chat{right:12px;left:12px;width:auto;bottom:72px}
+  .cr-composer{right:12px;left:12px;width:auto}
+}
+@media (max-width: 900px){
+  .cr-chat{right:12px;left:12px;width:auto;bottom:72px}
+  .cr-composer{right:12px;left:12px;width:auto}
+}
 
 /* ---------------- toast / states ---------------- */
 .cr-toast{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);z-index:6;padding:8px 14px;border-radius:8px;background:var(--dsw-alias-toast-bg);color:var(--cr-text);font-size:12.5px;box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2)}
@@ -2043,9 +2668,12 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'cr-btn cr-btn--merge',
             'data-action': 'merge',
-            disabled: true,
-            'aria-disabled': 'true',
-            title: tx(t, 'mergeDisabled'),
+            disabled: !props.mergeEnabled,
+            'aria-disabled': props.mergeEnabled ? 'false' : 'true',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': props.mergeOpen ? 'true' : 'false',
+            title: props.mergeTitle || tx(t, 'merge'),
+            onClick: props.onMerge,
           },
           Icon('merge', 14),
           h('span', null, tx(t, 'merge')),
@@ -3709,6 +4337,230 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Merge confirmation dialog (CONTRACT §5.3). Nothing is sent until the user
+     * presses 确认合并; cancelling / Esc / backdrop click never writes.
+     */
+    function MergeDialog(props) {
+      const t = props.t
+      const summary = props.summary && typeof props.summary === 'object' ? props.summary : {}
+      const headSha = typeof props.headSha === 'string' ? props.headSha : ''
+      const method = normalizeMergeMethod(props.method)
+      const phase = props.phase === 'submitting' ? 'submitting' : 'idle'
+      const error = props.error && typeof props.error === 'object' ? props.error : null
+      const dialogRef = useRef(null)
+      const disabled = phase === 'submitting'
+      useEffect(() => {
+        try {
+          const node = dialogRef.current
+          const first =
+            node && typeof node.querySelector === 'function'
+              ? node.querySelector('input[type="radio"]')
+              : null
+          const target = first || node
+          if (target && typeof target.focus === 'function') target.focus()
+        } catch {
+          /* focus is best effort */
+        }
+      }, [])
+      const cancel = () => {
+        if (disabled) return
+        if (typeof props.onCancel === 'function') props.onCancel()
+      }
+      const onKeyDown = (event) => {
+        try {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            cancel()
+          }
+        } catch {
+          /* never break the dialog */
+        }
+      }
+      const number = summary.number === undefined ? '' : summary.number
+      const repoName = String(summary.repo || '')
+      const headRef = String(summary.headRefName || '')
+      const baseRef = String(summary.baseRefName || '')
+      const methodRows = [
+        { value: 'squash', label: 'mergeSquash', hint: 'mergeSquashHint' },
+        { value: 'merge', label: 'mergeCommit', hint: 'mergeCommitHint' },
+        { value: 'rebase', label: 'mergeRebase', hint: 'mergeRebaseHint' },
+      ]
+      const errorKey = error ? mergeErrorKey(error.code) : ''
+      return h(
+        'div',
+        {
+          className: 'cr-modal-backdrop cr-modal-backdrop--center',
+          'data-cr-merge-dialog': 'ready',
+          onMouseDown: (event) => {
+            if (event && event.target === event.currentTarget) cancel()
+          },
+        },
+        h(
+          'div',
+          {
+            className: 'cr-modal cr-modal--merge',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'cr-merge-title',
+            tabIndex: -1,
+            ref: dialogRef,
+            onKeyDown,
+            'data-merge-phase': phase,
+            'data-merge-method': method,
+          },
+          h(
+            'div',
+            { className: 'cr-modal-head' },
+            h(
+              'span',
+              { className: 'cr-modal-title', id: 'cr-merge-title' },
+              tx(t, 'mergeDialogTitle'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-modal-close',
+                'aria-label': tx(t, 'cancel'),
+                title: tx(t, 'cancel'),
+                disabled,
+                onClick: cancel,
+              },
+              Icon('close', 13, { strokeWidth: 2 }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'cr-merge-rows' },
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'mergeRepo')),
+              h(
+                'span',
+                { className: 'cr-merge-row-val cr-merge-row-val--mono', 'data-merge-repo': 'ready' },
+                repoName + (number === '' ? '' : ' #' + number),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'mergeTarget')),
+              h(
+                'span',
+                { className: 'cr-merge-row-val cr-merge-row-val--mono' },
+                truncateMiddle(headRef, 34) + ' → ' + truncateMiddle(baseRef, 34),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'mergeHeadSha')),
+              h(
+                'span',
+                {
+                  className: 'cr-merge-row-val cr-merge-row-val--mono',
+                  'data-merge-sha': shortSha(headSha),
+                  title: headSha,
+                },
+                shortSha(headSha) || '—',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'mergePrTitle')),
+              h('span', { className: 'cr-merge-row-val cr-merge-row-val--title' }, String(summary.title || '')),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'mergeMethodLabel')),
+            methodRows.map((row) =>
+              h(
+                'label',
+                { key: row.value, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-merge-method',
+                  value: row.value,
+                  'data-merge-method-value': row.value,
+                  checked: method === row.value,
+                  disabled,
+                  onChange: () => {
+                    if (typeof props.onMethodChange === 'function') props.onMethodChange(row.value)
+                  },
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, row.label)),
+                  h('span', { className: 'cr-option-hint' }, tx(t, row.hint)),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'label',
+            { className: 'cr-option', style: { marginTop: 8 } },
+            h('input', {
+              type: 'checkbox',
+              'data-merge-delete': 'toggle',
+              checked: Boolean(props.deleteBranch),
+              disabled,
+              onChange: (event) => {
+                if (typeof props.onDeleteBranchChange === 'function') {
+                  props.onDeleteBranchChange(Boolean(event && event.target && event.target.checked))
+                }
+              },
+            }),
+            h(
+              'span',
+              { className: 'cr-option-text' },
+              h('span', { className: 'cr-option-label' }, tx(t, 'mergeDeleteBranch')),
+              h('span', { className: 'cr-option-hint' }, tx(t, 'mergeDeleteBranchHint')),
+            ),
+          ),
+          h('div', { className: 'cr-merge-risk', role: 'note' }, Icon('alert', 12), ' ', tx(t, 'mergeRisk')),
+          error
+            ? h(
+                'div',
+                { className: 'cr-merge-error', 'data-merge-error': error.code || 'INTERNAL', role: 'alert' },
+                h('b', null, String(error.code || 'INTERNAL')),
+                h('span', null, errorKey ? tx(t, errorKey) : String(error.message || '')),
+              )
+            : null,
+          h(
+            'div',
+            { className: 'cr-modal-actions' },
+            h(
+              'button',
+              { type: 'button', className: 'cr-btn cr-btn--ghost', 'data-action': 'merge-cancel', disabled, onClick: cancel },
+              tx(t, 'cancel'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--primary',
+                'data-action': 'merge-confirm',
+                disabled,
+                'aria-busy': disabled ? 'true' : 'false',
+                onClick: () => {
+                  if (!disabled && typeof props.onConfirm === 'function') props.onConfirm()
+                },
+              },
+              disabled ? h('span', { className: 'cr-spinner' }) : Icon('merge', 13),
+              tx(t, disabled ? 'mergeSubmitting' : 'mergeConfirm'),
+            ),
+          ),
+        ),
+      )
+    }
+
     function RightPanel(props) {
       const t = props.t
       const detail = props.detail || {}
@@ -3742,31 +4594,293 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
-    // Read-only floating composer placeholder (ui-spec §2.9, disabled in v1)
+    // v2: floating PR chat panel + interactive composer (CONTRACT §5.2)
     // ---------------------------------------------------------------------
 
-    function Composer(props) {
+    /** Floating chat panel: message bubbles, streaming caret, stop/clear/retry. */
+    function ChatPanel(props) {
       const t = props.t
+      const chat = props.chat && typeof props.chat === 'object' ? props.chat : {}
+      const messages = Array.isArray(chat.messages) ? chat.messages : []
+      const streaming = Boolean(chat.streaming)
+      const error = chat.error && typeof chat.error === 'object' ? chat.error : null
+      const bodyRef = useRef(null)
+      useEffect(() => {
+        try {
+          const node = bodyRef.current
+          if (node) node.scrollTop = node.scrollHeight
+        } catch {
+          /* auto-scroll is best effort */
+        }
+      }, [messages, streaming, error])
+      const onKeyDown = (event) => {
+        try {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            if (typeof props.onClose === 'function') props.onClose()
+          }
+        } catch {
+          /* never break the panel */
+        }
+      }
+      const quick = typeof props.onQuickPrompt === 'function' ? props.onQuickPrompt : null
       return h(
-        'div',
+        'section',
         {
-          className: 'cr-composer',
-          'aria-hidden': 'true',
-          'aria-disabled': 'true',
-          title: tx(t, 'askDisabled'),
+          className: 'cr-chat',
+          role: 'dialog',
+          'aria-label': tx(t, 'chatTitle'),
+          'data-cr-chat': 'ready',
+          'data-chat-streaming': streaming ? 'true' : 'false',
+          onKeyDown,
         },
-        h('span', { className: 'cr-composer-plus' }, Icon('plus', 15)),
-        h('span', { className: 'cr-composer-text' }, tx(t, 'askPlaceholder')),
         h(
-          'span',
-          { className: 'cr-composer-icons' },
-          Icon('brain', 15),
-          Icon('alert', 15),
-          Icon('mic', 15),
-          h('span', { className: 'cr-composer-send' }, Icon('arrowUp', 13)),
+          'div',
+          { className: 'cr-chat-head' },
+          h(
+            'span',
+            { className: 'cr-chat-title' },
+            Icon('brain', 14),
+            h('span', null, tx(t, 'chatTitle')),
+          ),
+          h(
+            'span',
+            { className: 'cr-chat-status', role: 'status' },
+            streaming ? tx(t, 'chatStreaming') : '',
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-chat-head-btn',
+              'data-action': 'chat-clear',
+              'aria-label': tx(t, 'chatClear'),
+              title: tx(t, 'chatClear'),
+              disabled: messages.length === 0 && !streaming && !error,
+              onClick: () => {
+                if (typeof props.onClear === 'function') props.onClear()
+              },
+            },
+            Icon('refresh', 14),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-chat-head-btn',
+              'data-action': 'chat-close',
+              'aria-label': tx(t, 'chatClose'),
+              title: tx(t, 'chatClose'),
+              onClick: () => {
+                if (typeof props.onClose === 'function') props.onClose()
+              },
+            },
+            Icon('close', 13, { strokeWidth: 2 }),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'cr-chat-body', ref: bodyRef, 'aria-live': 'polite', 'data-chat-body': 'ready' },
+          messages.length === 0 && !error
+            ? h(
+                'div',
+                { className: 'cr-chat-empty' },
+                h('div', { className: 'cr-chat-empty-title' }, tx(t, 'chatEmpty')),
+                h('div', { className: 'cr-chat-empty-text' }, tx(t, 'chatEmptyHint')),
+                h(
+                  'div',
+                  { className: 'cr-chat-quick' },
+                  CHAT_QUICK_PROMPTS.map((key, index) =>
+                    h(
+                      'button',
+                      {
+                        key,
+                        type: 'button',
+                        className: 'cr-chat-quick-btn',
+                        'data-action': 'chat-quick',
+                        'data-quick-index': String(index),
+                        disabled: !quick,
+                        onClick: () => {
+                          if (quick) quick(tx(t, key))
+                        },
+                      },
+                      Icon(index === 0 ? 'file' : index === 1 ? 'alert' : 'check', 12),
+                      h('span', null, tx(t, key)),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+          messages.map((message, index) => {
+            if (!message || (message.role !== 'user' && message.role !== 'assistant')) return null
+            const isUser = message.role === 'user'
+            const content = typeof message.content === 'string' ? message.content : ''
+            const isLast = index === messages.length - 1
+            const showCaret = streaming && isLast && !isUser
+            return h(
+              'div',
+              {
+                key: index,
+                className: 'cr-chat-msg cr-chat-msg--' + message.role,
+                'data-chat-role': message.role,
+              },
+              h('span', { className: 'cr-chat-who' }, tx(t, isUser ? 'chatYou' : 'chatAssistant')),
+              h(
+                'div',
+                { className: 'cr-chat-bubble' },
+                content !== '' ? content : tx(t, 'chatThinking'),
+                showCaret ? h('span', { className: 'cr-chat-caret', 'data-chat-caret': 'true' }) : null,
+                !streaming && message.stopped ? h('span', { className: 'cr-chip-tag' }, tx(t, 'chatStopped')) : null,
+              ),
+            )
+          }),
+          error
+            ? h(
+                'div',
+                { className: 'cr-chat-error', role: 'alert', 'data-chat-error': error.code || 'INTERNAL' },
+                h(
+                  'div',
+                  { className: 'cr-chat-error-head' },
+                  Icon('alert', 12),
+                  tx(t, 'chatErrorTitle'),
+                ),
+                h('div', null, String(error.message || '') + (error.code ? ' (' + error.code + ')' : '')),
+                h(
+                  'div',
+                  { className: 'cr-chat-error-actions' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn cr-btn--ghost',
+                      'data-action': 'chat-retry',
+                      disabled: streaming,
+                      onClick: () => {
+                        if (typeof props.onRetry === 'function') props.onRetry()
+                      },
+                    },
+                    tx(t, 'chatRetry'),
+                  ),
+                ),
+              )
+            : null,
+        ),
+        h(
+          'div',
+          { className: 'cr-chat-foot' },
+          streaming
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'cr-chat-stop',
+                  'data-action': 'chat-stop',
+                  'aria-label': tx(t, 'chatStop'),
+                  onClick: () => {
+                    if (typeof props.onStop === 'function') props.onStop()
+                  },
+                },
+                Icon('square', 10),
+                tx(t, 'chatStop'),
+              )
+            : null,
+          h('span', { className: 'cr-chat-foot-spacer' }),
+          h('span', null, tx(t, 'chatHistoryHint')),
         ),
       )
     }
+
+    /** Floating input row: real textarea + send/stop/open-chat controls. */
+    function Composer(props) {
+      const t = props.t
+      const value = typeof props.value === 'string' ? props.value : ''
+      const streaming = Boolean(props.streaming)
+      const canChat = Boolean(props.canChat)
+      const canSend = value.trim() !== '' && !streaming && canChat
+      const onKeyDown = (event) => {
+        try {
+          if (event.key !== 'Enter' || event.shiftKey) return
+          if (event.isComposing || event.keyCode === 229) return
+          event.preventDefault()
+          if (canSend && typeof props.onSend === 'function') props.onSend(value)
+        } catch {
+          /* never break typing */
+        }
+      }
+      return h(
+        'div',
+        { className: 'cr-composer', 'data-cr-composer': 'ready', 'data-composer-streaming': streaming ? 'true' : 'false' },
+        h('span', { className: 'cr-composer-plus', 'aria-hidden': 'true' }, Icon('plus', 15)),
+        h('textarea', {
+          className: 'cr-composer-input',
+          rows: 1,
+          value,
+          ref: props.inputRef,
+          placeholder: tx(t, 'askPlaceholder'),
+          'aria-label': tx(t, 'chatInputLabel'),
+          'data-chat-input': 'ready',
+          disabled: !canChat,
+          onChange: (event) => {
+            if (typeof props.onChange === 'function') props.onChange(String(event.target.value || ''))
+          },
+          onKeyDown,
+          onFocus: () => {
+            if (typeof props.onOpen === 'function') props.onOpen()
+          },
+        }),
+        h(
+          'span',
+          { className: 'cr-composer-icons' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-composer-iconbtn',
+              'data-action': 'chat-open',
+              'aria-label': tx(t, 'chatOpen'),
+              title: tx(t, 'chatOpen'),
+              disabled: !canChat,
+              onClick: () => {
+                if (typeof props.onOpen === 'function') props.onOpen()
+              },
+            },
+            Icon('brain', 15),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-composer-iconbtn',
+              'data-action': 'chat-quick-risks',
+              'aria-label': tx(t, 'chatRisks'),
+              title: tx(t, 'chatRisks'),
+              disabled: !canChat || streaming,
+              onClick: () => {
+                if (typeof props.onQuickPrompt === 'function') props.onQuickPrompt(tx(t, 'chatRisks'))
+              },
+            },
+            Icon('alert', 15),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-composer-send',
+              'data-action': 'chat-send',
+              'aria-label': tx(t, 'chatSend'),
+              title: tx(t, 'chatSend'),
+              disabled: !canSend,
+              onClick: () => {
+                if (canSend && typeof props.onSend === 'function') props.onSend(value)
+              },
+            },
+            streaming ? h('span', { className: 'cr-spinner' }) : Icon('arrowUp', 13),
+          ),
+        ),
+      )
+    }
+
     // ---------------------------------------------------------------------
     // Page state machine
     // ---------------------------------------------------------------------
@@ -3821,6 +4935,17 @@ window.__ModuleLoader__.load({
       const [jumpTarget, setJumpTarget] = useState(null)
       const [toast, showToast] = useToast()
       const [clock] = useState(() => Date.now())
+      // v2: merge dialog + PR chat state (CONTRACT §5)
+      const [mergeDialog, setMergeDialog] = useState({
+        open: false,
+        method: DEFAULT_MERGE_METHOD,
+        deleteBranch: false,
+        phase: 'idle',
+        error: null,
+      })
+      const [mergedPrs, setMergedPrs] = useState({})
+      const [composerText, setComposerText] = useState('')
+      const [chat, setChat] = useState({ open: false, messages: [], streaming: false, error: null })
 
       const docRef = useRef(null)
       const listGeneration = useRef(0)
@@ -3835,6 +4960,13 @@ window.__ModuleLoader__.load({
       const listRef = useRef(null)
       /** Per-tab scroll offsets so Summary/Changes switching keeps each position. */
       const scrollPositions = useRef({ summary: 0, changes: 0 })
+      const composerRef = useRef(null)
+      const chatAbortRef = useRef(null)
+      const chatGeneration = useRef(0)
+      const chatRef = useRef(null)
+      chatRef.current = chat
+      const mergeDialogRef = useRef(null)
+      mergeDialogRef.current = mergeDialog
 
       // health: one shot, drives the top notice bar only
       useEffect(() => {
@@ -4151,10 +5283,22 @@ window.__ModuleLoader__.load({
               if (settingsOpen) {
                 event.preventDefault()
                 setSettingsOpen(false)
+                return
+              }
+              if (mergeDialogRef.current && mergeDialogRef.current.open) {
+                event.preventDefault()
+                cancelMerge()
+                return
+              }
+              if (chatRef.current && chatRef.current.open) {
+                event.preventDefault()
+                setChat((previous) => Object.assign({}, previous, { open: false }))
+                return
               }
               return
             }
             if (settingsOpen) return
+            if (mergeDialogRef.current && mergeDialogRef.current.open) return
             if (isTyping(event.target)) return
             if (key === 'j' || key === 'k') {
               const items = Array.isArray(list.items) ? list.items : []
@@ -4259,6 +5403,289 @@ window.__ModuleLoader__.load({
         }
       }, [showToast, t])
 
+      // -------------------------------------------------------------------
+      // v2: PR chat state machine (CONTRACT §5.2)
+      // -------------------------------------------------------------------
+
+      /** Abort the in-flight chat stream (if any); safe to call repeatedly. */
+      const abortChatStream = useCallback(() => {
+        const controller = chatAbortRef.current
+        chatAbortRef.current = null
+        try {
+          if (controller && typeof controller.abort === 'function') controller.abort()
+        } catch {
+          /* abort is best effort */
+        }
+      }, [])
+
+      /** Persist the current PR's settled chat history (best effort). */
+      const persistChat = useCallback((messages) => {
+        const current = selectedRef.current
+        if (!current) return
+        writeChatHistory(localStore(), current.repo, current.number, messages)
+      }, [])
+
+      // Switching PR: abort any stream, then load that PR's own history.
+      const chatKey = selected ? chatHistoryKey(selected.repo, selected.number) : ''
+      useEffect(() => {
+        const repo = selected ? selected.repo : ''
+        const number = selected ? selected.number : null
+        chatGeneration.current += 1
+        abortChatStream()
+        setChat({
+          open: false,
+          messages: readChatHistory(localStore(), repo, number),
+          streaming: false,
+          error: null,
+        })
+        setComposerText('')
+        return () => {
+          const current = chatRef.current
+          if (current && Array.isArray(current.messages) && current.messages.length > 0) {
+            writeChatHistory(localStore(), repo, number, current.messages)
+          }
+        }
+      }, [chatKey, abortChatStream])
+
+      /** Optional focusFile context: the expanded diff file while on Changes. */
+      const resolveFocusFile = useCallback(() => {
+        if (tab !== 'changes') return ''
+        const value = detail.value || {}
+        const files = Array.isArray(value.files) ? value.files : []
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index] || {}
+          const key = fileKey(file, index)
+          if (expanded[key]) return typeof file.path === 'string' ? file.path : key
+        }
+        return ''
+      }, [tab, detail.value, expanded])
+
+      const sendChat = useCallback(
+        (rawText, options) => {
+          const opts = options && typeof options === 'object' ? options : {}
+          const current = selectedRef.current
+          if (!current) {
+            showToast(tx(t, 'chatNoSelection'))
+            return
+          }
+          const text = String(rawText === undefined || rawText === null ? '' : rawText).trim()
+          if (!opts.reuseLastUser && text === '') return
+          const previous =
+            chatRef.current && Array.isArray(chatRef.current.messages)
+              ? chatRef.current.messages.slice()
+              : []
+          let baseMessages = previous.map((message) => ({
+            role: message.role,
+            content: message.content,
+          }))
+          let userMessage = { role: 'user', content: text }
+          if (opts.reuseLastUser) {
+            const lastUser = chatLastUserMessage(previous)
+            if (!lastUser) return
+            let index = -1
+            for (let cursor = previous.length - 1; cursor >= 0; cursor -= 1) {
+              if (previous[cursor] === lastUser) {
+                index = cursor
+                break
+              }
+            }
+            if (index >= 0) {
+              baseMessages = previous.slice(0, index).map((message) => ({
+                role: message.role,
+                content: message.content,
+              }))
+            }
+            userMessage = { role: 'user', content: lastUser.content }
+          }
+          const generation = ++chatGeneration.current
+          abortChatStream()
+          const controller = typeof AbortController === 'function' ? new AbortController() : null
+          chatAbortRef.current = controller
+          const requestMessages = chatRequestMessages(baseMessages.concat([userMessage]))
+          const focusFile = resolveFocusFile()
+          const payload = { repo: current.repo, number: current.number, messages: requestMessages }
+          if (focusFile !== '') payload.focusFile = focusFile
+          setComposerText('')
+          setChat({
+            open: true,
+            messages: baseMessages.concat([userMessage, { role: 'assistant', content: '' }]),
+            streaming: true,
+            error: null,
+          })
+          const settle = (updater) => {
+            if (generation !== chatGeneration.current) return
+            setChat((state) => {
+              const next = updater(state)
+              if (next && Array.isArray(next.messages)) persistChat(next.messages)
+              return next
+            })
+          }
+          streamPost(ROUTE + '/chat', payload, {
+            signal: controller ? controller.signal : undefined,
+            onEvent: (event) => {
+              if (generation !== chatGeneration.current) return
+              if (event.type === 'delta') {
+                setChat((state) =>
+                  Object.assign({}, state, {
+                    messages: applyChatDelta(state.messages, event.text),
+                  }),
+                )
+              }
+            },
+          }).then((result) => {
+            if (generation !== chatGeneration.current) return
+            chatAbortRef.current = null
+            if (result && result.aborted) {
+              settle((state) => ({
+                open: true,
+                messages: markChatStopped(state.messages),
+                streaming: false,
+                error: null,
+              }))
+              return
+            }
+            if (!result || !result.ok) {
+              const error =
+                result && result.error ? result.error : { code: 'INTERNAL', message: '对话失败' }
+              settle((state) => ({
+                open: true,
+                messages: dropEmptyAssistant(state.messages),
+                streaming: false,
+                error,
+              }))
+              return
+            }
+            settle((state) => ({
+              open: true,
+              messages: settleChatMessages(state.messages),
+              streaming: false,
+              error: null,
+            }))
+          })
+        },
+        [abortChatStream, persistChat, resolveFocusFile, showToast, t],
+      )
+
+      const openChat = useCallback(() => {
+        if (!selectedRef.current) {
+          showToast(tx(t, 'chatNoSelection'))
+          return
+        }
+        setChat((previous) => Object.assign({}, previous, { open: true }))
+      }, [showToast, t])
+
+      const closeChat = useCallback(() => {
+        setChat((previous) => Object.assign({}, previous, { open: false }))
+      }, [])
+
+      const stopChat = useCallback(() => {
+        const controller = chatAbortRef.current
+        if (!controller) {
+          setChat((previous) => Object.assign({}, previous, { streaming: false }))
+          return
+        }
+        try {
+          if (typeof controller.abort === 'function') controller.abort()
+        } catch {
+          /* ignore */
+        }
+      }, [])
+
+      const clearChat = useCallback(() => {
+        chatGeneration.current += 1
+        abortChatStream()
+        persistChat([])
+        setChat({ open: true, messages: [], streaming: false, error: null })
+        showToast(tx(t, 'chatCleared'))
+      }, [abortChatStream, persistChat, showToast, t])
+
+      const retryChat = useCallback(() => {
+        sendChat('', { reuseLastUser: true })
+      }, [sendChat])
+
+      // -------------------------------------------------------------------
+      // v2: merge confirmation (CONTRACT §5.3) — writes only after explicit confirm
+      // -------------------------------------------------------------------
+
+      const openMerge = useCallback(() => {
+        const current = selectedRef.current
+        if (!current) return
+        if (!mergeAvailability(current).enabled) return
+        setMergeDialog({
+          open: true,
+          method: DEFAULT_MERGE_METHOD,
+          deleteBranch: false,
+          phase: 'idle',
+          error: null,
+        })
+      }, [])
+
+      const cancelMerge = useCallback(() => {
+        setMergeDialog((previous) =>
+          Object.assign({}, previous, { open: false, phase: 'idle', error: null }),
+        )
+      }, [])
+
+      const updateMerge = useCallback((patch) => {
+        setMergeDialog((previous) => Object.assign({}, previous, patch))
+      }, [])
+
+      const confirmMerge = useCallback(() => {
+        const current = selectedRef.current
+        if (!current) return
+        const currentDialog = mergeDialogRef.current
+        if (!currentDialog || currentDialog.phase === 'submitting') return
+        const detailValue = detail.value || {}
+        const headSha = resolveHeadSha(detailValue)
+        const request = buildMergeRequest({
+          summary: detailValue.summary || current,
+          headSha,
+          method: currentDialog.method,
+          deleteBranch: currentDialog.deleteBranch,
+        })
+        if (!request) {
+          setMergeDialog((previous) =>
+            Object.assign({}, previous, {
+              phase: 'idle',
+              error: {
+                code: 'BAD_REQUEST',
+                message: tx(t, headSha === '' ? 'mergeHeadMissing' : 'mergeMethodRequired'),
+              },
+            }),
+          )
+          return
+        }
+        setMergeDialog((previous) => Object.assign({}, previous, { phase: 'submitting', error: null }))
+        post(ROUTE + '/merge', request).then((result) => {
+          if (result.ok) {
+            const value = result.value || {}
+            const sha = shortSha(value.sha, 7) || shortSha(request.expectedHeadSha, 7)
+            const key = String(current.repo || '') + '#' + String(current.number)
+            setMergedPrs((previous) => Object.assign({}, previous, { [key]: sha || 'merged' }))
+            setMergeDialog({
+              open: false,
+              method: DEFAULT_MERGE_METHOD,
+              deleteBranch: false,
+              phase: 'idle',
+              error: null,
+            })
+            let message = tx(t, 'mergeSuccess', { sha })
+            if (value.branchWarning) {
+              message += ' · ' + tx(t, 'mergeBranchWarning', { message: String(value.branchWarning) })
+            }
+            showToast(message)
+            loadDetail(current)
+            return
+          }
+          const error = result.error || { code: 'INTERNAL', message: '合并失败' }
+          setMergeDialog((previous) => Object.assign({}, previous, { phase: 'idle', error }))
+          if (error.code === 'MERGE_HEAD_MOVED') {
+            showToast(tx(t, 'mergeHeadMoved'))
+            loadDetail(current)
+          }
+        })
+      }, [detail.value, loadDetail, showToast, t])
+
       const notice = healthNotice(health, t)
       const detailValue = detail.value
       const reviewValue = review || { state: 'none' }
@@ -4269,6 +5696,26 @@ window.__ModuleLoader__.load({
         depth: tx(t, depthKey(settings.depth)),
         threshold: tx(t, thresholdKey(settings.severityThreshold)),
       })
+      const mergedKey = selected ? String(selected.repo || '') + '#' + String(selected.number) : ''
+      const mergedSha = mergedKey !== '' ? mergedPrs[mergedKey] || '' : ''
+      const summaryForMerge = detailValue && detailValue.summary ? detailValue.summary : selected || {}
+      const mergeState = mergeAvailability(
+        mergedSha !== '' ? Object.assign({}, summaryForMerge, { merged: true }) : summaryForMerge,
+      )
+      const mergeTitle = mergeState.enabled
+        ? tx(t, 'merge')
+        : tx(
+            t,
+            mergeState.reason === 'merged'
+              ? 'mergeMerged'
+              : mergeState.reason === 'draft'
+                ? 'mergeDraft'
+                : mergeState.reason === 'closed'
+                  ? 'mergeClosed'
+                  : 'mergeNotAllowed',
+          )
+      const currentHeadSha = resolveHeadSha(detailValue)
+      const canChat = Boolean(selected)
 
       let docBody
       if (!selected && detail.state === 'idle') {
@@ -4350,6 +5797,10 @@ window.__ModuleLoader__.load({
           'data-cr-settings-open': settingsOpen ? 'open' : 'closed',
           'data-cr-settings-depth': settings.depth,
           'data-cr-settings-threshold': settings.severityThreshold,
+          'data-cr-merge-open': mergeDialog.open ? 'open' : 'closed',
+          'data-cr-chat-open': chat.open ? 'open' : 'closed',
+          'data-cr-chat-streaming': chat.streaming ? 'true' : 'false',
+          'data-cr-chat-messages': String(Array.isArray(chat.messages) ? chat.messages.length : 0),
         },
         h('style', null, CSS),
         h(PrList, {
@@ -4397,6 +5848,10 @@ window.__ModuleLoader__.load({
             onGithub: openGithub,
             onReview: startReview,
             onGear: () => setSettingsOpen(true),
+            mergeEnabled: mergeState.enabled,
+            mergeTitle,
+            mergeOpen: mergeDialog.open,
+            onMerge: openMerge,
           }),
           h(
             'div',
@@ -4438,7 +5893,43 @@ window.__ModuleLoader__.load({
               onClose: closeSettings,
             })
           : null,
-        h(Composer, { t }),
+        chat.open && selected
+          ? h(ChatPanel, {
+              chat,
+              t,
+              onClose: closeChat,
+              onClear: clearChat,
+              onStop: stopChat,
+              onRetry: retryChat,
+              onQuickPrompt: (text) => sendChat(text),
+            })
+          : null,
+        mergeDialog.open && selected
+          ? h(MergeDialog, {
+              summary: summaryForMerge,
+              headSha: currentHeadSha,
+              method: mergeDialog.method,
+              deleteBranch: mergeDialog.deleteBranch,
+              phase: mergeDialog.phase,
+              error: mergeDialog.error,
+              t,
+              onMethodChange: (method) => updateMerge({ method }),
+              onDeleteBranchChange: (deleteBranch) => updateMerge({ deleteBranch }),
+              onConfirm: confirmMerge,
+              onCancel: cancelMerge,
+            })
+          : null,
+        h(Composer, {
+          t,
+          value: composerText,
+          onChange: setComposerText,
+          onSend: (text) => sendChat(text),
+          onQuickPrompt: (text) => sendChat(text),
+          onOpen: openChat,
+          streaming: chat.streaming,
+          canChat,
+          inputRef: composerRef,
+        }),
         toast ? h('div', { className: 'cr-toast', role: 'status' }, String(toast)) : null,
       )
     }
@@ -4633,7 +6124,32 @@ window.__ModuleLoader__.load({
         verdictHintKey,
         confidenceKey,
         describeReviewOptions,
+        MERGE_METHODS,
+        DEFAULT_MERGE_METHOD,
+        CHAT_KEY_PREFIX,
+        CHAT_HISTORY_LIMIT,
+        CHAT_REQUEST_MESSAGES,
+        CHAT_MESSAGE_CHARS,
+        CHAT_QUICK_PROMPTS,
+        mergeAvailability,
+        resolveHeadSha,
+        shortSha,
+        normalizeMergeMethod,
+        buildMergeRequest,
+        mergeErrorKey,
+        createSseParser,
+        normalizeChatHistory,
+        chatHistoryKey,
+        readChatHistory,
+        writeChatHistory,
+        chatRequestMessages,
+        applyChatDelta,
+        chatLastUserMessage,
+        dropEmptyAssistant,
+        settleChatMessages,
+        markChatStopped,
         post,
+        streamPost,
       },
     }
   },

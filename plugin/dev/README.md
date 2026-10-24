@@ -7,7 +7,9 @@
   `--dsw-alias-*` 主题 token（深色 = 从 Codex 参考截图实测的配色，浅色为同构浅色值）、
   `window.__ModuleLoader__` 桩、`ctx.locale` / `ctx.slots` 桩、场景驱动脚本。
 - `serve.mjs`：零依赖静态服务 + 与 Host 同名同信封（`{ok,value}` / `{ok:false,error}`）的
-  mock 路由：`/codex-review/health|prs|pr|review-start|review-status|review-cancel`。
+  mock 路由：`/codex-review/health|prs|pr|review-start|review-status|review-cancel`，
+  v2 追加 `/codex-review/merge`（守卫镜像 + 写请求记录）与 `/codex-review/chat`
+  （`text/event-stream`，可脚本化 delta/错误帧），以及 dev-only 的 `dev-state` / `dev-reset`。
 - `mock/*.json`：由 `build-mocks.mjs` 从 `recon/probe-output.json`（真实 `gh` 抓取）归一化成
   CONTRACT.md §1.2 的形状；`review-*.json` 是 done / running / error / empty 四种审查终态。
 - `build-mocks.mjs`：重新生成 mock；findings 的行号从真实 patch 的新增行里取，保证能定位到 diff。
@@ -16,11 +18,12 @@
 - `check-preview.mjs`：用 Edge + CDP 跑场景，断言无 console error / 无未捕获异常，
   并量出三栏宽度（238 / 760 / 300）、列表行数、diff 行数、审查状态；v1.1 追加
   verdict / 过滤 chips / options+guidelines+reusedFiles 行 / 行内 finding 卡展开 /
-  设置弹层 / 已有评论 / `j` `/` `Esc` 键盘断言。
+  设置弹层 / 已有评论 / `j` `/` `Esc` 键盘断言；v2 追加合并弹层字段 + 取消不写 +
+  确认请求字段、chat 流式增量 / 停止 / 历史持久化与按 PR 隔离。
 - `shots.mjs`：用同一套 CDP 装置给全部场景出图（1600×1100），一次重建 `shots/`。
 - `vendor/react/`：React 18.3.1 UMD（dev-only，见该目录 README 的来源说明）。
 - `shots/`：默认态、Changes、审查结果、运行中、错误、空列表、浅色、部分完成，
-  以及 v1.1 的行内 finding 卡 / 设置弹层 / 已有评论。
+  v1.1 的行内 finding 卡 / 设置弹层 / 已有评论，以及 v2 的合并弹层 / PR 对话。
 
 ## 跑起来
 
@@ -46,6 +49,8 @@ node plugin/dev/shots.mjs                # 重出全部截图（另开一个终�
 | `/?scene=v11-inline-findings` | 审查后点「定位到 diff」：Changes 展开文件、行高亮、行内 finding 卡展开 |
 | `/?scene=v11-settings` | 齿轮审查设置弹层（depth / severityThreshold / includeGuidelines） |
 | `/?scene=v11-existing-comments` | 已有 GitHub 行内评论卡（含 >400 字截断与文件级评论） |
+| `/?scene=v2-merge-dialog` | 合并确认弹层：三种合并方式 / 删除源分支 / head sha / 写操作风险提示 |
+| `/?scene=v2-chat` | PR 对话面板：发送快捷提问 → 流式回答、历史气泡 |
 | `&theme=light` | 浅色主题（验证 token 双主题可用） |
 
 ```bash
@@ -65,7 +70,13 @@ node plugin/dev/shots.mjs                # 重出全部截图（另开一个终�
   `chunkChars / maxChunks / concurrency`，并演示 `cached: true`。
 - `v11-existing-comments` 场景由 preview 在 `/codex-review/pr` 请求里注入
   `mockScenario: 'comments'`，serve.mjs 据此返回 `mock/pr-129-comments.json`。
-- `POST /codex-review/dev-reset` 清空 mock 的 job 缓存；`shots.mjs` 每张图前都会调用，
+- `POST /codex-review/dev-reset` 清空 mock 的 job 缓存与 v2 dev-state；`shots.mjs` 每张图前都会调用，
   避免上一场景的 `cached` toast 留在截图里（dev-only 路由，真实 Host 没有）。
+- `POST /codex-review/dev-state` 返回最近一次 merge / chat 请求（供 check-preview 断言
+  「取消不写」「确认请求字段」「chat 历史条数」）；只存在于 mock server。
+- v2 场景的 dev 注入：preview 会往 `/codex-review/merge` 带 `mockMerge`（`head-moved` /
+  `conflict` / `not-allowed` 可复现守卫错误），往 `/codex-review/chat` 带 `mockChat`
+  （`v2-chat` 场景第二次提问用 `slow`，便于断言「停止」）；`v2-*` 场景启动时会清掉该 origin 的
+  `codex-review:chat:*` 历史，保证截图稳定。
 - 预览页的标题栏、左侧图标 rails、`PREVIEW` 角标只存在于 `preview.html`，`client.js` 不渲染它们。
 - `mock/`、`vendor/`、`shots/`、本文件都不应进入安装包 `files`（Host 侧 package.json 负责）。

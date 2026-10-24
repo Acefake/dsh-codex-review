@@ -1,19 +1,20 @@
 # dsh-codex-review · 端到端验收报告
 
-> **状态：PASS（v1 验收 2026-10-24 16:05；v1.1 验收 2026-10-24 19:10，Host v1.1 / health version=0.2.0）**
-> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–19:15（Asia/Shanghai）
+> **状态：PASS（v1 验收 16:05；v1.1 验收 19:10；v2 验收 2026-10-24 20:05，Host v2 / health version=0.3.0，client.js 冻结 mtime 19:54:43 / 255072B）**
+> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–20:10（Asia/Shanghai）
 > 插件安装/重载与 AI 审查修复由 Lead 执行；本文档所有数字均来自真实 DSH Web GUI 与真实路由。
 > v1 证据：`api-probe-final.json`（43/43）、`ai-review-ui.json`、`page-check-final.json`、`click-panel-final.json`；
-> v1.1 证据：`api-probe-v11-final.json`（90/90）、`click-panel-v11.json`、`page-check-v11.json`、`v11-*.png`（见 §11）。
+> v1.1 证据：`api-probe-v11-final.json`（90/90）、`click-panel-v11.json`、`page-check-v11.json`、`v11-*.png`（见 §11）；
+> v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）。
 
 ## 0. 元信息
 
 | 项 | 值 |
 |---|---|
-| 插件 | `dsh-codex-review` v0.1.0（v1 验收）→ **v0.2.0（v1.1 验收，health version=0.2.0）**（`C:\Users\10228\dsh-codex-review\plugin`） |
+| 插件 | `dsh-codex-review` v0.1.0（v1）→ v0.2.0（v1.1）→ **v0.3.0（v2，health version=0.3.0）**（`C:\Users\10228\dsh-codex-review\plugin`） |
 | 安装 | `plugin_manager install_bundle`，返回 application=applied、已 enabled |
 | 安装形态 | desktop profile `node_modules/dsh-codex-review` → 符号链接到 plugin 目录（改文件后 disable→enable 重载生效） |
-| Host 进程 | v1 验收期间未重启（PID 9356）；v1.1 由 Lead 重载插件生效（health version 0.1.0→0.2.0） |
+| Host 进程 | v1 验收期间未重启（PID 9356）；v1.1/v2 由 Lead 重载插件生效（health version 0.1.0→0.2.0→0.3.0） |
 | GUI | `http://127.0.0.1:2632`（profile: desktop） |
 | OS / Node / Edge | Windows 11 10.0.26200 / Node v24.21.0 / Edge 155.0.4283.62 |
 | gh | gh 2.102.0，已登录 `Acefake`（scopes: gist, read:org, repo, workflow） |
@@ -286,7 +287,65 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 
 **v1.1 判定：PASS（90/90 路由断言 + 页面 12 项全 PASS + 0 console/pageerror）。**
 
-## 附录 A · 复跑命令（同 §2 / README §4.6）与判定速查
+## 12. v2 验收章节（CONTRACT §5.4：合并守卫 + PR 对话）— **PASS**
+
+> **状态：PASS（2026-10-24 20:05 最终复跑；Host v2 已生效 health version=0.3.0，client.js 冻结 mtime 19:54:43 / size 255072）**
+> 证据：`api-probe-v2.json`（**53 通过 / 0 失败 / 1 pending=BUSY 跳过**）、`click-panel-v2.json`（全部 PASS，1 pending=历史隔离因仅 1 个 open PR）、
+> `page-check-v2.json`（4/4 PASS）、截图 `verify/out/v2-*.png`。
+> **安全**：全程未做真实合并；`confirm:true` 仅与全零（刻意 stale）expectedHeadSha 一起发送（脚本内硬断言拒绝其它组合）；页面只点「取消」，Network 断言 0 个 `/codex-review/merge` 请求；未 cancel 任何 job。
+
+### 12.1 合并守卫（api-probe --v2，目标 `Acefake/s-skills#18`，不做真实合并）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | v2 路由就绪（/codex-review/merge 返回 JSON 信封） | PASS | health version=0.3.0；merge 能力探测返回 `BAD_REQUEST` 信封 |
+| 2 | `confirm:false` → `BAD_REQUEST` | PASS | `{code:"BAD_REQUEST", message:"请求参数不合法：合并操作需要 confirm: true"}` |
+| 3 | 缺 `confirm` / 缺 `method` / 缺 `expectedHeadSha` → `BAD_REQUEST` | PASS | 三者均命中 confirm 守卫（实现顺序：confirm 最先），message 同上 |
+| 4 | 非法 method → `BAD_REQUEST` | PASS | 同上 |
+| 5 | stale `expectedHeadSha`（全零，confirm:true）→ `MERGE_HEAD_MOVED`，message 带当前 head 前 12 位 | PASS | `{code:"MERGE_HEAD_MOVED", message:"PR 已有新提交（当前 head 9a80d3b77c7f），请刷新后重试"}` |
+| 6 | 守卫后 PR 未被合并（state 仍 open）且 headSha 未变 | PASS | before/after 均 `state=open`、headSha=`9a80d3b77c7f…` |
+| 7 | 非 open PR（`Acefake/yingbox#129`，已合并）→ `MERGE_NOT_ALLOWED` | PASS | `{code:"MERGE_NOT_ALLOWED", message:"该 PR 已合并，无法再次合并"}`（同样用全零 stale sha，无写操作） |
+
+### 12.2 PR 对话（api-probe --v2，真实 SSE，目标 #18）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | `POST /codex-review/chat` → HTTP 200 + `text/event-stream` | PASS | `text/event-stream; charset=utf-8` |
+| 2 | ≥1 个 `delta` 帧；以 `done` 帧结束；无 `error` 帧 | PASS | 72 delta；done=`{done:true, model:{opencode-go/deepseek-v4.1-flash}, usage:{input:72,output:253,total:837,cacheRead:512}}`；无 error |
+| 3 | 拼接回答非空（≥10 字）且含 PR 相关词 | PASS | 476 字；内容准确：`.gitattributes`、LF/CRLF、`*.png` binary、CI 内容哈希（与 PR 实际改动一致） |
+| 4 | BAD_REQUEST 分支：messages 空 / 末尾非 user / 单条 >4000 / >20 条 | PASS | 4/4 均返回 `BAD_REQUEST`（契约 §5.2 的 SSE error 帧：HTTP 200 + `data:{"error":{code:"BAD_REQUEST",...}}`，断言同时接受 JSON 信封与 SSE error 帧） |
+| 5 | 并发 BUSY 上限 | pending（契约 §5.4 允许跳过，避免占用资源） | — |
+
+### 12.3 页面（page-check --v2 / click-panel --v2，截图 `verify/out/v2-*.png`）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 合并按钮存在且可点（非 disabled） | PASS | `[data-action="merge"]` text=合并 @ (1490,10) 92×32，disabled=false |
+| 2 | 合并弹层字段：方式三选 / 删除分支 / 风险提示 / repo#number / head→base / headSha | PASS | `data-merge-phase=idle`；方式 squash/merge/rebase；`[data-merge-delete=toggle]` 未勾选；风险提示「这是写操作：会真的在 GitHub 上合并这个 PR。」；repo `Acefake/s-skills #18`；目标 `add-gitattributes-lf → main`；head `9a80d3b` |
+| 3 | **点「取消」后弹层关闭且无 `/codex-review/merge` 请求、PR 未变** | PASS | 弹层 open→false；`mergeRequestsAfterCancel=0`；PR 详情文本长度不变（1200→1200） |
+| 4 | 底部输入框 placeholder=「就此 Pull Request 提问」 | PASS | `textarea.cr-composer-input` placeholder=就此 Pull Request 提问 |
+| 5 | 发送「总结这个 PR 的改动」→ user 气泡 + 流式 assistant 气泡最终非空 + 停止按钮 | PASS | user 气泡 1 个（「总结这个 PR 的改动」）、assistant 气泡最终 547–800 字；流式期间捕获停止按钮并截图 `v2-chat-streaming.png` |
+| 6 | 对话无 error 气泡；`Esc` 关闭面板；历史按 PR 持久化 | PASS | 无 error；Esc 后 panel open=false；`localStorage["codex-review:chat:Acefake/s-skills#18"]` 含 2 条消息（user+assistant） |
+| 7 | 切换 PR 后对话历史隔离 | pending（当前 open PR 仅 1 个，无法切换；按 PR 的 localStorage key 已验证） | — |
+| 8 | 页面流程 console.error / pageerror = 0 | PASS | 0 / 0，无 slot crash |
+
+截图：`verify/out/v2-merge-dialog.png`（弹层字段/风险提示）、`v2-merge-cancel.png`（取消后无写入）、
+`v2-chat-streaming.png`（流式气泡+停止按钮）、`v2-chat-done.png`（完成态回答）、`v2-chat-closed.png`（Esc 关闭）、`v2-page-check.png`。
+
+### 12.4 v2 观察项（无阻塞缺陷）
+
+| # | 严重度 | 说明 |
+|---|---|---|
+| O1 | P3（验证边界） | 并发 BUSY 上限按契约 §5.4 跳过实测（避免占用两个并发流）；单测已覆盖 limiter |
+| O2 | P3（数据） | 当前真实 open PR 仅 1 个（仓库活动），「切换 PR 后历史隔离」无法实测，pending；按 PR 的 localStorage key 与消息内容已验证 |
+| O3 | P3（数据） | #129 已合并，UI 列表只查 `is:open` 故无法从页面验证「已合并→合并按钮 disabled」；API 层已用 `MERGE_NOT_ALLOWED` 覆盖该守卫 |
+| O4 | P3（实现说明） | chat 参数校验错误以 SSE error 帧（HTTP 200 + `data:{"error":...}`）返回，符合契约 §5.2 帧格式；断言同时接受 JSON 信封与 SSE error 帧 |
+| O5 | P3（成本） | 真实 chat 回答约 1–2s、~0.5–0.8KB 文本；每次提问会真实调用一次模型（预期行为） |
+
+**v2 判定：PASS（合并守卫 7/7、chat 4/4 + 1 pending、页面 7/7 + 1 pending、0 console/pageerror、0 merge 请求）。**
+**v1/v1.1 回归同时全绿**：默认 api-probe 43/43（`api-probe-v1-final-v2.json`）、page-check 0 console error（`page-check-v1-final-v2.json`）、click-panel 8/8（`click-panel-v1-final-v2.json`）。
+
+## 附录 A · 复跑命令（同 §2 / README §4.6–§4.7）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
 - AI 终态关键字段：`review-status.state==="done"`、`partial!==true`、`findings[]` 每条 schema 合法；

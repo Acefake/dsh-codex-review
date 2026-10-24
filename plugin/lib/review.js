@@ -898,6 +898,29 @@ export class ReviewEngine {
   }
 
   /**
+   * Drop every review job (and file-cache entry) for one PR after a merge: the
+   * reviewed head is no longer reachable through the PR, so its cached results
+   * must never be shown again. Running jobs are cancelled first.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {number} number of jobs removed.
+   */
+  invalidate(repo, number) {
+    let removed = 0
+    for (const [id, job] of [...this.jobs.entries()]) {
+      if (job.repo !== repo || job.number !== number) continue
+      if (job.state === 'queued' || job.state === 'running') this.cancel(id)
+      this.jobs.delete(id)
+      removed += 1
+    }
+    const prefix = `${repo}#${number}|`
+    for (const key of [...this.fileCache.entries.keys()]) {
+      if (key.startsWith(prefix)) this.fileCache.delete(key)
+    }
+    return removed
+  }
+
+  /**
    * Read the cached findings for one file, or undefined on a miss.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.

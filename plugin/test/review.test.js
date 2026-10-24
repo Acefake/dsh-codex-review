@@ -860,3 +860,39 @@ test('guidelines are injected into every chunk prompt and reported in the status
   assert.equal(disabledSeam.requests[0].messages[0].content[0].text.includes('## 仓库审查指引'), false)
   assert.deepEqual(disabledEngine.status(disabledJob.jobId).guidelines, { loaded: false, files: [], chars: 0 })
 })
+
+test('invalidate drops the review jobs and file-cache entries of one merged PR', async () => {
+  const seam = fakeSequence([twoFileAnswer()])
+  const engine = makeEngine(seam, { reviewChunkChars: 100_000 })
+  const first = engine.start({ ...PR_INPUT, files: TWO_FILES, options: { depth: 'fast' } })
+  await engine.jobs.get(first.jobId).done
+  // A second PR keeps its job and cache entries.
+  const otherFiles = [makeFile('src/a.ts', '@@ -1 +1 @@\n+other')]
+  const other = engine.start({ ...PR_INPUT, number: 10, files: otherFiles, options: { depth: 'fast' } })
+  await engine.jobs.get(other.jobId).done
+  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('Acme/repo#9|')))
+  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('Acme/repo#10|')))
+
+  assert.equal(engine.invalidate('Acme/repo', 9), 1)
+  assert.equal(engine.existing('Acme/repo', 9, 'sha-1').state, 'none')
+  assert.equal(engine.status(other.jobId).state, 'done')
+  const keys = [...engine.fileCache.entries.keys()]
+  assert.equal(keys.some((key) => key.startsWith('Acme/repo#9|')), false)
+  assert.ok(keys.some((key) => key.startsWith('Acme/repo#10|')))
+  assert.equal(engine.invalidate('Acme/repo', 999), 0)
+  // A running job for the PR is cancelled and removed as well.
+  const slow = new ReviewEngine({
+    streamLlm: () => (async function* slowStream() {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      yield { type: 'text-delta', index: 0, text: twoFileAnswer() }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+    resolveSelection: () => ({ provider: 'p', model: 'm' }),
+    config: { reviewChunkChars: 1000 },
+    sleep: async () => {},
+  })
+  const running = slow.start({ ...PR_INPUT, options: { depth: 'fast' } })
+  assert.equal(slow.invalidate('Acme/repo', 9), 1)
+  await running.done
+  assert.throws(() => slow.status(running.jobId), (error) => error.code === 'BAD_REQUEST')
+})

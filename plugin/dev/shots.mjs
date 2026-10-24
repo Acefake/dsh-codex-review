@@ -44,6 +44,8 @@ const SHOTS = [
   { file: '09-v11-inline-findings.png', scene: 'v11-inline-findings', theme: 'dark' },
   { file: '10-v11-settings.png', scene: 'v11-settings', theme: 'dark' },
   { file: '11-v11-existing-comments.png', scene: 'v11-existing-comments', theme: 'dark' },
+  { file: '12-v2-merge-dialog.png', scene: 'v2-merge-dialog', theme: 'dark' },
+  { file: '13-v2-chat.png', scene: 'v2-chat', theme: 'dark' },
 ]
 
 function findEdge() {

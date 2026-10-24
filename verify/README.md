@@ -212,6 +212,32 @@ node $V\click-panel.mjs --target 代码审查 --v11 --out-dir $V\out --report cl
 **安全约束**：v1.1 的 `--v11-ai/--v11-threshold` 与页面 `r` 键盘都会真实调用 `review-start`（可能新起审查）；
 装置**从不调用 review-cancel**，超时只报失败、不终止任何运行中的 job。
 
+### 4.7 v2 验收扩展（CONTRACT §5.4：合并守卫 + PR 对话）
+
+```powershell
+# A) 合并守卫（绝不真实合并）+ 真实 PR 对话 SSE + chat BAD_REQUEST 分支
+node $V\api-probe.mjs --v2 --out-dir $V\out --report api-probe-v2.json
+# B) 只测合并守卫与 chat 参数校验，跳过真实 chat 提问
+node $V\api-probe.mjs --v2 --v2-skip-chat --out-dir $V\out --report api-probe-v2-guards.json
+# C) 页面：合并按钮可点 + 对话输入框 placeholder（v2-page-check.png）
+node $V\page-check.mjs --v2 --out-dir $V\out --report page-check-v2.json
+# D) 页面端到端：合并弹层字段/取消不写入、对话流式气泡/Esc/历史隔离（v2-*.png）
+node $V\click-panel.mjs --target 代码审查 --v2 --out-dir $V\out --report click-panel-v2.json
+```
+
+**合并安全红线（装置内硬约束）**：
+- 只测守卫：`confirm:false` / 缺字段 / 非法 method → `BAD_REQUEST`；`confirm:true` 仅配**全零（刻意 stale）expectedHeadSha** → `MERGE_HEAD_MOVED`，且校验 PR 仍 open、headSha 未变；`merge()` 助手在发送前拒绝任何「confirm:true + 非全零 sha」的请求。
+- 页面只打开合并弹层并点「取消」，用 Network 断言**没有发出** `/codex-review/merge` 请求；绝不点「确认合并」。
+- 不做真实合并（契约 §5.4.2 明确）。
+
+**chat 断言**（`--v2`）：`POST /codex-review/chat` 真实提问「这个 PR 改了什么？」→ `text/event-stream`、≥1 个 `delta` 帧、以 `done` 帧结束、无 `error` 帧、拼接文本非空且含 PR 相关词；
+BAD_REQUEST 分支（messages 空 / 最后一条非 user / 单条 >4000 字 / 超过 20 条）；并发 BUSY 跳过（契约允许）。
+**会真实调用一次模型**（chat 回答）；合并守卫与 chat 参数校验分支不触发写操作/模型。
+
+新增页面断言（`click-panel --v2`，截图 `verify/out/v2-*.png`）：
+合并按钮可点 → 弹层含方式三选/删除分支 checkbox/风险提示/repo#number/head→base/headSha/取消与确认 → 点取消 → 弹层关闭 + 无 merge 请求 + PR 未变；
+对话：输入「总结这个 PR 的改动」→ user 气泡 + 流式 assistant 气泡最终非空 + 流式期间停止按钮 → 无 error 气泡 → `Esc` 关闭 → localStorage 按 PR 持久化/切换隔离；全程 console/pageerror=0。
+
 ---
 
 ## 5. 退出码约定
@@ -280,6 +306,7 @@ verify/
 │  ├─ gui.mjs           # 同源 JSON POST 客户端
 │  ├─ dom.mjs           # 页面内 DOM 探针表达式（侧栏/模态框/布局/工作台）
 │  ├─ v11-dom.mjs       # v1.1 页面探针（data-cr-* / finding 圆点 / 设置弹层 / 键盘 / 行内评论）
+│  ├─ v2-dom.mjs        # v2 页面探针（合并弹层 / 对话面板 / chat localStorage）
 │  └─ util.mjs          # CLI 公共设施（退出码、目录、JSON 输出）
 ├─ baseline/            # 装置自证基线（插件安装前）
 │  ├─ baseline-gui.png
