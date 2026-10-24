@@ -56,7 +56,7 @@ const USAGE = `用法: node verify/api-probe.mjs [选项]
   --expect-files <n>        详情文件数断言（默认 24）
   --stack-ref <num>         stack 链路应包含的 PR 编号（默认 117）
   --skip-ai                 跳过 review-start/review-status/review-cancel
-  --review-timeout-ms <ms>  轮询审查终态上限（默认 240000）
+  --review-timeout-ms <ms>  轮询审查终态上限（默认 600000，分块多时按需加大）
   --poll-ms <ms>            轮询间隔（默认 800）
   --skip-security           跳过信任围栏（Origin / x-forwarded-for / content-type）探测
   --out-dir <dir>           报告目录（默认 verify/out）
@@ -78,7 +78,7 @@ function parseCli() {
         'expect-files': { type: 'string', default: '24' },
         'stack-ref': { type: 'string', default: '117' },
         'skip-ai': { type: 'boolean', default: false },
-        'review-timeout-ms': { type: 'string', default: '240000' },
+        'review-timeout-ms': { type: 'string', default: '600000' },
         'poll-ms': { type: 'string', default: '800' },
         'skip-security': { type: 'boolean', default: false },
         'out-dir': { type: 'string', default: OUT_ROOT },
@@ -113,7 +113,7 @@ function parseCli() {
     expectFiles: numeric('expect-files', 24, { min: 0 }),
     stackRef: numeric('stack-ref', 117, { min: 1 }),
     skipAi: values['skip-ai'],
-    reviewTimeoutMs: numeric('review-timeout-ms', 240_000, { min: 1000 }),
+    reviewTimeoutMs: numeric('review-timeout-ms', 600_000, { min: 1000 }),
     pollMs: numeric('poll-ms', 800, { min: 100 }),
     skipSecurity: values['skip-security'],
     reportPath: path.resolve(outDir, values.report ?? `api-probe-${timestampForFile()}.json`),
@@ -268,14 +268,20 @@ try {
 
 /** @type {Awaited<ReturnType<GuiClient['post']>>} */
 let health
-try {
-  health = await client.post('codex-review/health', {}, { timeoutMs: 20_000 })
-} catch (error) {
-  console.error(`✗ 无法连接插件路由：${error.message}`)
-  report.routesReady = false
-  report.error = { message: error.message }
-  writeJson(options.reportPath, report)
-  process.exit(EXIT.ENV)
+// A live plugin reload (disable → enable) briefly removes the prefix route and
+// answers 404/405; retry before declaring the plugin missing.
+for (let attempt = 0; attempt < 3; attempt += 1) {
+  try {
+    health = await client.post('codex-review/health', {}, { timeoutMs: 20_000 })
+  } catch (error) {
+    console.error(`✗ 无法连接插件路由：${error.message}`)
+    report.routesReady = false
+    report.error = { message: error.message }
+    writeJson(options.reportPath, report)
+    process.exit(EXIT.ENV)
+  }
+  if (health.status === 200 || health.status === 401) break
+  if (attempt < 2) await delay(1500)
 }
 
 // Route readiness: the prefix handler answers JSON once installed; before that
@@ -291,7 +297,8 @@ if (health.status === 401) {
 if (health.status === 404 || health.status === 405) {
   console.error(`✗ 路由未就绪：POST /codex-review/health 返回 HTTP ${health.status}（${health.contentType || '空 content-type'}，${health.elapsedMs}ms）。`)
   console.error('  说明 dsh-codex-review 插件尚未安装/加载：/codex-review 前缀路由不存在。')
-  console.error('  安装插件并重启宿主（或使其 HMR 生效）后，重新运行本脚本即可。')
+  console.error('  若刚刚执行过插件 reload（disable→enable），可能只是重载窗口，稍等 2s 重跑即可。')
+  console.error('  安装插件并使其生效后，重新运行本脚本即可。')
   report.routesReady = false
   report.healthResponse = { status: health.status, contentType: health.contentType, text: health.text.slice(0, 200), elapsedMs: health.elapsedMs }
   writeJson(options.reportPath, report)
@@ -319,6 +326,21 @@ if (healthEnvelope.ok) {
     check('health: version 是非空字符串', isNonEmptyString(value.version), JSON.stringify(value.version))
     report.routes.health = { value }
   }
+}
+
+// ---------------------------------------------------------------------------
+// llm-info (debug route added while diagnosing reasoning-budget failures)
+// Informational: absence is not a contract failure, presence is validated.
+// ---------------------------------------------------------------------------
+const llmInfoResponse = await client.post('codex-review/llm-info', {}, { timeoutMs: 20_000 })
+if (llmInfoResponse.status === 200) {
+  const llmInfoEnvelope = parseEnvelope(llmInfoResponse)
+  check('llm-info: 信封形状合法（调试路由）', llmInfoEnvelope.envelope, llmInfoEnvelope.note || (llmInfoEnvelope.ok ? 'ok:true' : `ok:false/${llmInfoEnvelope.error?.code}`))
+  if (llmInfoEnvelope.ok) {
+    report.routes.llmInfo = llmInfoEnvelope.value
+  }
+} else {
+  report.routes.llmInfo = { available: false, status: llmInfoResponse.status, note: '调试路由不存在（可选）' }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +477,13 @@ if (!options.skipAi) {
           for (const problem of validateFinding(finding)) findingProblems.push(`#${index}: ${problem}`)
         })
         check('review-status: findings 字段形状合法', findingProblems.length === 0, findingProblems.slice(0, 8).join('；'))
+        // A partial review means some chunks failed (JSON parse / max-tokens
+        // truncation). Its empty findings are not a clean "0 problems" result.
+        check(
+          'review-status: 非 partial（所有分块均成功）',
+          lastStatus.partial !== true,
+          `partial=${String(lastStatus.partial)}${Array.isArray(lastStatus.partialReasons) && lastStatus.partialReasons.length > 0 ? `，reasons=${JSON.stringify(lastStatus.partialReasons).slice(0, 500)}` : ''}${lastStatus.truncatedCalls !== undefined ? `，truncatedCalls=${lastStatus.truncatedCalls}` : ''}`,
+        )
         report.routes.review = {
           state: lastStatus.state,
           elapsedMs,
@@ -465,6 +494,8 @@ if (!options.skipAi) {
           findingsSample: findings.slice(0, 5),
           overview: lastStatus.overview,
           partial: lastStatus.partial,
+          partialReasons: lastStatus.partialReasons,
+          truncatedCalls: lastStatus.truncatedCalls,
           fieldProblems: findingProblems.slice(0, 20),
           timeline,
         }
@@ -480,13 +511,19 @@ if (!options.skipAi) {
     }
 
     // review-cancel: legal envelope is the assertion; cancelling a finished job
-    // is expected to report cancelled:false.
-    const cancelResponse = await client.post('codex-review/review-cancel', { jobId }, { timeoutMs: 20_000 })
-    const cancelEnvelope = settleEnvelope('review-cancel', cancelResponse)
-    if (cancelEnvelope.envelope) {
-      const cancelled = cancelEnvelope.ok ? cancelEnvelope.value?.cancelled : undefined
-      check('review-cancel: ok:true 时 cancelled 是布尔', cancelEnvelope.ok ? typeof cancelled === 'boolean' : true, cancelEnvelope.ok ? JSON.stringify(cancelled) : `错误信封 ${cancelEnvelope.error.code}`)
-      report.routes.reviewCancel = cancelEnvelope.ok ? { ok: true, cancelled } : { ok: false, error: cancelEnvelope.error }
+    // is expected to report cancelled:false. Never cancel a live job from here:
+    // a probe must not interfere with a review someone else is watching.
+    const terminalReached = Boolean(lastStatus && TERMINAL_STATES.has(lastStatus.state))
+    if (terminalReached) {
+      const cancelResponse = await client.post('codex-review/review-cancel', { jobId }, { timeoutMs: 20_000 })
+      const cancelEnvelope = settleEnvelope('review-cancel', cancelResponse)
+      if (cancelEnvelope.envelope) {
+        const cancelled = cancelEnvelope.ok ? cancelEnvelope.value?.cancelled : undefined
+        check('review-cancel: ok:true 时 cancelled 是布尔', cancelEnvelope.ok ? typeof cancelled === 'boolean' : true, cancelEnvelope.ok ? JSON.stringify(cancelled) : `错误信封 ${cancelEnvelope.error.code}`)
+        report.routes.reviewCancel = cancelEnvelope.ok ? { ok: true, cancelled } : { ok: false, error: cancelEnvelope.error }
+      }
+    } else {
+      report.routes.reviewCancel = { skipped: true, reason: '审查未到终态；不调用真实 job 的 cancel，避免终止运行中的任务' }
     }
     const unknownCancel = await client.post('codex-review/review-cancel', { jobId: `verify-unknown-${Date.now()}` }, { timeoutMs: 20_000 })
     const unknownEnvelope = parseEnvelope(unknownCancel)

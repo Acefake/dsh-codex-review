@@ -40,6 +40,7 @@ const USAGE = `用法: node verify/ai-review-ui.mjs [选项]
 
 选项:
   --url <url>            目标页面（默认 http://127.0.0.1:2632）
+  --select <text>        点击工作台 PR 列表里标题包含该文本的行（默认用客户端自动选中的第一条 PR）
   --out-dir <dir>        截图与报告目录（默认 verify/out）
   --timeout-ms <ms>      等待审查终态上限（默认 240000）
   --poll-ms <ms>         轮询间隔（默认 1200）
@@ -79,6 +80,7 @@ function parseCli() {
       allowPositionals: false,
       options: {
         url: { type: 'string', default: process.env.DSH_WEB_URL ?? 'http://127.0.0.1:2632' },
+        select: { type: 'string', default: '' },
         'out-dir': { type: 'string', default: OUT_ROOT },
         'timeout-ms': { type: 'string', default: '240000' },
         'poll-ms': { type: 'string', default: '1200' },
@@ -106,6 +108,7 @@ function parseCli() {
   const outDir = path.resolve(values['out-dir'])
   return {
     url: values.url,
+    select: String(values.select ?? '').trim(),
     outDir,
     timeoutMs: numeric('timeout-ms', 240_000),
     pollMs: numeric('poll-ms', 1200),
@@ -166,9 +169,9 @@ try {
   }
   await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
   await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 800 }).catch(() => false)
-  await page.waitFor(`(() => (document.body.innerText || '').includes('Review with Codex'))()`, {
+  await page.waitFor(`(() => (document.body.innerText || '').includes('Review with Codex') || (document.body.innerText || '').includes('用 AI 审查') || (document.body.innerText || '').includes('Review with AI'))()`, {
     timeoutMs: 30_000,
-    label: '工作台「Review with Codex」',
+    label: '工作台 AI 审查按钮',
   })
   // The header trigger is disabled until a PR detail has loaded; wait for the
   // detail pane rather than clicking a stale/disabled button.
@@ -176,13 +179,63 @@ try {
     `(() => { const text = document.body ? (document.body.innerText || '') : ''; return text.includes('Summary') && !text.includes('正在加载 PR') && !text.includes('Loading PR'); })()`,
     { timeoutMs: 30_000, label: 'PR 详情加载' },
   ).catch(() => {})
+  // The workbench auto-selects the first PR once the list arrives; wait for the
+  // file/diff stat so a slow list fetch cannot make us click an empty state.
+  await page.waitFor(
+    `(() => { const text = document.body ? (document.body.innerText || '') : ''; return /\\d+\\s*(files|个文件)/u.test(text) && !text.includes('正在加载 Pull Request') && !text.includes('Loading pull requests'); })()`,
+    { timeoutMs: 40_000, label: 'PR 列表与详情数据' },
+  ).catch(() => {})
+
+  if (options.select) {
+    const row = await page.evaluate(`(() => {
+      const visible = (el) => {
+        if (!el || !el.isConnected) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0.01;
+      };
+      const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const needle = ${JSON.stringify(options.select.toLowerCase())};
+      const clickable = (el) => {
+        let current = el;
+        for (let depth = 0; depth < 10 && current; depth += 1) {
+          if (current.matches && current.matches('button, [role="button"], [role="option"], [role="tab"], a, li, [tabindex]')) return current;
+          if (window.getComputedStyle(current).cursor === 'pointer') return current;
+          current = current.parentElement;
+        }
+        return null;
+      };
+      const matches = Array.from(document.querySelectorAll('#root *')).filter((el) => visible(el) && textOf(el).toLowerCase().includes(needle));
+      const deepest = matches.filter((el) => !Array.from(el.children).some((child) => visible(child) && textOf(child).toLowerCase().includes(needle)));
+      for (const el of deepest) {
+        const target = clickable(el);
+        if (!target) continue;
+        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const rect = target.getBoundingClientRect();
+        return { found: true, tag: target.tagName.toLowerCase(), text: textOf(target).slice(0, 140), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+      }
+      return { found: false };
+    })()`)
+    report.selection = { requested: options.select, ...row }
+    if (!row.found) throw new Error(`PR 列表里没有找到标题包含 ${JSON.stringify(options.select)} 的行`)
+    await page.bringToFront()
+    await page.click(row.rect.x + row.rect.width / 2, row.rect.y + row.rect.height / 2)
+    await page.waitForNetworkIdle({ timeoutMs: 15_000, idleMs: 700 }).catch(() => false)
+    await page.waitFor(
+      `(() => (document.body.innerText || '').includes(${JSON.stringify(options.select)}))()`,
+      { timeoutMs: 20_000, label: `详情切到 ${options.select}` },
+    ).catch(() => {})
+  }
   const layout = await page.evaluate(layoutProbe())
   report.workbench = { columnBands: layout.columnBands, columns: layout.columns }
   await page.screenshot(options.beforePath)
   report.screenshots.before = options.beforePath
 
-  // Click the AI review trigger (workbench header, not the sidebar).
-  const triggerCandidates = await page.evaluate(`(() => {
+  // Click the AI review trigger (workbench header, not the sidebar). The button
+  // stays disabled until a PR detail with a headSha is available, so poll until
+  // an enabled one appears.
+  const triggerCandidatesExpr = `(() => {
     const visible = (el) => {
       if (!el || !el.isConnected) return false;
       const rect = el.getBoundingClientRect();
@@ -197,14 +250,26 @@ try {
       const rect = el.getBoundingClientRect();
       if (rect.x < 900) continue; // workbench action area, right of the PR list/center
       const text = textOf(el);
-      if (!/Review with Codex|AI 审查/u.test(text)) continue;
-      out.push({ text: text.slice(0, 80), rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } });
+      if (!/Review with Codex|Review with AI|AI 审查/u.test(text)) continue;
+      out.push({
+        text: text.slice(0, 80),
+        disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
+        rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+      });
     }
     return out;
-  })()`)
-  const trigger = triggerCandidates?.[0]
-  report.trigger = { found: Boolean(trigger), candidates: triggerCandidates ?? [] }
-  if (!trigger) throw new Error('工作台里没有找到「Review with Codex」触发按钮')
+  })()`
+  let trigger = null
+  let triggerCandidates = []
+  const triggerDeadline = Date.now() + 30_000
+  while (Date.now() < triggerDeadline) {
+    triggerCandidates = await page.evaluate(triggerCandidatesExpr)
+    trigger = triggerCandidates.find((candidate) => !candidate.disabled) ?? null
+    if (trigger) break
+    await delay(500)
+  }
+  report.trigger = { found: Boolean(trigger), candidates: triggerCandidates }
+  if (!trigger) throw new Error(`工作台里没有找到可用的「Review with Codex」触发按钮（候选：${JSON.stringify(triggerCandidates)}）`)
   await page.click(trigger.rect.x + trigger.rect.width / 2, trigger.rect.y + trigger.rect.height / 2)
   report.triggerClickedAt = isoTimestamp()
 
@@ -242,8 +307,14 @@ try {
   report.screenshots.done = options.donePath
 
   const finalText = String(await page.evaluate(BODY_TEXT))
-  const findingsMatch = finalText.match(/(\d+) 条发现/u)
+  const partialDom = await page.evaluate(`(() => ({
+    attr: (() => { try { return Boolean(document.querySelector('[data-review-partial]')); } catch { return false; } })(),
+    count: document.querySelectorAll('[data-review-partial]').length,
+  }))()`)
+  const findingsMatch = finalText.match(/(\d+)\s*(?:条发现|个问题)/u)
   const clean = /未发现 P0\/P1 问题/u.test(finalText)
+  const partial = Boolean(partialDom?.attr) || /部分结果|部分内容未能完成审查|\bpartial\b/iu.test(finalText)
+  const p2Badge = /P2/u.test(finalText)
   const consoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
   const pageErrors = page.pageErrors
   const result = {
@@ -251,8 +322,11 @@ try {
     elapsedMs: Date.now() - startedAt,
     findingsCount: findingsMatch ? Number(findingsMatch[1]) : null,
     clean,
+    partial,
+    partialDom: partialDom ?? null,
+    p2Badge,
     failed: isSelfFailureText(finalText),
-    reviewCardText: finalText.slice(Math.max(0, finalText.indexOf('Codex 审查') - 40), finalText.indexOf('Codex 审查') + 700),
+    reviewCardText: finalText.slice(Math.max(0, finalText.indexOf('Codex 审查') - 40), finalText.indexOf('Codex 审查') + 900),
   }
   report.result = result
   report.consoleErrors = consoleErrors
@@ -263,6 +337,9 @@ try {
     { name: '找到 AI 审查触发按钮', pass: Boolean(trigger), detail: trigger?.text ?? '未找到' },
     { name: '审查到达终态', pass: result.terminal !== 'timeout', detail: `${result.terminal}，${result.elapsedMs}ms` },
     { name: '未出现「审查失败」', pass: !result.failed, detail: String(result.failed) },
+    { name: '非 partial（无「部分结果」/无 [data-review-partial]）', pass: !partial, detail: `textPartial=${/部分结果|部分内容未能完成审查/iu.test(finalText)}，domPartial=${Boolean(partialDom?.attr)}` },
+    { name: '页面出现 findings 计数（N 个问题 / N 条发现）', pass: result.findingsCount !== null || result.clean, detail: `findingsCount=${result.findingsCount}，clean=${result.clean}` },
+    { name: '页面出现严重度徽章 P2', pass: result.findingsCount === null || p2Badge, detail: `p2Badge=${p2Badge}` },
     { name: '无 pageerror', pass: pageErrors.length === 0, detail: `${pageErrors.length} 条` },
     { name: '无 console.error', pass: consoleErrors.length === 0, detail: `${consoleErrors.length} 条` },
   ]
@@ -280,6 +357,8 @@ try {
     elapsedMs: result.elapsedMs,
     findingsCount: result.findingsCount,
     clean: result.clean,
+    partial: result.partial,
+    p2Badge: result.p2Badge,
     consoleErrors: consoleErrors.length,
     pageErrors: pageErrors.length,
     failedChecks: report.verdict.failed,

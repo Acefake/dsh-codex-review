@@ -308,11 +308,11 @@ export function workbenchProbe() {
     const mainText = mainRoot ? textOf(mainRoot) : bodyText;
     const enumText = (labels) => Object.fromEntries(labels.map((label) => [label, mainText.includes(label)]));
     const textSignals = {
-      aiReview: /AI ?审查|AI ?review/i.test(mainText),
+      aiReview: /AI ?审查|Review with Codex/i.test(mainText),
       tabs: /Summary|Changes|概要|变更/i.test(mainText),
       prList: /pull request|PR|拉取|待审查|作者/i.test(mainText),
       files: /文件|files/i.test(mainText),
-      summary: enumText(['Summary', 'Changes', '用 AI 审查', '代码审查', '概要', '变更', '文件']),
+      summary: enumText(['Summary', 'Changes', '用 AI 审查', 'Review with Codex', '代码审查', '概要', '变更', '文件']),
     };
     const mainRect = mainRoot ? rectOf(mainRoot) : null;
     return {
