@@ -5,8 +5,9 @@
  * Runs without a DSH host: it uses the machine's real `gh` credentials
  * (`gh auth token`, or GH_TOKEN/GITHUB_TOKEN), lists the default PR query and
  * loads `Acefake/yingbox#129`, printing the normalized shape, timings and
- * truncation flags. Exits 0 only when the reconnaissance-known facts hold
- * (24 files, stack chain containing #117).
+ * truncation flags. Assertions describe the data shape (non-empty files, branch
+ * names, numeric additions, guidelines hit/miss), so an actively changing PR
+ * does not turn the smoke red.
  *
  * Usage: node test/smoke-gh.mjs
  */
@@ -20,8 +21,6 @@ const PR_NUMBER = Number(process.env.SMOKE_PR ?? 129)
 const GUIDELINE_REPO = process.env.SMOKE_GUIDELINE_REPO ?? 'sst/opencode'
 /** Repository without AGENTS.md, used to prove the miss path degrades cleanly. */
 const NO_GUIDELINE_REPO = process.env.SMOKE_NO_GUIDELINE_REPO ?? 'Acefake/sanguo'
-const EXPECTED_FILES = 24
-const EXPECTED_PARENT_PR = 117
 
 const config = resolveConfig({ limit: 30, requestTimeoutMs: 20_000 })
 const client = new GitHubClient({ config })
@@ -134,13 +133,17 @@ try {
     failures.push(`${NO_GUIDELINE_REPO} must not report review guidelines`)
   }
 
-  if (detail.files.length !== EXPECTED_FILES) failures.push(`expected ${EXPECTED_FILES} files, got ${detail.files.length}`)
-  if (!detail.stack.chain.some((parent) => parent.number === EXPECTED_PARENT_PR)) failures.push(`stack chain must contain #${EXPECTED_PARENT_PR}`)
-  if (detail.summary.headRefName !== 'feat/intro-detect') failures.push(`unexpected headRefName ${detail.summary.headRefName}`)
-  if (detail.summary.baseRefName !== 'feat/skip-intro') failures.push(`unexpected baseRefName ${detail.summary.baseRefName}`)
-  if (detail.summary.author !== 'Acefake') failures.push(`unexpected author ${detail.summary.author}`)
-  if (detail.summary.additions !== 2117) failures.push(`unexpected additions ${detail.summary.additions}`)
-  if (detail.summary.deletions !== 25) failures.push(`unexpected deletions ${detail.summary.deletions}`)
+  // The target PR keeps changing while the repo is active (base retargets,
+  // rebases, merges), so assert the shape of the data rather than one commit's
+  // exact numbers: the smoke is about the data channel, not about #129's state.
+  if (!Array.isArray(detail.files) || detail.files.length === 0) failures.push('detail.files must be a non-empty array')
+  if (typeof detail.stack?.baseRefName !== 'string' || detail.stack.baseRefName === '') failures.push('detail.stack.baseRefName must be a non-empty string')
+  if (!Array.isArray(detail.stack.chain)) failures.push('detail.stack.chain must be an array')
+  if (typeof detail.summary.headRefName !== 'string' || detail.summary.headRefName === '') failures.push('detail.summary.headRefName must be a non-empty string')
+  if (typeof detail.summary.baseRefName !== 'string' || detail.summary.baseRefName === '') failures.push('detail.summary.baseRefName must be a non-empty string')
+  if (typeof detail.summary.author !== 'string' || detail.summary.author === '') failures.push('detail.summary.author must be a non-empty string')
+  if (!Number.isInteger(detail.summary.additions) || detail.summary.additions < 0) failures.push(`unexpected additions ${detail.summary.additions}`)
+  if (!Number.isInteger(detail.summary.deletions) || detail.summary.deletions < 0) failures.push(`unexpected deletions ${detail.summary.deletions}`)
 
   line('total.ms', Date.now() - startedAt)
   if (failures.length > 0) {

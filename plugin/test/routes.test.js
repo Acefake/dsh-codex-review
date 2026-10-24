@@ -7,7 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
-import { applyWithDeps } from '../index.js'
+import { applyWithDeps, VERSION } from '../index.js'
 
 /**
  * Fake Cordis context: captures webServer registrations and effects.
@@ -192,7 +192,7 @@ test('health reports gh, llm and version', async () => {
   const { handler } = mount()
   const answer = await call(handler, '/codex-review/health')
   assert.equal(answer.status, 200)
-  assert.deepEqual(answer.body, { ok: true, value: { gh: 'ok', llm: 'unavailable', version: '0.1.0' } })
+  assert.deepEqual(answer.body, { ok: true, value: { gh: 'ok', llm: 'unavailable', version: VERSION } })
 })
 
 test('prs applies the configured default query and clamps the limit', async () => {
@@ -408,7 +408,7 @@ test('optional llm injection wires ctx.llm.stream into the real review engine', 
   assert.equal(selectionCalls, 1)
 
   const health = await call(handler, '/codex-review/health')
-  assert.deepEqual(health.body.value, { gh: 'ok', llm: 'ok', version: '0.1.0' })
+  assert.deepEqual(health.body.value, { gh: 'ok', llm: 'ok', version: VERSION })
   for (const dispose of disposers) dispose()
 })
 

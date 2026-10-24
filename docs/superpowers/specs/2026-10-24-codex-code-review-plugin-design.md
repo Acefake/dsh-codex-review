@@ -150,3 +150,16 @@ token 只在 Host 的 gh 子进程环境；前端只收发 `repo/number/query`�
 5. **配置默认值**（用于 `cordis.patch.yml` 覆盖）：`reviewChunkChars=9000`、`maxChunks=9`、`reviewConcurrency=3`、`maxOutputTokens=0`（适配器默认）、单次调用超时 180s。
 6. **List 行的 head/base ref 为空**：`search/issues` 不返回 ref（详情接口有），客户端只在详情头显示分支，列表不依赖。
 
+## 14. v1.1 细化回填（2026-10-24 第二轮迭代，版本 0.2.0）
+
+用户要求「继续细化」后，在 v1 只读浏览 + AI 审查的基础上做了 6 组增强；契约见 `plugin/CONTRACT.md` §4，验收见 `verify/REPORT.md` §11（PASS）。
+
+1. **审查选项与深度**：`review-start` 新增 `options { depth: fast|standard|deep, severityThreshold: P0|P1|P2, includeGuidelines }`，服务端 resolve 后回显 `ResolvedReviewOptions`；选项参与 job 缓存 key（同 headSha 不同设置会重跑）。
+2. **文件级增量审查**：`repo#number|path|sha1(patch)` LRU≤400；只把未命中文件送模型，命中文件复用历史 findings（含「已审且干净」的空结果）；全命中时 0 次模型调用、<1s 返回。实测 deep 全命中 `reusedFiles=24/24, elapsedMs=0`。
+3. **审查质量**：Finding 增加 `evidence`（支持结论的 diff 行原文）与 `confidence`；prompt 给出 P0/P1/P2 严重度定义；`deep` 深度增加一轮「证据复核」，只保留模型判定有 diff 证据的条目；`verdict` 由严重度派生（block/changes/approve）。
+4. **仓库审查指引**：自动读取 `AGENTS.md` / `.github/AGENTS.md`（≤4000 字，repo 级缓存 10 分钟）注入每个分块 prompt，`includeGuidelines=false` 可关闭。
+5. **diff 行内体验**：finding 行渲染 gutter 圆点，点击在行下方展开卡片（严重度/标题/why/fix/confidence/evidence/定位）；GitHub 已有行内评论按 `path+line` 渲染为只读卡片；右栏审查卡显示 verdict、计数、resolved options、复用文件数、指引状态与本地过滤 chips。
+6. **交互与无障碍**：审查设置弹层（depth/阈值/指引，localStorage 持久化）、`j/k` 切 PR、`/` 聚焦搜索、`r` 审查、`Esc` 关弹层、focus-visible/aria-label、详情列 sticky、切换 tab 保留滚动位置、右栏文件点击跳转。
+
+验收结论：真实 DSH 页面 + 真实路由 **v1.1 PASS（90/90 路由断言 + 页面 12 项 PASS + 0 console/pageerror）**；`node --test` 115/115。已知观察项（P3）：真实 open PR 数随仓库活动变化（列表断言已数据感知）、行内评论只对当前展开文件渲染、deep 复核轮的模型侧行为以单测覆盖为主。
+

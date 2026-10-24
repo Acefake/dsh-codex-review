@@ -282,6 +282,7 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 | O2 | P3（展示） | PR #134 共 4 条 inline 评论，diff 仅对当前展开文件渲染评论卡（2 张），右栏汇总「4 条评论」正确——符合「按 path+line 渲染」契约，非缺陷 |
 | O3 | P3（交互） | `j/k` 按列表顺序切换（跨仓库时会切到其它 repo 的 PR，如 #18），符合契约「上下切 PR」；如产品希望同仓库内切换需另立需求 |
 | O4 | P3（验证边界） | deep 复核轮与并发上限的**模型侧行为**本轮用 Lead 预热结果 + 单测覆盖验证（CONTRACT §4.6 item5 允许单测）；装置未另起 deep 长跑 |
+| O5 | P3（数据/缓存语义，正向证据） | 验收后仓库继续活动：PR #129 headSha 从 `f31cec5c…` 变为 `c24a0663…`，`PrDetail.review` 正确回到 `state:"none"`（文件级/结果缓存按 headSha 失效），旧 headSha 的完成 job 仍可按 jobId 查询。说明缓存失效逻辑符合契约，不是缺陷 |
 
 **v1.1 判定：PASS（90/90 路由断言 + 页面 12 项全 PASS + 0 console/pageerror）。**
 
