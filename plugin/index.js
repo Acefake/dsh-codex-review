@@ -47,7 +47,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.5.0'
+export const VERSION = '0.5.1'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -240,6 +240,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     engine,
     reviewer,
     publisher,
+    logger,
     llmAvailable: () => llmFace !== undefined,
     llmInfo,
     version: VERSION,
@@ -403,7 +404,52 @@ export function createChatStreamHandler(wiring) {
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, github, engine, reviewer, publisher, llmAvailable, llmInfo, version = VERSION } = wiring
+  const { config, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
+
+  /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number }>} */
+  const jobRefs = new Map()
+
+  /**
+   * Publish a manually started review once it finishes, when the user enabled
+   * automatic publishing. Fire-and-forget: the review route must not block on a
+   * GitHub write, and a publish failure only logs (the review result itself is
+   * kept). The enabled flag is re-read after completion so switching it off
+   * while a review runs also stops the publish.
+   * @param {string} jobId - finished or running review job.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {void}
+   */
+  const autoPublishAfterReview = (jobId, repo, number) => {
+    if (typeof engine.waitForCompletion !== 'function' || typeof publisher?.publish !== 'function') return
+    const isEnabled = () => {
+      try {
+        return reviewer?.status?.()?.publish?.enabled === true
+      } catch {
+        return false
+      }
+    }
+    if (!isEnabled()) return
+    void (async () => {
+      try {
+        await engine.waitForCompletion(jobId)
+        const finished = engine.status(jobId)
+        if (finished?.state !== 'done') return
+        const publishConfig = reviewer?.status?.()?.publish
+        if (publishConfig?.enabled !== true) return
+        await publisher.publish({
+          repo,
+          number,
+          confirm: true,
+          mode: publishConfig.mode,
+          minSeverity: publishConfig.minSeverity,
+          maxComments: publishConfig.maxComments,
+        })
+      } catch (error) {
+        logger?.warn?.(`dsh-codex-review: auto publish after review ${repo}#${number} failed: ${error?.message ?? error}`)
+      }
+    })()
+  }
 
   /**
    * Read one required non-empty string field.
@@ -543,6 +589,12 @@ export function createRoutes(wiring) {
         options,
         guidelines,
       })
+      jobRefs.set(started.jobId, { repo, number })
+      if (jobRefs.size > 200) {
+        const oldest = jobRefs.keys().next()
+        if (oldest.done !== true) jobRefs.delete(oldest.value)
+      }
+      autoPublishAfterReview(started.jobId, repo, number)
       return {
         jobId: started.jobId,
         headSha: started.headSha,
@@ -553,7 +605,16 @@ export function createRoutes(wiring) {
 
     [PATHS.reviewStatus]: async (payload) => {
       const jobId = requireString(payload, 'jobId', 'jobId')
-      return engine.status(jobId)
+      const status = engine.status(jobId)
+      const ref = jobRefs.get(jobId)
+      if (ref === undefined || typeof reviewer?.getPublished !== 'function') return status
+      const headSha = typeof status?.headSha === 'string' ? status.headSha : ''
+      if (headSha === '') return status
+      const record = reviewer.getPublished(`${ref.repo}#${ref.number}@${headSha}`)
+      if (record === undefined || record === null) return status
+      // Lets the workbench show the "already published" badge as soon as the
+      // auto-publish (or a manual publish) completed, without reloading the PR.
+      return { ...status, published: { ...record, headSha } }
     },
 
     [PATHS.reviewCancel]: async (payload) => {

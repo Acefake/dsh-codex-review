@@ -532,7 +532,7 @@ type AutoReviewStatus = {
 
 ```ts
 type PublishConfig = {
-  enabled: boolean              // 自动发布开关，默认 false（手动发布不受限）
+  enabled: boolean              // 自动发布开关：开启后自动审查与手动「用 AI 审查」完成的审查都会自动发布；默认 false（用户点「确认发布」不受此开关限制）
   mode: 'inline' | 'summary' | 'both'   // 默认 'inline'
   minSeverity: 'P0' | 'P1' | 'P2'       // 默认 'P2'（全部）
   maxComments: number           // 默认 20，范围 1–50
@@ -567,7 +567,7 @@ type PublishRequest = {
    - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（≤4000 字）；若请求带 `body` 则用之。
 6. 记录已发布：`engine` 或 auto-review 状态文件里按 `repo#number@headSha` 记 `publishedAt/reviewId/url`；重复调用先用 marker 去重，再返回同一 head 的最近结果。
 7. 错误码：`BAD_REQUEST`、`REVIEW_NOT_READY`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`INTERNAL`。
-8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/marker）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。
+8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/marker）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。0.5.1 起同一自定发布逻辑也适用于**手动 `review-start`** 产生的 job：完成后（`done`）在后台自动发布，fire-and-forget、失败只记日志，发布前重新读取开关（审查期间关掉则不发布）。
 
 ### 7.3 客户端
 

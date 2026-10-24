@@ -453,6 +453,16 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 
 **v2.2 判定：PASS（42 路由断言全过 + 页面 24/24 + 1 可见性 pending + 0 console/pageerror + 0 真实写）。**
 
+### 14.5 0.5.1 扩展：手动审查也会自动发布（2026-10-25 00:50）
+
+用户要求「AI 审查完成后自动把结果提交到 PR」。0.5.1 把 `publish.enabled` 从「只覆盖自动审查 cycle」扩展为**同时覆盖手动 `review-start`**：
+
+- Host 在手动审查 job `done` 后后台自动调用同一发布流程：fire-and-forget，不阻塞审查路由；发布前重新读取开关（审查期间关掉则不发布）；失败只记 Host 日志，不影响审查结果；同一 head 仍只发布一次。
+- `/review-status` 在已发布时回填 `published`（同 `/pr` 的 `review.published`），工作台审查卡轮询完成后即可显示「已发布 · 在 GitHub 查看」。
+- 设置区文案更新为「AI 审查（手动或自动）完成后自动发布」；开关仍默认关闭、需二次确认。
+- 验证：`node --test` **231/231**（新增 2 条：开关开启时手动审查完成会发布一次且参数取自配置；`review-status` 带 published 记录）。**验证过程未做真实发布**（保持红线），真实发布由用户下一次审查触发。
+- 当前本机配置：`publish.enabled=true`、`mode=inline`、`minSeverity=P2`、`maxComments=20`；自动审查本身仍关闭（`enabled=false`）。
+
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.9）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。

@@ -57,14 +57,14 @@
 - **安全**：自动审查只读 GitHub（绝不自动发评论、不合并、不改仓库）；手动「立即检查」可随时触发一次，勾选 force 时即使开关关闭也只跑一次。
 - 版本 0.4.0。
 
-## v2.2 新增（0.5.0）：把审查发布到 GitHub
+## v2.2 新增（0.5.0 / 0.5.1）：把审查发布到 GitHub
 
 - **发布审查（写操作，显式确认）**：AI 审查完成且有点时，审查卡出现「发布到 GitHub」；确认弹层可选发布方式（行内评论 / 汇总评论 / 行内+汇总）与最低严重度，并显示预计评论数；只有点「确认发布」才调用 `POST /codex-review/review-publish`（带 `confirm: true`）。成功后在 GitHub 上创建一条 `event: 'COMMENT'` 的 PR Review，按钮变为「已发布 · 在 GitHub 查看」。
 - **幂等与去重**：每个 `repo#number@headSha` 只发布一次；重复发布回放已存结果、不发写请求；服务端对同一 head 的并发发布做 in-flight 去重，双击/多标签页不会产生两条 review；行内评论带 `<!-- dsh-codex-review:<hash> -->` marker，重发时跳过 GitHub 上已存在的评论。
-- **自动发布**：自动审查完成后可按需自动发布，默认关闭；开启需二次确认（写操作警告），只对之后自动审查的 PR 生效；失败只记 `lastError`，不重试风暴。
-- **已发布状态跨刷新**：`/pr` 的 review 快照带 `published` 记录（`url`/`reviewId`/`publishedAt`），刷新页面或重开工作台仍显示已发布；发布记录持久化在 auto-review 状态文件。
+- **自动发布（0.5.1 起覆盖手动审查）**：开启后，完成的 AI 审查会自动发布到对应 PR——无论是点「用 AI 审查」手动发起的，还是自动审查 cycle 跑出来的；默认关闭，开启需二次确认（写操作警告）。失败只记 `lastError` / Host 日志，不重试风暴；同一 head 仍只发布一次。
+- **已发布状态跨刷新**：`/pr` 的 review 快照与 `/review-status` 都带 `published` 记录（`url`/`reviewId`/`publishedAt`），刷新页面或审查刚完成时都能显示已发布徽章；发布记录持久化在 auto-review 状态文件。
 - **安全**：发布只创建 review 评论，绝不修改代码、不推送、不合并；GitHub token 只留在 Host；手动发布必须 `confirm:true`，自动发布默认关闭。
-- 版本 0.5.0；测试 228 例。
+- 版本 0.5.1；测试 231 例。
 
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）

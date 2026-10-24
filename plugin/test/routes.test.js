@@ -133,6 +133,7 @@ function createFakeReviewer() {
         running: false,
         seenCount: 0,
         recent: [],
+        publish: { ...PUBLISH_DEFAULTS },
       }
     },
     updateConfig(patch) {
@@ -231,6 +232,10 @@ function createDoubles() {
     cancel() {
       return true
     },
+    async waitForCompletion() {
+      // The fake review is already finished; the auto-publish path just needs
+      // the seam to exist and resolve.
+    },
     resolveModel() {
       return { provider: 'opencode-go', model: 'deepseek-v4.1-flash' }
     },
@@ -324,6 +329,50 @@ test('pr attaches the persisted publish record to the review snapshot', async ()
   doubles.reviewer.getPublished = () => undefined
   const plain = await call(handler, '/codex-review/pr', { repo: 'Acefake/yingbox', number: 129 })
   assert.equal(plain.body.value.review.published, undefined)
+})
+
+test('review-start auto-publishes a finished review only when publish.enabled is on', async () => {
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 25))
+
+  const disabled = mount({ llmAvailable: true })
+  await call(disabled.handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
+  await wait()
+  assert.equal(disabled.doubles.publisher.calls.length, 0, 'publishing stays off by default')
+
+  const enabled = mount({ llmAvailable: true })
+  enabled.doubles.reviewer.status = () => ({
+    config: { enabled: false },
+    publish: { ...PUBLISH_DEFAULTS, enabled: true, mode: 'summary', minSeverity: 'P1', maxComments: 5 },
+    running: false,
+    seenCount: 0,
+    recent: [],
+  })
+  await call(enabled.handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
+  await wait()
+  assert.equal(enabled.doubles.publisher.calls.length, 1, 'a finished manual review is published once')
+  const publishCall = enabled.doubles.publisher.calls[0]
+  assert.equal(publishCall.confirm, true)
+  assert.equal(publishCall.mode, 'summary')
+  assert.equal(publishCall.minSeverity, 'P1')
+  assert.equal(publishCall.maxComments, 5)
+})
+
+test('review-status carries the publish record once the head is published', async () => {
+  const { handler, doubles } = mount({ llmAvailable: true })
+  await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
+  doubles.reviewer.getPublished = (key) => (
+    key === 'Acefake/yingbox#129@abc123'
+      ? { publishedAt: 1234, reviewId: 77, url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77' }
+      : undefined
+  )
+  const answer = await call(handler, '/codex-review/review-status', { jobId: 'job-1' })
+  assert.equal(answer.body.value.state, 'done')
+  assert.deepEqual(answer.body.value.published, {
+    publishedAt: 1234,
+    reviewId: 77,
+    url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77',
+    headSha: 'abc123',
+  })
 })
 
 test('review-start forwards the PR snapshot to the engine and answers the job reference', async () => {
