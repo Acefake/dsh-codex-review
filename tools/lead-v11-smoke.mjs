@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Lead integration smoke for the v1.1 review options / cache / threshold.
  *
