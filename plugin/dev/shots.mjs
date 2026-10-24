@@ -46,6 +46,7 @@ const SHOTS = [
   { file: '11-v11-existing-comments.png', scene: 'v11-existing-comments', theme: 'dark' },
   { file: '12-v2-merge-dialog.png', scene: 'v2-merge-dialog', theme: 'dark' },
   { file: '13-v2-chat.png', scene: 'v2-chat', theme: 'dark' },
+  { file: '14-v21-auto-review.png', scene: 'v2.1-auto-review', theme: 'dark' },
 ]
 
 function findEdge() {

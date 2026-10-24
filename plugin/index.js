@@ -19,6 +19,14 @@ import {
   REPO_RE,
 } from './lib/github.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
+import { AutoReviewer } from './lib/auto-review.js'
+import {
+  PUBLISH_DEFAULTS,
+  PUBLISH_MODES,
+  PUBLISH_SEVERITIES,
+  PUBLISH_SUMMARY_MAX_CHARS,
+  ReviewPublisher,
+} from './lib/publish.js'
 import { ROUTE_PREFIX, createChatRouteHandler, createJsonRouteHandler } from './lib/http.js'
 import {
   CHAT_CALL_TIMEOUT_MS,
@@ -39,7 +47,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.3.0'
+export const VERSION = '0.5.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -57,6 +65,10 @@ const PATHS = Object.freeze({
   reviewStatus: `${ROUTE_PREFIX}/review-status`,
   reviewCancel: `${ROUTE_PREFIX}/review-cancel`,
   merge: `${ROUTE_PREFIX}/merge`,
+  autoReviewStatus: `${ROUTE_PREFIX}/auto-review-status`,
+  autoReviewConfig: `${ROUTE_PREFIX}/auto-review-config`,
+  autoReviewRun: `${ROUTE_PREFIX}/auto-review-run`,
+  reviewPublish: `${ROUTE_PREFIX}/review-publish`,
 })
 
 /**
@@ -203,10 +215,31 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const engine = deps.engine ?? new ReviewEngine({ streamLlm, resolveSelection, config, logger })
   /** Concurrent chat streams allowed by CONTRACT §5.2. */
   const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
+  /** Background automatic reviewer (CONTRACT §6); disabled by default. */
+  const reviewer = deps.reviewer ?? new AutoReviewer({ github, engine, logger })
+  /**
+   * Publish flow shared by the manual route and the automatic reviewer
+   * (CONTRACT §7.2). The publish records live inside the auto-review state file,
+   * so a restarted Host remembers which head was already published.
+   */
+  const publisher = deps.publisher ?? new ReviewPublisher({
+    github,
+    engine,
+    logger,
+    store: {
+      get: (key) => (typeof reviewer.getPublished === 'function' ? reviewer.getPublished(key) : undefined),
+      set: (key, record) => {
+        if (typeof reviewer.setPublished === 'function') reviewer.setPublished(key, record)
+      },
+    },
+  })
+  if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
   const routes = createRoutes({
     config,
     github,
     engine,
+    reviewer,
+    publisher,
     llmAvailable: () => llmFace !== undefined,
     llmInfo,
     version: VERSION,
@@ -241,6 +274,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   ctx.effect(() => () => engine.dispose(), 'dsh-codex-review: review engine')
   // A plugin dispose must stop every live chat stream, not just its listeners.
   ctx.effect(() => () => chatLimiter.abortAll(new AppError('INTERNAL', '插件已卸载')), 'dsh-codex-review: chat streams')
+  ctx.effect(() => () => reviewer.dispose(), 'dsh-codex-review: auto-review scheduler')
 }
 
 /**
@@ -365,11 +399,11 @@ export function createChatStreamHandler(wiring) {
  * Build the pathname → handler map. Handlers receive the parsed JSON body and
  * the request context `{ signal }`; they either resolve the route value or
  * throw an {@link AppError} that the transport turns into the error envelope.
- * @param {{ config: any, github: any, engine: any, llmAvailable: () => boolean, llmInfo?: () => Promise<any>, version?: string }} wiring - route dependencies.
+ * @param {{ config: any, github: any, engine: any, reviewer?: any, publisher?: any, llmAvailable: () => boolean, llmInfo?: () => Promise<any>, version?: string }} wiring - route dependencies.
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, github, engine, llmAvailable, llmInfo, version = VERSION } = wiring
+  const { config, github, engine, reviewer, publisher, llmAvailable, llmInfo, version = VERSION } = wiring
 
   /**
    * Read one required non-empty string field.
@@ -401,15 +435,23 @@ export function createRoutes(wiring) {
   }
 
   /**
-   * Attach the engine's review snapshot to a PrDetail.
+   * Attach the engine's review snapshot to a PrDetail. When this head was
+   * already published to GitHub, the persisted publish identity rides along as
+   * `review.published` so the workbench can render the "already published"
+   * badge after a page reload (CONTRACT §7.3) instead of depending on
+   * per-tab client state.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
    * @param {any} detail - fetched detail.
-   * @returns {any} detail plus `review`.
+   * @returns {any} detail plus `review` (and `review.published` when recorded).
    */
   const withReview = (repo, number, detail) => {
     const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
-    return { ...detail, review: engine.existing(repo, number, headSha) }
+    const review = engine.existing(repo, number, headSha)
+    if (headSha === '' || typeof reviewer?.getPublished !== 'function') return { ...detail, review }
+    const record = reviewer.getPublished(`${repo}#${number}@${headSha}`)
+    if (record === undefined || record === null) return { ...detail, review }
+    return { ...detail, review: { ...review, published: { ...record, headSha } } }
   }
 
   /**
@@ -547,6 +589,54 @@ export function createRoutes(wiring) {
       // Guard 7: the merged head is no longer reachable, so drop its review jobs.
       if (typeof engine.invalidate === 'function') engine.invalidate(repo, number)
       return result
+    },
+
+    [PATHS.autoReviewStatus]: async () => {
+      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
+      return reviewer.status()
+    },
+
+    [PATHS.autoReviewConfig]: async (payload) => {
+      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
+      if (payload.patch === undefined) return reviewer.status()
+      if (payload.patch === null || typeof payload.patch !== 'object' || Array.isArray(payload.patch)) {
+        throw badRequest('patch 必须是对象')
+      }
+      return reviewer.updateConfig(payload.patch)
+    },
+
+    [PATHS.autoReviewRun]: async (payload) => {
+      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
+      return reviewer.runOnce({ force: payload.force === true })
+    },
+
+    [PATHS.reviewPublish]: async (payload) => {
+      const { repo, number } = requirePullRef(payload)
+      // Writing a GitHub review always needs the explicit confirmation flag.
+      if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
+      // Defaults come from the persisted publish config; explicit values win.
+      const publishConfig = reviewer?.status?.()?.config?.publish ?? PUBLISH_DEFAULTS
+      const mode = payload.mode === undefined ? publishConfig.mode : payload.mode
+      if (!PUBLISH_MODES.includes(mode)) throw badRequest('mode 必须是 inline|summary|both')
+      const minSeverity = payload.minSeverity === undefined ? publishConfig.minSeverity : payload.minSeverity
+      if (!PUBLISH_SEVERITIES.includes(minSeverity)) throw badRequest('minSeverity 必须是 P0|P1|P2')
+      let customBody
+      if (payload.body !== undefined && payload.body !== null) {
+        if (typeof payload.body !== 'string') throw badRequest('body 必须是字符串')
+        const trimmed = payload.body.trim()
+        if (trimmed.length > PUBLISH_SUMMARY_MAX_CHARS) throw badRequest(`body 超过 ${PUBLISH_SUMMARY_MAX_CHARS} 字`)
+        if (trimmed !== '') customBody = trimmed
+      }
+      if (publisher === undefined) throw new AppError('INTERNAL', '发布器未初始化')
+      return publisher.publish({
+        repo,
+        number,
+        confirm: true,
+        mode,
+        minSeverity,
+        maxComments: publishConfig.maxComments ?? PUBLISH_DEFAULTS.maxComments,
+        body: customBody,
+      })
     },
   }
 }

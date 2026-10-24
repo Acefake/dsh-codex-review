@@ -24,6 +24,7 @@ export const USER_MESSAGES = {
   MERGE_CONFLICT: 'PR 存在冲突，无法合并，请先在本地解决冲突',
   MERGE_NOT_ALLOWED: 'PR 当前状态不允许合并',
   MERGE_HEAD_MOVED: 'PR 已有新提交，请刷新后重试',
+  REVIEW_NOT_READY: '该 PR 当前提交还没有完成的 AI 审查结果，请先运行 AI 审查',
   BUSY: '当前请求过多，请稍后再试',
   INTERNAL: '插件内部错误',
 }

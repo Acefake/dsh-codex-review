@@ -39,6 +39,8 @@ const SCENES =
         'v11-existing-comments',
         'v2-merge-dialog',
         'v2-chat',
+        'v2.1-auto-review',
+        'v2.1-auto-review-missing',
       ]
 
 function findEdge() {
@@ -235,6 +237,38 @@ const LAYOUT_EXPRESSION = `(() => {
       const node = document.querySelector('[data-chat-input]')
       return node ? node.value : ''
     })(),
+    autoCard: Boolean(document.querySelector('[data-cr-autoreview]')),
+    autoSupported: (() => {
+      const node = document.querySelector('[data-cr-autoreview]')
+      return node ? node.getAttribute('data-auto-supported') : ''
+    })(),
+    autoEnabled: (() => {
+      const node = document.querySelector('[data-cr-autoreview]')
+      return node ? node.getAttribute('data-auto-enabled') : ''
+    })(),
+    autoRunning: (() => {
+      const node = document.querySelector('[data-cr-autoreview]')
+      return node ? node.getAttribute('data-auto-running') : ''
+    })(),
+    autoRecent: (() => {
+      const node = document.querySelector('[data-cr-autoreview]')
+      return node ? Number(node.getAttribute('data-auto-recent')) : 0
+    })(),
+    autoBadges: document.querySelectorAll('[data-auto-badge]').length,
+    autoBadgeCount: document.querySelectorAll('[data-auto-badge="count"]').length,
+    autoRunButton: Boolean(document.querySelector('[data-action="auto-review-run"]')),
+    autoUnsupportedText: (() => {
+      const node = document.querySelector('.cr-autoreview-degraded')
+      return node ? node.textContent || '' : ''
+    })(),
+    autoToast: document.body.dataset.previewAutoToast || '',
+    autoMissingCalls:
+      typeof window.__CR_AUTO_MISSING_CALLS__ === 'number' ? window.__CR_AUTO_MISSING_CALLS__ : -1,
+    autoSettingsToggle: Boolean(document.querySelector('input[data-auto-enabled]')),
+    autoSettingsPresets: document.querySelectorAll('[data-auto-interval-preset]').length,
+    autoSettingsDepth: document.querySelectorAll('input[data-auto-depth]').length,
+    autoSettingsQuery: Boolean(document.querySelector('[data-auto-query]')),
+    autoSettingsMax: Boolean(document.querySelector('input[data-auto-max]')),
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
   }
 })()`
@@ -263,6 +297,8 @@ async function checkScene(cdp, scene) {
   await send('Runtime.enable')
   await send('Log.enable')
   await send('Page.enable')
+  // Every scene starts from a clean mock state (jobs, merge/chat/auto counters).
+  await postDev('/codex-review/dev-reset')
   await send('Page.navigate', { url: `${BASE}/?scene=${scene}` })
 
   let layout = null
@@ -303,6 +339,11 @@ async function probeInteractions(send, scene) {
     chatStored: '',
     chatStopped: null,
     chatIsolation: '',
+    autoState: '',
+    autoPolling: '',
+    autoDisabled: '',
+    autoPollStopped: '',
+    autoMissingCalls: -1,
     invalid: '',
   }
   const evaluate = async (expression) => {
@@ -597,6 +638,71 @@ async function probeInteractions(send, scene) {
       else if (!reopened || reopened.messages < 6) result.invalid = 'restored chat did not reopen'
       else if (result.chatClosedByEsc !== true) result.invalid = 'Esc did not close the chat panel'
     }
+    if (scene === 'v2.1-auto-review') {
+      const state = await postDev('/codex-review/dev-state')
+      const auto = state && state.autoReview ? state.autoReview : null
+      result.autoState = auto ? JSON.stringify(auto) : ''
+      if (!auto) {
+        result.invalid = 'dev-state has no auto review bookkeeping'
+      } else if (!auto.lastConfigPatch || auto.lastConfigPatch.enabled !== true) {
+        result.invalid = `auto review config patch was not enabled=true: ${JSON.stringify(auto.lastConfigPatch)}`
+      } else if (!auto.lastRun || auto.lastRun.force !== true || auto.runCalls < 1) {
+        result.invalid = `auto-review-run did not receive force=true: ${JSON.stringify(auto.lastRun)}`
+      }
+      // Polling while enabled: statusCount grows at the shortened preview cadence.
+      const firstState = await postDev('/codex-review/dev-state')
+      const firstCount =
+        firstState && firstState.autoReview ? firstState.autoReview.statusCount : -1
+      await sleep(2800)
+      const secondState = await postDev('/codex-review/dev-state')
+      const secondCount =
+        secondState && secondState.autoReview ? secondState.autoReview.statusCount : -1
+      result.autoPolling = `${firstCount}->${secondCount}`
+      if (!(secondCount > firstCount)) {
+        result.invalid = `auto review polling did not run (${result.autoPolling})`
+      }
+      // Disable through the settings popover; polling must stop.
+      await evaluate(`document.querySelector('[data-action="review-settings"]').click()`)
+      await sleep(500)
+      await evaluate(
+        `(() => { const input = document.querySelector('input[data-auto-enabled]'); if (input) input.click(); return Boolean(input) })()`,
+      )
+      await sleep(800)
+      result.autoDisabled = await evaluate(
+        `(() => { const root = document.querySelector('[data-cr-root]'); return root ? root.getAttribute('data-cr-auto-enabled') : '' })()`,
+      )
+      if (result.autoDisabled !== 'false') {
+        result.invalid = `auto review did not disable through settings (${result.autoDisabled})`
+      }
+      await press('Escape')
+      await sleep(300)
+      const beforeStop = await postDev('/codex-review/dev-state')
+      const stopCount =
+        beforeStop && beforeStop.autoReview ? beforeStop.autoReview.statusCount : -1
+      await sleep(2800)
+      const afterStop = await postDev('/codex-review/dev-state')
+      const stopCountAfter =
+        afterStop && afterStop.autoReview ? afterStop.autoReview.statusCount : -1
+      result.autoPollStopped = `${stopCount}->${stopCountAfter}`
+      if (stopCountAfter !== stopCount) {
+        result.invalid = `auto review polling kept running after disable (${result.autoPollStopped})`
+      }
+    }
+    if (scene === 'v2.1-auto-review-missing') {
+      result.autoMissingCalls = await evaluate(
+        `typeof window.__CR_AUTO_MISSING_CALLS__ === 'number' ? window.__CR_AUTO_MISSING_CALLS__ : -1`,
+      )
+      await sleep(2600)
+      const after = await evaluate(
+        `typeof window.__CR_AUTO_MISSING_CALLS__ === 'number' ? window.__CR_AUTO_MISSING_CALLS__ : -1`,
+      )
+      result.autoPollStopped = `${result.autoMissingCalls}->${after}`
+      if (result.autoMissingCalls !== 1) {
+        result.invalid = `old-host auto review probe count ${result.autoMissingCalls}`
+      } else if (after !== result.autoMissingCalls) {
+        result.invalid = `old-host auto review kept probing (${result.autoPollStopped})`
+      }
+    }
   } catch (error) {
     result.invalid = String((error && error.message) || error)
   }
@@ -651,6 +757,16 @@ function assertScene(scene, layout, errors, interactions) {
     if (layout.settingsThreshold !== 3) problems.push(`threshold radios ${layout.settingsThreshold}`)
     if (!layout.settingsGuidelines) problems.push('guidelines toggle missing')
     if (!layout.settingsFocusInside) problems.push('focus did not move into the popover')
+    if (!layout.autoSettingsToggle) problems.push('auto review toggle missing from settings')
+    if (layout.autoSettingsPresets !== 3) {
+      problems.push(`auto review interval presets ${layout.autoSettingsPresets}`)
+    }
+    if (layout.autoSettingsDepth !== 3) {
+      problems.push(`auto review depth radios ${layout.autoSettingsDepth}`)
+    }
+    if (!layout.autoSettingsQuery || !layout.autoSettingsMax) {
+      problems.push('auto review query/max fields missing from settings')
+    }
   }
   if (scene === 'v11-existing-comments') {
     if (layout.inlineComments < 2) problems.push(`inline comment cards ${layout.inlineComments}`)
@@ -675,6 +791,25 @@ function assertScene(scene, layout, errors, interactions) {
     if (layout.chatStreaming) problems.push('chat still streaming after ready')
     if (layout.chatError) problems.push('chat rendered an error bubble')
   }
+  if (scene === 'v2.1-auto-review') {
+    if (!layout.autoCard) problems.push('auto review card missing')
+    if (layout.autoSupported !== 'true') problems.push('auto review card reports unsupported')
+    if (layout.autoEnabled !== 'true') problems.push('auto review card not enabled')
+    if (!layout.autoRunButton) problems.push('auto review run button missing')
+    if (!(layout.autoRecent >= 1)) problems.push(`auto review recent ${layout.autoRecent}`)
+    if (!(layout.autoBadges >= 1)) problems.push('auto review badge missing on the PR list')
+    if (!(layout.autoBadgeCount >= 1)) problems.push('auto review findings badge missing')
+    if (layout.autoToast !== '1') problems.push('auto review completion toast missing')
+  }
+  if (scene === 'v2.1-auto-review-missing') {
+    if (layout.autoSupported !== 'false') {
+      problems.push('degraded auto review card did not report unsupported')
+    }
+    if (!String(layout.autoUnsupportedText).includes('宿主未启用自动审查')) {
+      problems.push('degraded auto review copy missing')
+    }
+    if (layout.autoBadges !== 0) problems.push('degraded host rendered auto review badges')
+  }
   if (interactions) {
     if (interactions.invalid) problems.push(interactions.invalid)
     if (scene === 'v2-merge-dialog') {
@@ -697,6 +832,25 @@ function assertScene(scene, layout, errors, interactions) {
       }
       if (!String(interactions.chatIsolation).includes('"otherMessages":"0"')) {
         problems.push(`chat history isolation ${interactions.chatIsolation}`)
+      }
+    }
+    if (scene === 'v2.1-auto-review') {
+      const polling = String(interactions.autoPolling || '')
+      const parts = polling.split('->').map(Number)
+      if (!(parts.length === 2 && parts[1] > parts[0])) {
+        problems.push(`auto review polling ${polling || 'missing'}`)
+      }
+      if (interactions.autoDisabled !== 'false') {
+        problems.push('auto review could not be disabled through settings')
+      }
+      const stop = String(interactions.autoPollStopped || '').split('->').map(Number)
+      if (!(stop.length === 2 && stop[1] === stop[0])) {
+        problems.push(`auto review polling did not stop (${interactions.autoPollStopped || 'missing'})`)
+      }
+    }
+    if (scene === 'v2.1-auto-review-missing') {
+      if (interactions.autoMissingCalls !== 1) {
+        problems.push(`old-host auto review probe count ${interactions.autoMissingCalls}`)
       }
     }
     if (scene === 'default') {
@@ -758,7 +912,8 @@ async function main() {
             `doc=${layout.doc ? layout.doc.width : '?'} details=${layout.details ? layout.details.width : '?'} ` +
             `rows=${layout.rows} files=${layout.files} diffRows=${layout.diffRows} review=${layout.reviewState} ` +
             `verdict=${layout.verdict || '-'} inline=${layout.inlineCards} comments=${layout.inlineComments} ` +
-            `merge=${layout.mergeOpen ? layout.mergeSha || 'open' : '-'} chat=${layout.chatMessages}/${layout.chatAssistantChars}`,
+            `merge=${layout.mergeOpen ? layout.mergeSha || 'open' : '-'} chat=${layout.chatMessages}/${layout.chatAssistantChars} ` +
+            `auto=${layout.autoSupported === 'false' ? 'degraded' : layout.autoEnabled === 'true' ? 'on' : 'off'}/${layout.autoRecent}/badges=${layout.autoBadges}`,
         )
         for (const problem of problems) console.log(`     - ${problem}`)
         if (problems.length > 0) {

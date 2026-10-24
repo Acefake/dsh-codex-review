@@ -898,6 +898,32 @@ export class ReviewEngine {
   }
 
   /**
+   * Whether one PR has a queued/running review job. The automatic reviewer
+   * skips such PRs so it never starts a second job for the same PR.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {boolean} true when a live job exists for the PR.
+   */
+  hasActiveJob(repo, number) {
+    for (const job of this.jobs.values()) {
+      if (job.repo === repo && job.number === number && (job.state === 'queued' || job.state === 'running')) return true
+    }
+    return false
+  }
+
+  /**
+   * Resolve when one job reaches a terminal state (never rejects). Unknown ids
+   * resolve immediately so a late call cannot keep the scheduler waiting.
+   * @param {string} jobId - job id returned by {@link start}.
+   * @returns {Promise<void>} resolves once the job settles.
+   */
+  waitForCompletion(jobId) {
+    const job = this.jobs.get(jobId)
+    if (job === undefined) return Promise.resolve()
+    return Promise.resolve(job.done).then(() => undefined, () => undefined)
+  }
+
+  /**
    * Drop every review job (and file-cache entry) for one PR after a merge: the
    * reviewed head is no longer reachable through the PR, so its cached results
    * must never be shown again. Running jobs are cancelled first.

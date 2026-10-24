@@ -206,6 +206,17 @@
         // v2 dev knobs: script the merge guard / chat SSE behaviour per request.
         var mockMerge = params.get('mockMerge') || ''
         var chatCalls = 0
+        // v2.1 dev knobs: shorten auto-review polling in preview and script the mock.
+        var mockAuto =
+          params.get('mockAuto') || (scene === 'v2.1-auto-review-missing' ? 'missing' : '')
+        if (scene === 'v2.1-auto-review' || scene === 'v2.1-auto-review-missing') {
+          window.__CR_AUTO_POLL_MS__ = 1200
+        }
+        window.__CR_AUTO_MISSING_CALLS__ = 0
+        // v2.2 dev knob: simulate an older Host without the publish route.
+        var mockPublish =
+          params.get('mockPublish') || (scene === 'v2.2-publish-missing' ? 'missing' : '')
+        window.__CR_PUBLISH_MISSING_CALLS__ = 0
 
         // The v2 scenes start from a clean chat history so screenshots/tests are
         // deterministic even when the preview profile has run before.
@@ -223,6 +234,56 @@
         var nativeFetch = window.fetch.bind(window)
         window.fetch = function (input, init) {
           try {
+            if (typeof input === 'string' && input.indexOf('codex-review/review-publish') >= 0) {
+              if (mockPublish === 'missing') {
+                // Older Host: the route itself does not exist.
+                window.__CR_PUBLISH_MISSING_CALLS__ += 1
+                return Promise.resolve(
+                  new Response(
+                    JSON.stringify({ ok: false, error: { code: 'GH_NOT_FOUND', message: '没有这个路由' } }),
+                    { status: 404, headers: { 'content-type': 'application/json' } },
+                  ),
+                )
+              }
+              if (init && typeof init.body === 'string' && mockPublish !== '') {
+                var publishPayload = JSON.parse(init.body)
+                publishPayload.mockPublish = mockPublish
+                init = Object.assign({}, init, { body: JSON.stringify(publishPayload) })
+              }
+            }
+            if (
+              mockPublish === 'missing' &&
+              typeof input === 'string' &&
+              input.indexOf('codex-review/auto-review-status') >= 0
+            ) {
+              // Older Host: the status payload has no publish config at all.
+              return nativeFetch(input, init).then(function (response) {
+                return response.json().then(function (envelope) {
+                  if (envelope && envelope.ok && envelope.value) delete envelope.value.publish
+                  return new Response(JSON.stringify(envelope), {
+                    status: response.status,
+                    headers: { 'content-type': 'application/json' },
+                  })
+                })
+              })
+            }
+            if (typeof input === 'string' && input.indexOf('codex-review/auto-review') >= 0) {
+              if (mockAuto === 'missing') {
+                // Simulate an older Host that has no auto-review routes.
+                window.__CR_AUTO_MISSING_CALLS__ += 1
+                return Promise.resolve(
+                  new Response(
+                    JSON.stringify({ ok: false, error: { code: 'GH_NOT_FOUND', message: '没有这个路由' } }),
+                    { status: 404, headers: { 'content-type': 'application/json' } },
+                  ),
+                )
+              }
+              if (init && typeof init.body === 'string' && mockAuto !== '') {
+                var autoPayload = JSON.parse(init.body)
+                autoPayload.mockAuto = mockAuto
+                init = Object.assign({}, init, { body: JSON.stringify(autoPayload) })
+              }
+            }
             if (typeof input === 'string' && input.indexOf('codex-review/') >= 0 && init && typeof init.body === 'string') {
               if (input.indexOf('review-start') >= 0) {
                 var payload = JSON.parse(init.body)
@@ -484,6 +545,52 @@
                     }, 15000)
                   })
                 })
+              }
+              if (scene === 'v2.1-auto-review') {
+                // Enable auto review in settings, then trigger one manual cycle.
+                click('[data-action="review-settings"]')
+                return waitFor(function () { return document.querySelector('[data-cr-settings]') }).then(function () {
+                  var toggle = document.querySelector('input[data-auto-enabled]')
+                  if (toggle && !toggle.checked) toggle.click()
+                  return waitFor(function () {
+                    var root = document.querySelector('[data-cr-root]')
+                    return root && root.getAttribute('data-cr-auto-enabled') === 'true'
+                  }, 8000)
+                }).then(function () {
+                  click('[data-action="settings-close"]')
+                  return waitFor(function () { return !document.querySelector('[data-cr-settings]') })
+                }).then(function () {
+                  click('[data-action="auto-review-run"]')
+                  return waitFor(function () {
+                    var root = document.querySelector('[data-cr-root]')
+                    return root && root.getAttribute('data-cr-auto-running') === 'true'
+                  }, 8000)
+                }).then(function () {
+                  return waitFor(function () {
+                    var root = document.querySelector('[data-cr-root]')
+                    return (
+                      root &&
+                      root.getAttribute('data-cr-auto-running') === 'false' &&
+                      Number(root.getAttribute('data-cr-auto-recent')) >= 1
+                    )
+                  }, 12000)
+                }).then(function () {
+                  return waitFor(function () {
+                    var toast = document.querySelector('.cr-toast')
+                    return toast && (toast.textContent || '').indexOf('自动审查完成') >= 0
+                  }, 8000).then(function (found) {
+                    if (found) document.body.dataset.previewAutoToast = '1'
+                    var root = document.querySelector('[data-cr-root]')
+                    if (root) document.body.dataset.previewAutoRecent = root.getAttribute('data-cr-auto-recent') || '0'
+                    return true
+                  })
+                })
+              }
+              if (scene === 'v2.1-auto-review-missing') {
+                return waitFor(function () {
+                  var card = document.querySelector('[data-cr-autoreview]')
+                  return card && card.getAttribute('data-auto-supported') === 'false'
+                }, 8000)
               }
               return null
             })

@@ -15,7 +15,7 @@
 
 ## 1. Host 半边（`plugin/index.js` + `plugin/lib/*`）
 
-纯 ESM、**零 npm 依赖**（不 import 任何 `@deepseek-ai/*`；`@deepseek-ai/schemastery` 也不要用，Config 用普通 JSON Schema 形式见 §1.3）。
+纯 ESM、**零运行时依赖**。Host 代码不 import 任何其他插件/平台包；唯一例外是 Config 的 schema 校验：`lib/config.js` 优先按三路解析（自身 `node_modules` → `DSH_PROFILE_DIR` / `DSH_HOME/profiles/<profile>` → 自包含兜底）加载 `@deepseek-ai/schemastery`（profile 已自带），解析不到时退回自包含 Standard Schema，保证 link 安装与 `node --test` 都能挂载。业务代码一律不依赖它。
 
 ```js
 export const name = 'dsh-codex-review'
@@ -169,7 +169,7 @@ export const Config = {
 }
 ```
 
-（如果 Loader 校验要求 schemastery 实例，Host 实现先用普通对象试；失败则退回 `import z from '@deepseek-ai/schemastery'` 并在报告中说明。）
+（Loader 校验接受 Standard Schema；`lib/config.js` 优先构造 Schemastery（profile 已带 `@deepseek-ai/schemastery`），解析不到时用自包含 Standard Schema。两种形态字段一致，默认值仍由 `resolveConfig` 兜底。）
 
 ### 1.4 GitHub 数据通道（`lib/github.js`）
 
@@ -445,4 +445,142 @@ type ChatRequest = {
 2. 真实环境：**不做真实合并**；只验证守卫（`confirm:false` → BAD_REQUEST；stale `expectedHeadSha` → MERGE_HEAD_MOVED）与 UI 弹层字段/取消。
 3. 真实 chat：对 #129 提一个真实问题（如「这个 PR 改了什么」），验证流式返回非空、含 PR 上下文、无 console error。
 4. 页面：合并按钮可点并打开弹层、取消不写入；输入框发送 → 面板出现流式回答；历史按 PR 隔离；`Esc` 关闭面板；console 0 error。
+
+## 6. v2.1 契约：自动审查（2026-10-24 第四轮迭代，版本 0.4.0）
+
+目标：后台定时扫描开放 PR，发现「新 PR / 新提交」时自动运行 AI 审查，结果进入既有审查缓存与 UI；**默认关闭，且绝不自动向 GitHub 写任何内容**（不发评论、不合并）。
+
+### 6.1 配置（Host 持久化，UI 可改）
+
+Host 在插件自有的状态文件里持久化配置与「已审查到哪个 head」的游标：
+
+- 文件：`<DSH_PROFILE_DIR>/.codex-review/auto-review.json`（无 profile 时回退 `~/.dsh/codex-review/auto-review.json`）；目录不存在则创建；原子写（tmp + rename）；损坏则重建并保留 `backup` 后缀。
+- 结构：
+```ts
+type AutoReviewFile = {
+  version: 1
+  config: {
+    enabled: boolean            // 默认 false
+    intervalSeconds: number     // 默认 180，范围 60–3600
+    query: string               // 默认 'is:open author:@me'
+    depth: 'fast' | 'standard' | 'deep'   // 默认 'fast'
+    severityThreshold: 'P0' | 'P1' | 'P2' // 默认 'P2'
+    includeDrafts: boolean      // 默认 false
+    maxPerCycle: number         // 默认 2，范围 1–5
+  }
+  seen: Record<string, { headSha: string, at: number }>  // key = repo#number
+  lastCycleAt?: number
+}
+```
+- `enabled` 变更立即生效（不需重载插件）；`intervalSeconds` 变更在当前计时结束后生效。
+
+### 6.2 调度器（Host）
+
+- 插件 apply 时创建 `AutoReviewer`（`lib/auto-review.js`），由 `ctx.effect(() => () => reviewer.dispose())` 管理；内部用可注入的 `setInterval/clearInterval` 与 `now()` 便于单测。
+- 每 `intervalSeconds` 一个 cycle：
+  1. 若 `enabled !== true` → 记 `skipped: disabled` 并结束。
+  2. 用 `query` 拉 PR 列表（复用 `GitHubClient.listPullRequests`）；过滤：`state==='open'`、`isDraft && !includeDrafts` 跳过、`repo#number` 已有进行中 job 跳过。
+  3. 取 PR 详情拿 `headSha`（列表接口没有 head sha）；与 `seen[key].headSha` 相同则跳过（已审过该提交）。
+  4. 对需要审查的 PR 依次（并发 1）调用 `ReviewEngine.start(repo, number, headSha, files, { depth, severityThreshold, includeGuidelines:true })`；最多 `maxPerCycle` 个；其余留到下一 cycle。
+  5. 每次审查结束后（done/error/cancelled）更新 `seen[key] = {headSha, at}` 并写入 `recent` 结果（内存，最多 20 条）：`{repo, number, headSha, state, findings, verdict, overview, finishedAt, error?}`；`error` 也写 seen（避免每轮重试同一失败），但 30 分钟后允许重试一次（`retryAfterMs`）。
+- 手动触发：`auto-review-run` 立即执行一次 cycle（不看间隔，enabled 关闭时也允许一次手动检查？——不：必须先 enabled=true 或带 `{ force: true }`，force 仅本次运行）。
+- 并发：同一时刻最多 1 个 cycle；cycle 中同时最多 1 个审查 job（串行）。
+- 失败隔离：单个 PR 失败只记录，不影响后续 PR 与后续 cycle。
+
+### 6.3 路由
+
+| pathname | 请求 | 响应 value |
+|---|---|---|
+| `/codex-review/auto-review-status` | `{}` | `AutoReviewStatus` |
+| `/codex-review/auto-review-config` | `{ patch: Partial<Config> }` | `AutoReviewStatus`（校验/夹取后回显） |
+| `/codex-review/auto-review-run` | `{ force?: boolean }` | `{ started: boolean, reason?: string }` |
+
+```ts
+type AutoReviewStatus = {
+  config: AutoReviewConfig            // 当前生效配置（含 config.publish，状态文件形态）
+  publish: PublishConfig              // 发布配置的顶层副本（客户端发布 UI 读这里，见 §7.1）
+  running: boolean                    // cycle 进行中
+  lastCycleAt?: number
+  nextCycleAt?: number                // 预计下一次（running 时省略）
+  seenCount: number
+  recent: Array<{ repo, number, headSha, state: 'done'|'error'|'cancelled', findings: number, verdict?, overview?, finishedAt, error? }>  // 最新在前，≤20
+  lastError?: { code: string, message: string }   // 最近一次 cycle 级错误（如 gh 失败）
+}
+```
+- 非法 patch 字段忽略并夹取（interval 60–3600 等）；未知字段忽略。
+- `auto-review-run` 在 `running===true` 或 `enabled!==true && force!==true` 时返回 `{started:false, reason}`。
+
+### 6.4 客户端
+
+- 「审查设置」弹层顶部新增「自动审查」区：开关（默认关）、间隔（60/180/600 秒预设 + 自定义 60–3600）、深度、严重度阈值、是否包含草稿、每次最多审查数（1–5）、查询语句；改动即 `POST auto-review-config` 持久化，回显以 Host 为准。
+- 右栏新增「自动审查」卡（可折叠）：状态（开启/关闭、上次/下次、最近结果列表，点击结果跳转并打开对应 PR）、「立即检查」按钮（force）、`running` 时禁用并显示进度。
+- 页面级：每 15 秒轮询 `auto-review-status`（仅工作台可见时）；发现 `recent` 出现新的 `done` 结果 → toast「自动审查完成：repo#n · X 个问题」+ 列表行显示「已自动审查」徽章（有 findings 时显示数量）。审查结果本身通过既有 `/pr` 返回（按 head sha 命中缓存）。
+- 关闭自动审查后停止轮询与通知（仍显示历史 recent）。
+
+### 6.5 v2.1 验收补充
+
+1. 单测：配置夹取/未知字段、状态文件读写（损坏/回退）、cycle 判定（disabled / draft / 已审同 head / 已审失败重试窗口 / maxPerCycle 截断）、串行与并发 1、cycle 级错误记录、`auto-review-run` 的 running/force 语义。
+2. Host 集成（真实数据 + fake LLM 或短间隔）：`enabled=true, intervalSeconds=60, depth='fast'` → 手动 force cycle 对当前 open PR 触发审查；第二轮 cycle 不重复（seen 命中）；`auto-review-status` 回显 recent。
+3. 页面：设置弹层可开关自动审查并持久化；状态卡显示上次/下次与结果；手动「立即检查」；关闭后不再触发；console 0 error。
+4. 安全：自动审查**不调用任何 GitHub 写接口**（单测断言 `/merge`、评论接口零调用）；默认 `enabled=false`；不改用户仓库。
+
+## 7. v2.2 契约：把审查发布到 GitHub（2026-10-24 第五轮迭代，版本 0.5.0）
+
+用户问「审查后会自动提交问题到对应分支吗」。当前回答：**不会**——自动审查只读，结果在插件内展示。v2.2 提供「把审查意见作为 GitHub PR Review 发布」：手动必须显式确认；自动发布默认关闭、需用户显式打开并二次确认。**仍然不会自动修改代码或向分支推送提交**（不做 auto-fix，另行评估）。
+
+### 7.1 配置（并入 auto-review 状态文件）
+
+```ts
+type PublishConfig = {
+  enabled: boolean              // 自动发布开关，默认 false（手动发布不受限）
+  mode: 'inline' | 'summary' | 'both'   // 默认 'inline'
+  minSeverity: 'P0' | 'P1' | 'P2'       // 默认 'P2'（全部）
+  maxComments: number           // 默认 20，范围 1–50
+}
+// auto-review-config 的 patch 可带 publish: Partial<PublishConfig>；夹取同上。
+```
+
+`/auto-review-status` 的返回值在**顶层**同时暴露 `publish`（客户端发布 UI 读顶层；状态文件与 `config` 里仍是 `config.publish`）。两边必须一致，否则发布按钮与自动发布设置区不渲染。
+
+### 7.2 路由：`POST /codex-review/review-publish`
+
+```ts
+// 请求
+type PublishRequest = {
+  repo: string
+  number: number
+  mode?: 'inline' | 'summary' | 'both'   // 默认 config.publish.mode
+  minSeverity?: 'P0' | 'P1' | 'P2'       // 默认 config.publish.minSeverity
+  body?: string                          // 可选：覆盖摘要正文（≤4000）
+  confirm: true                          // 必填
+}
+// 成功 → { published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string }
+```
+
+行为：
+1. `confirm !== true` → `BAD_REQUEST`；`mode`/`minSeverity` 非法 → `BAD_REQUEST`。
+2. 取当前 PR headSha；在 engine 里找该 head 已完成（`done`）的审查结果；没有 → `REVIEW_NOT_READY`（“请先运行 AI 审查”）。
+3. 过滤：`severity` 按 P0>P1>P2 不弱于 `minSeverity`；`file` 非空、`line` 正整数；按严重度/file/line 排序；最多 `maxComments` 条。
+4. 去重：先拉该 PR 已有 review comments，解析 marker `<!-- dsh-codex-review:<findingHash> -->`；命中 marker 的 finding 跳过（`skipped` 计数）。`findingHash = sha1(file:line:title)` 同 review 内的 id。
+5. 构造并提交 GitHub review：`POST /repos/{o}/{r}/pulls/{n}/reviews`，`event: 'COMMENT'`；
+   - `mode` 含 inline：`comments: [{ path, line, side: 'RIGHT', body }]`，body = `**[P1] 标题**\n\n为什么：…\n\n建议：…\n\n<!-- dsh-codex-review:<hash> -->`（每条 ≤2000 字；标题/why/fix 截断）；
+   - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（≤4000 字）；若请求带 `body` 则用之。
+6. 记录已发布：`engine` 或 auto-review 状态文件里按 `repo#number@headSha` 记 `publishedAt/reviewId/url`；重复调用先用 marker 去重，再返回同一 head 的最近结果。
+7. 错误码：`BAD_REQUEST`、`REVIEW_NOT_READY`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`INTERNAL`。
+8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/marker）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。
+
+### 7.3 客户端
+
+- 审查卡：`done` 且有点 `findings` 时显示「发布到 GitHub」；点击弹确认弹层（mode 三选、最低严重度、预计评论数=过滤后条数、「这会真的在 PR 上创建 review 评论」警告、发布/取消）；成功 → 按钮变「已发布 · 在 GitHub 查看」（新窗口打开 url）；已有发布记录时显示已发布徽章。
+- 自动审查设置区：新增「发布审查到 GitHub」开关（默认关）+ mode/minSeverity/maxComments；打开开关时二次确认（写操作警告：会对以后自动审查的 PR 创建评论）；状态卡 recent 项若已发布显示小链接。
+- 错误：`REVIEW_NOT_READY` → 提示先审查；`GH_FORBIDDEN` → 提示 token 权限；旧 Host 无路由 → 按钮隐藏并降级。
+
+### 7.4 v2.2 验收
+
+1. 单测：finding→inline 评论映射（path/line/side/body/marker/截断）、severity 过滤、maxComments 截断、已有 marker 去重、confirm/mode/minSeverity 校验、错误码映射、发布记录持久化、自动发布仅在 `publish.enabled` 时发生、自动发布失败不重试风暴。
+2. 真实环境：**默认不做真实发布**（避免在用户 PR 上产生未经请求的评论）；只验证守卫（confirm:false → BAD_REQUEST；mode 非法 → BAD_REQUEST；无审查结果 → REVIEW_NOT_READY）与 UI 弹层字段/取消（Network 0 publish 请求）。
+3. 若用户明确要求，可对某个 PR 发布一次并在报告记录 URL（默认不做）。
+4. 页面：发布按钮/弹层/取消、自动发布开关与二次确认、已发布徽章/链接、旧 Host 降级、console 0 error。
+
+
 

@@ -52,6 +52,144 @@ const devState = {
   lastMerge: null,
   chatCount: 0,
   lastChat: null,
+  publishCount: 0,
+  lastPublish: null,
+}
+
+/** v2.1 mock auto reviewer state (CONTRACT §6.1–§6.3). */
+const autoReview = {
+  config: {
+    enabled: false,
+    intervalSeconds: 180,
+    query: 'is:open author:@me',
+    depth: 'fast',
+    severityThreshold: 'P2',
+    includeDrafts: false,
+    maxPerCycle: 2,
+    publish: {
+      enabled: false,
+      mode: 'inline',
+      minSeverity: 'P2',
+      maxComments: 20,
+    },
+  },
+  running: false,
+  lastCycleAt: 0,
+  nextCycleAt: 0,
+  seenKeys: new Set(),
+  recent: [],
+  lastError: null,
+  timer: null,
+  statusCount: 0,
+  configCalls: 0,
+  runCalls: 0,
+  lastConfigPatch: null,
+  lastRun: null,
+}
+
+function clampMockNumber(value, min, max, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, Math.round(number)))
+}
+
+/** Apply a config patch the way the Host would (ignore unknown fields, clamp). */
+function applyAutoReviewPatch(patch) {
+  const next = { ...autoReview.config }
+  if (!patch || typeof patch !== 'object') return next
+  if (patch.enabled !== undefined) next.enabled = Boolean(patch.enabled)
+  if (patch.intervalSeconds !== undefined) {
+    next.intervalSeconds = clampMockNumber(patch.intervalSeconds, 60, 3600, next.intervalSeconds)
+  }
+  if (typeof patch.query === 'string' && patch.query.trim() !== '') next.query = patch.query.trim()
+  if (patch.depth === 'fast' || patch.depth === 'standard' || patch.depth === 'deep') {
+    next.depth = patch.depth
+  }
+  if (patch.severityThreshold === 'P0' || patch.severityThreshold === 'P1' || patch.severityThreshold === 'P2') {
+    next.severityThreshold = patch.severityThreshold
+  }
+  if (patch.includeDrafts !== undefined) next.includeDrafts = Boolean(patch.includeDrafts)
+  if (patch.maxPerCycle !== undefined) {
+    next.maxPerCycle = clampMockNumber(patch.maxPerCycle, 1, 5, next.maxPerCycle)
+  }
+  if (patch.publish && typeof patch.publish === 'object') {
+    const publish = { ...next.publish }
+    if (patch.publish.enabled !== undefined) publish.enabled = Boolean(patch.publish.enabled)
+    if (patch.publish.mode === 'inline' || patch.publish.mode === 'summary' || patch.publish.mode === 'both') {
+      publish.mode = patch.publish.mode
+    }
+    if (
+      patch.publish.minSeverity === 'P0' ||
+      patch.publish.minSeverity === 'P1' ||
+      patch.publish.minSeverity === 'P2'
+    ) {
+      publish.minSeverity = patch.publish.minSeverity
+    }
+    if (patch.publish.maxComments !== undefined) {
+      publish.maxComments = clampMockNumber(patch.publish.maxComments, 1, 50, publish.maxComments)
+    }
+    next.publish = publish
+  }
+  return next
+}
+
+function autoReviewStatus() {
+  return {
+    config: autoReview.config,
+    publish: autoReview.config.publish,
+    running: autoReview.running,
+    lastCycleAt: autoReview.lastCycleAt || undefined,
+    nextCycleAt: autoReview.running ? undefined : autoReview.nextCycleAt || undefined,
+    seenCount: autoReview.seenKeys.size,
+    recent: autoReview.recent,
+    lastError: autoReview.lastError || undefined,
+  }
+}
+
+/** Count findings that a publish request would post, mirroring the Host filter. */
+function countMockPublishable(minSeverity, maxComments) {
+  const rank = (severity) => (severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2)
+  const min = rank(minSeverity)
+  const findings = Array.isArray(readMock('review-done.json').findings)
+    ? readMock('review-done.json').findings
+    : []
+  const count = findings.filter((finding) => {
+    if (!finding || typeof finding.file !== 'string' || finding.file === '') return false
+    const line = Number(finding.line)
+    if (!Number.isFinite(line) || line <= 0) return false
+    return rank(finding.severity) <= min
+  }).length
+  return Math.min(count, clampMockNumber(maxComments, 1, 50, 20))
+}
+
+/** Run one fake cycle: after 1.5s append a done result for #129. */
+function simulateAutoReviewCycle(force) {
+  if (autoReview.running) return false
+  autoReview.running = true
+  autoReview.runCalls += 1
+  autoReview.lastRun = { force: force === true, at: Date.now() }
+  if (autoReview.timer !== null) clearTimeout(autoReview.timer)
+  autoReview.timer = setTimeout(() => {
+    autoReview.timer = null
+    autoReview.running = false
+    autoReview.lastCycleAt = Date.now()
+    autoReview.nextCycleAt = autoReview.config.enabled
+      ? Date.now() + autoReview.config.intervalSeconds * 1000
+      : 0
+    const entry = {
+      repo: 'Acefake/yingbox',
+      number: 129,
+      headSha: readMock('review-done.json').headSha,
+      state: 'done',
+      findings: 3,
+      verdict: 'changes',
+      overview: '2 个 P1 · 1 个 P2',
+      finishedAt: Date.now(),
+    }
+    autoReview.seenKeys.add('Acefake/yingbox#129')
+    autoReview.recent = [entry, ...autoReview.recent].slice(0, 20)
+  }, 1500)
+  return true
 }
 
 /** Deterministic mock answer for /codex-review/chat, streamed frame by frame. */
@@ -353,9 +491,126 @@ async function handleApi(req, res, pathname) {
       req.on('close', stop)
       return
     }
+    // v2.1 auto review routes (CONTRACT §6.3): config/status/run are mocked.
+    case '/codex-review/auto-review-status': {
+      autoReview.statusCount += 1
+      ok(res, autoReviewStatus())
+      return
+    }
+    case '/codex-review/auto-review-config': {
+      autoReview.configCalls += 1
+      autoReview.lastConfigPatch =
+        payload && typeof payload.patch === 'object' ? payload.patch : null
+      if (payload && payload.mockAuto === 'config-error') {
+        fail(res, 'INTERNAL', 'mock 自动审查配置保存失败')
+        return
+      }
+      autoReview.config = applyAutoReviewPatch(payload.patch)
+      if (!autoReview.running) {
+        autoReview.nextCycleAt = autoReview.config.enabled
+          ? Date.now() + autoReview.config.intervalSeconds * 1000
+          : 0
+      }
+      ok(res, autoReviewStatus())
+      return
+    }
+    case '/codex-review/auto-review-run': {
+      if (payload && payload.mockAuto === 'run-busy') {
+        ok(res, { started: false, reason: 'running' })
+        return
+      }
+      if (payload && payload.mockAuto === 'run-disabled') {
+        ok(res, { started: false, reason: 'disabled' })
+        return
+      }
+      if (autoReview.running) {
+        ok(res, { started: false, reason: 'running' })
+        return
+      }
+      if (!autoReview.config.enabled && payload.force !== true) {
+        ok(res, { started: false, reason: 'disabled' })
+        return
+      }
+      const started = simulateAutoReviewCycle(payload.force === true)
+      ok(res, started ? { started: true } : { started: false, reason: 'running' })
+      return
+    }
+    // v2.2 publish route (CONTRACT §7.2): guards + fake success, never writes GitHub.
+    case '/codex-review/review-publish': {
+      devState.publishCount += 1
+      devState.lastPublish = {
+        repo: payload.repo,
+        number: payload.number,
+        mode: payload.mode,
+        minSeverity: payload.minSeverity,
+        confirm: payload.confirm,
+        body: typeof payload.body === 'string' ? payload.body.slice(0, 120) : '',
+      }
+      const mockPublish = typeof payload.mockPublish === 'string' ? payload.mockPublish : ''
+      if (payload.confirm !== true) {
+        fail(res, 'BAD_REQUEST', 'confirm 必须为 true')
+        return
+      }
+      if (mockPublish === 'not-ready') {
+        fail(res, 'REVIEW_NOT_READY', '请先运行 AI 审查')
+        return
+      }
+      if (mockPublish === 'forbidden') {
+        fail(res, 'GH_FORBIDDEN', 'Resource not accessible by integration')
+        return
+      }
+      const mode =
+        payload.mode === 'inline' || payload.mode === 'summary' || payload.mode === 'both'
+          ? payload.mode
+          : 'inline'
+      const minSeverity =
+        payload.minSeverity === 'P0' || payload.minSeverity === 'P1' || payload.minSeverity === 'P2'
+          ? payload.minSeverity
+          : autoReview.config.publish.minSeverity
+      const maxComments = autoReview.config.publish.maxComments
+      const comments = countMockPublishable(minSeverity, maxComments)
+      const headSha = readMock('review-done.json').headSha
+      const reviewId = 20261024001
+      const url = `https://github.com/Acefake/yingbox/pull/129#pullrequestreview-${reviewId}`
+      const publishedAt = Date.now()
+      // A manual publish also marks matching auto-review results as published.
+      autoReview.recent = autoReview.recent.map((entry) =>
+        entry &&
+        entry.repo === 'Acefake/yingbox' &&
+        Number(entry.number) === 129 &&
+        (entry.headSha === '' || entry.headSha === headSha) &&
+        !entry.published
+          ? { ...entry, published: { url, reviewId, comments, publishedAt, headSha } }
+          : entry,
+      )
+      ok(res, {
+        published: true,
+        reviewId,
+        url,
+        comments,
+        skipped: 0,
+        headSha,
+        mode,
+      })
+      return
+    }
     // dev-only: what the client sent (used by check-preview assertions)
     case '/codex-review/dev-state': {
-      ok(res, devState)
+      ok(res, {
+        ...devState,
+        autoReview: {
+          statusCount: autoReview.statusCount,
+          configCalls: autoReview.configCalls,
+          runCalls: autoReview.runCalls,
+          lastConfigPatch: autoReview.lastConfigPatch,
+          lastRun: autoReview.lastRun,
+          enabled: autoReview.config.enabled,
+          intervalSeconds: autoReview.config.intervalSeconds,
+          publish: autoReview.config.publish,
+          recent: autoReview.recent.length,
+          running: autoReview.running,
+        },
+      })
       return
     }
     // dev-only: forget cached jobs so each screenshot/mock run starts clean
@@ -365,6 +620,36 @@ async function handleApi(req, res, pathname) {
       devState.lastMerge = null
       devState.chatCount = 0
       devState.lastChat = null
+      devState.publishCount = 0
+      devState.lastPublish = null
+      if (autoReview.timer !== null) clearTimeout(autoReview.timer)
+      autoReview.timer = null
+      autoReview.config = {
+        enabled: false,
+        intervalSeconds: 180,
+        query: 'is:open author:@me',
+        depth: 'fast',
+        severityThreshold: 'P2',
+        includeDrafts: false,
+        maxPerCycle: 2,
+        publish: {
+          enabled: false,
+          mode: 'inline',
+          minSeverity: 'P2',
+          maxComments: 20,
+        },
+      }
+      autoReview.running = false
+      autoReview.lastCycleAt = 0
+      autoReview.nextCycleAt = 0
+      autoReview.seenKeys = new Set()
+      autoReview.recent = []
+      autoReview.lastError = null
+      autoReview.statusCount = 0
+      autoReview.configCalls = 0
+      autoReview.runCalls = 0
+      autoReview.lastConfigPatch = null
+      autoReview.lastRun = null
       ok(res, { reset: true })
       return
     }

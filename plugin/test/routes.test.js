@@ -10,6 +10,7 @@ import { Readable } from 'node:stream'
 import { applyWithDeps, VERSION } from '../index.js'
 import { AppError } from '../lib/errors.js'
 import { buildChatContext, createChatLimiter } from '../lib/chat.js'
+import { PUBLISH_DEFAULTS } from '../lib/publish.js'
 
 /**
  * Fake Cordis context: captures webServer registrations and effects.
@@ -108,14 +109,77 @@ const DETAIL = {
 }
 
 /**
+ * Build a fake automatic reviewer that never touches the filesystem or timers.
+ * @returns {{ status: any, updateConfig: any, runOnce: any, dispose: any, statusCalls: number, configPatches: any[], runOptions: any[] }} fake reviewer.
+ */
+function createFakeReviewer() {
+  return {
+    statusCalls: 0,
+    configPatches: [],
+    runOptions: [],
+    status() {
+      this.statusCalls += 1
+      return {
+        config: {
+          enabled: false,
+          intervalSeconds: 180,
+          query: 'is:open author:@me',
+          depth: 'fast',
+          severityThreshold: 'P2',
+          includeDrafts: false,
+          maxPerCycle: 2,
+          publish: { ...PUBLISH_DEFAULTS },
+        },
+        running: false,
+        seenCount: 0,
+        recent: [],
+      }
+    },
+    updateConfig(patch) {
+      this.configPatches.push(patch)
+      const status = this.status()
+      return { ...status, config: { ...status.config, ...patch } }
+    },
+    runOnce(options) {
+      this.runOptions.push(options)
+      return options.force === true ? { started: true } : { started: false, reason: '自动审查已关闭（可带 force:true 单次运行）' }
+    },
+    dispose() {},
+  }
+}
+
+/**
+ * Build a fake publisher that records every publish request.
+ * @returns {{ calls: any[], publish: any }} publisher spy.
+ */
+function createFakePublisher() {
+  return {
+    calls: [],
+    async publish(input) {
+      this.calls.push(input)
+      return {
+        published: true,
+        reviewId: 77,
+        url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77',
+        comments: 2,
+        skipped: 0,
+        headSha: 'abc123',
+      }
+    },
+  }
+}
+
+/**
  * Build the fake GitHub client + fake review engine pair.
- * @returns {{ github: any, engine: any, started: any[], guidelineCalls: string[], mergeCalls: any[], invalidated: any[] }} doubles.
+ * @returns {{ github: any, engine: any, reviewer: any, publisher: any, started: any[], guidelineCalls: string[], mergeCalls: any[], invalidated: any[] }} doubles.
  */
 function createDoubles() {
   const started = []
   const guidelineCalls = []
   const mergeCalls = []
   const invalidated = []
+  const reviewer = createFakeReviewer()
+  const publisher = createFakePublisher()
   let disposed = false
   const github = {
     async ghStatus() {
@@ -181,7 +245,7 @@ function createDoubles() {
       return disposed
     },
   }
-  return { github, engine, started, guidelineCalls, mergeCalls, invalidated }
+  return { github, engine, reviewer, publisher, started, guidelineCalls, mergeCalls, invalidated }
 }
 
 /**
@@ -193,7 +257,7 @@ function mount(options = {}) {
   const { ctx, routes, disposers } = createFakeContext()
   const doubles = createDoubles()
   if (options.llmAvailable === true) doubles.engine.available = () => true
-  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine })
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine, reviewer: doubles.reviewer, publisher: doubles.publisher })
   const route = routes.get('/codex-review')
   assert.ok(route !== undefined, 'the prefix route must be registered')
   assert.equal(route.kind, 'prefix')
@@ -205,7 +269,7 @@ test('mount registers the prefix route, the exact chat route and the engine disp
   assert.deepEqual([...routes.keys()].sort(), ['/codex-review', '/codex-review/chat'])
   assert.equal(routes.get('/codex-review').kind, 'prefix')
   assert.equal(routes.get('/codex-review/chat').kind, 'exact')
-  assert.equal(disposers.length, 4)
+  assert.equal(disposers.length, 5)
 })
 
 test('health reports gh, llm and version', async () => {
@@ -237,6 +301,29 @@ test('pr returns the detail with a review snapshot', async () => {
   assert.equal(bad.body.error.code, 'BAD_REQUEST')
   const badNumber = await call(handler, '/codex-review/pr', { repo: 'a/b', number: -1 })
   assert.equal(badNumber.body.error.code, 'BAD_REQUEST')
+})
+
+test('pr attaches the persisted publish record to the review snapshot', async () => {
+  const { handler, doubles } = mount()
+  doubles.engine.existing = () => ({ state: 'done', headSha: 'abc123', findings: [], verdict: 'changes' })
+  doubles.reviewer.getPublished = (key) => (
+    key === 'Acefake/yingbox#129@abc123'
+      ? { publishedAt: 1234, reviewId: 77, url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77' }
+      : undefined
+  )
+  const answer = await call(handler, '/codex-review/pr', { repo: 'Acefake/yingbox', number: 129 })
+  assert.equal(answer.body.ok, true)
+  assert.equal(answer.body.value.review.state, 'done')
+  assert.deepEqual(answer.body.value.review.published, {
+    publishedAt: 1234,
+    reviewId: 77,
+    url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77',
+    headSha: 'abc123',
+  })
+  // A head with no publish record keeps the plain review snapshot.
+  doubles.reviewer.getPublished = () => undefined
+  const plain = await call(handler, '/codex-review/pr', { repo: 'Acefake/yingbox', number: 129 })
+  assert.equal(plain.body.value.review.published, undefined)
 })
 
 test('review-start forwards the PR snapshot to the engine and answers the job reference', async () => {
@@ -300,7 +387,7 @@ test('review-start still runs when the guideline lookup fails', async () => {
   doubles.github.getGuidelines = async () => {
     throw new Error('guideline failure')
   }
-  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine })
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine, reviewer: doubles.reviewer })
   const handler = routes.get('/codex-review').handler
   const answer = await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
   assert.equal(answer.body.ok, true)
@@ -328,7 +415,7 @@ test('the real engine reports LLM_UNAVAILABLE when no llm services were ever inj
       return { query: 'q', totalCount: 0, items: [] }
     },
   }
-  applyWithDeps(ctx, {}, { github })
+  applyWithDeps(ctx, {}, { github, reviewer: createFakeReviewer() })
   const handler = routes.get('/codex-review').handler
   const answer = await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
   assert.equal(answer.body.ok, false)
@@ -402,7 +489,7 @@ test('optional llm injection wires ctx.llm.stream into the real review engine', 
       return { query: 'q', totalCount: 0, items: [] }
     },
   }
-  applyWithDeps(ctx, { requestTimeoutMs: 5000, reviewChunkChars: 1000 }, { github })
+  applyWithDeps(ctx, { requestTimeoutMs: 5000, reviewChunkChars: 1000 }, { github, reviewer: createFakeReviewer() })
   const handler = routes.get('/codex-review').handler
 
   const started = await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
@@ -486,7 +573,7 @@ test('review-start through the route layer returns v1.1 status fields and option
       return { query: 'q', totalCount: 0, items: [] }
     },
   }
-  applyWithDeps(ctx, { requestTimeoutMs: 5000, reviewChunkChars: 1000 }, { github })
+  applyWithDeps(ctx, { requestTimeoutMs: 5000, reviewChunkChars: 1000 }, { github, reviewer: createFakeReviewer() })
   const handler = routes.get('/codex-review').handler
 
   /**
@@ -633,7 +720,7 @@ test('merge route passes the guard error codes through unchanged', async () => {
   doubles.github.mergePull = async () => {
     throw new AppError('MERGE_HEAD_MOVED', 'PR 已有新提交（当前 head f31cec5c712d），请刷新后重试')
   }
-  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine })
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, { github: doubles.github, engine: doubles.engine, reviewer: doubles.reviewer })
   const handler = routes.get('/codex-review').handler
   const answer = await call(handler, '/codex-review/merge', MERGE_BODY)
   assert.equal(answer.body.ok, false)
@@ -720,7 +807,7 @@ function mountChat(options = {}) {
     return { dispose() {} }
   }
   const doubles = createDoubles()
-  const deps = { github: doubles.github, engine: doubles.engine }
+  const deps = { github: doubles.github, engine: doubles.engine, reviewer: doubles.reviewer }
   if (options.limiter !== undefined) deps.chatLimiter = options.limiter
   applyWithDeps(ctx, { requestTimeoutMs: 5000 }, deps)
   return {
@@ -802,6 +889,128 @@ test('chat route answers validation errors and BUSY as SSE error frames', async 
   assert.equal(busyMount.requests.length, 0)
   limiter.release(busyController)
   for (const dispose of [...disposers, ...busyMount.disposers]) dispose()
+})
+
+// ---------------------------------------------------------------------------
+// v2.1 auto-review routes (CONTRACT §6.3)
+// ---------------------------------------------------------------------------
+
+test('auto-review-status returns the reviewer status', async () => {
+  const { handler, doubles } = mount()
+  const answer = await call(handler, '/codex-review/auto-review-status')
+  assert.equal(answer.body.ok, true)
+  assert.equal(doubles.reviewer.statusCalls, 1)
+  assert.equal(answer.body.value.config.enabled, false)
+  assert.equal(answer.body.value.running, false)
+  assert.deepEqual(answer.body.value.recent, [])
+})
+
+test('auto-review-config persists a patch and validates its shape', async () => {
+  const { handler, doubles } = mount()
+  const answer = await call(handler, '/codex-review/auto-review-config', {
+    patch: { enabled: true, intervalSeconds: 600, unknownKey: 1 },
+  })
+  assert.equal(answer.body.ok, true)
+  assert.equal(answer.body.value.config.enabled, true)
+  assert.equal(answer.body.value.config.intervalSeconds, 600)
+  assert.deepEqual(doubles.reviewer.configPatches, [{ enabled: true, intervalSeconds: 600, unknownKey: 1 }])
+
+  const invalid = await call(handler, '/codex-review/auto-review-config', { patch: [] })
+  assert.equal(invalid.body.ok, false)
+  assert.equal(invalid.body.error.code, 'BAD_REQUEST')
+  // Missing patch returns the current status without touching the config.
+  const current = await call(handler, '/codex-review/auto-review-config', {})
+  assert.equal(current.body.ok, true)
+  assert.equal(doubles.reviewer.configPatches.length, 1)
+})
+
+test('auto-review-run forwards the force flag and answers the start result', async () => {
+  const { handler, doubles } = mount()
+  const forced = await call(handler, '/codex-review/auto-review-run', { force: true })
+  assert.deepEqual(forced.body, { ok: true, value: { started: true } })
+  const refused = await call(handler, '/codex-review/auto-review-run', { force: false })
+  assert.equal(refused.body.value.started, false)
+  assert.equal(typeof refused.body.value.reason, 'string')
+  const nonBoolean = await call(handler, '/codex-review/auto-review-run', { force: 'yes' })
+  assert.equal(nonBoolean.body.value.started, false)
+  assert.deepEqual(doubles.reviewer.runOptions, [{ force: true }, { force: false }, { force: false }])
+})
+
+// ---------------------------------------------------------------------------
+// v2.2 review-publish route (CONTRACT §7.2)
+// ---------------------------------------------------------------------------
+
+test('review-publish requires confirm and forwards the normalized options', async () => {
+  const { handler, doubles } = mount()
+  const refused = await call(handler, '/codex-review/review-publish', { repo: 'Acefake/yingbox', number: 129, mode: 'inline' })
+  assert.equal(refused.body.ok, false)
+  assert.equal(refused.body.error.code, 'BAD_REQUEST')
+  assert.equal(doubles.publisher.calls.length, 0)
+
+  const answer = await call(handler, '/codex-review/review-publish', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    confirm: true,
+    mode: 'summary',
+    minSeverity: 'P1',
+    body: '  自定义摘要  ',
+  })
+  assert.equal(answer.body.ok, true)
+  assert.equal(answer.body.value.published, true)
+  assert.equal(answer.body.value.reviewId, 77)
+  assert.deepEqual(doubles.publisher.calls[0], {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    confirm: true,
+    mode: 'summary',
+    minSeverity: 'P1',
+    maxComments: PUBLISH_DEFAULTS.maxComments,
+    body: '自定义摘要',
+  })
+})
+
+test('review-publish falls back to the persisted publish config for omitted options', async () => {
+  const { handler, doubles } = mount()
+  const before = doubles.publisher.calls.length
+  const answer = await call(handler, '/codex-review/review-publish', { repo: 'Acefake/yingbox', number: 129, confirm: true })
+  assert.equal(answer.body.ok, true)
+  const request = doubles.publisher.calls[before]
+  assert.equal(request.mode, PUBLISH_DEFAULTS.mode)
+  assert.equal(request.minSeverity, PUBLISH_DEFAULTS.minSeverity)
+  assert.equal(request.maxComments, PUBLISH_DEFAULTS.maxComments)
+  assert.equal(request.body, undefined)
+})
+
+test('review-publish validates mode, minSeverity and the body cap', async () => {
+  const { handler, doubles } = mount()
+  const base = { repo: 'Acefake/yingbox', number: 129, confirm: true }
+  const invalidMode = await call(handler, '/codex-review/review-publish', { ...base, mode: 'nope' })
+  assert.equal(invalidMode.body.error.code, 'BAD_REQUEST')
+  const invalidSeverity = await call(handler, '/codex-review/review-publish', { ...base, minSeverity: 'P9' })
+  assert.equal(invalidSeverity.body.error.code, 'BAD_REQUEST')
+  const longBody = await call(handler, '/codex-review/review-publish', { ...base, body: 'x'.repeat(4001) })
+  assert.equal(longBody.body.error.code, 'BAD_REQUEST')
+  const badRepo = await call(handler, '/codex-review/review-publish', { ...base, repo: 'nope' })
+  assert.equal(badRepo.body.error.code, 'BAD_REQUEST')
+  assert.equal(doubles.publisher.calls.length, 0)
+})
+
+test('review-publish passes REVIEW_NOT_READY through the envelope', async () => {
+  const { ctx, routes } = createFakeContext()
+  const doubles = createDoubles()
+  doubles.publisher.publish = async () => {
+    throw new AppError('REVIEW_NOT_READY')
+  }
+  applyWithDeps(ctx, { requestTimeoutMs: 5000 }, {
+    github: doubles.github,
+    engine: doubles.engine,
+    reviewer: doubles.reviewer,
+    publisher: doubles.publisher,
+  })
+  const handler = routes.get('/codex-review').handler
+  const answer = await call(handler, '/codex-review/review-publish', { repo: 'Acefake/yingbox', number: 129, confirm: true })
+  assert.equal(answer.body.ok, false)
+  assert.equal(answer.body.error.code, 'REVIEW_NOT_READY')
 })
 
 test('the prefix route does not answer the chat path', async () => {

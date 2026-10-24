@@ -177,4 +177,30 @@ v1/v1.1 按约定保持只读；用户确认要接上 Codex 窗口里的「合�
    - 验收期间目标仓库 #129 被合并、yingbox 暂无 open PR → 集成 smoke 改为从默认查询里自动挑 open PR（实际命中 `Acefake/s-skills#18`），`#129` 则按守卫顺序正确返回 `MERGE_NOT_ALLOWED`。
 5. **验证**：`node --test` 147/147；集成 smoke：`confirm:false→BAD_REQUEST`、非法 method→`BAD_REQUEST`、stale head→`MERGE_HEAD_MOVED` 且 PR 状态未变、真实流式 chat 1.4s 返回 603 字上下文相关回答；页面验收见 `verify/REPORT.md` §12。
 
+## 16. v2.1 回填：自动审查（2026-10-24 第四轮，版本 0.4.0）
+
+用户问「支持自动审查吗」后实现。契约见 `plugin/CONTRACT.md` §6。
+
+1. **后台调度器**：Host 侧 `AutoReviewer`（可注入时钟/定时器）按 `intervalSeconds`（默认 180，60–3600）扫描 `query`（默认 `is:open author:@me`）；对 open、非草稿、且 `repo#number@headSha` 未审过的 PR 串行调用审查引擎；每 cycle 最多 `maxPerCycle` 个；同一时刻最多 1 cycle；单 PR 失败隔离、cycle 级错误单独记录。
+2. **状态持久化**：配置 + seen 游标存 `<DSH_PROFILE_DIR>/.codex-review/auto-review.json`（原子写、损坏备份重建、配置夹取），插件重载/宿主重启后不重复审同一提交。
+3. **默认关闭**：`enabled=false`；「立即检查」`force:true` 可只跑一次；关闭后停止调度与页面轮询，不产生后台 token 消耗。
+4. **结果可见**：右栏「自动审查」卡（状态/上次/下次/最近结果/立即检查）、PR 行徽章（问题数或 ✓）、完成 toast；审查结果通过既有 `/pr` 缓存返回。
+5. **安全**：自动审查只调用 GitHub 读接口（list/getPull/guidelines），单测断言 merge/评论等写调用数 = 0；不改用户仓库、不发评论、不合并。
+6. **实测**：真实环境 force cycle 自动审了 `Acefake/yingbox#137`（12 findings）与后续新出现的 `#139`（11 findings，P1×3）；第二轮 force 2s 内结束且 recent 不变（seen 生效）；已恢复 `enabled=false`。
+
+## 17. v2.2 回填：把审查发布到 GitHub（2026-10-24 第五轮，版本 0.5.0）
+
+用户问「审查后会自动提交问题到对应分支吗」。结论：默认不会。v2.2 提供两条发布路径，都是显式写操作，且**不做 auto-fix**（不改代码、不推分支）：
+
+1. **手动发布**：`POST /codex-review/review-publish`（必须 `confirm:true`）。Host 先拉 PR 当前 head、要求该 head 有已完成审查（否则 `REVIEW_NOT_READY`），再按严重度过滤/排序/截断、按 GitHub 上已有 marker 去重，最后 `POST /pulls/{n}/reviews`（`event:'COMMENT'`、行内评论 `side:'RIGHT'`、`commit_id` = 当前 head）。每个 head 只发布一次，重复调用回放已存记录、不发写请求。
+2. **自动发布**：auto-review cycle 审查 `done` 后，若 `publish.enabled` 为真则走同一发布逻辑；默认关闭、开关需二次确认；失败只记 `lastError`，不重试风暴。
+3. **实现中被真实约束修正的点**：
+   - gh CLI 兜底无法用 `-f` 表达 `comments` 数组 → 结构化 body 改走 `--input <临时 JSON>`（用后删除）；
+   - `/auto-review-status` 需在**顶层**暴露 `publish`（客户端读顶层；状态文件里仍是 `config.publish`），否则发布按钮与自动发布设置区不渲染——这是本轮验收抓到的 Host↔Client 字段不一致；
+   - 同一 head 的并发发布加 in-flight 去重（双击/多标签页不产生两条 review）；
+   - `/pr` 的 review 快照回填 `published` 记录，使「已发布」徽章跨页面刷新仍可见（此前只存在于单次会话内存）。
+4. **验证**：`node --test` **228/228**；`verify/api-probe --v22` 覆盖 confirm/mode/minSeverity/body/`REVIEW_NOT_READY` 守卫，并硬约束「绝不发送 `confirm:true` + 已完成审查」；页面 `page-check/click-panel --v22` 验证发布弹层打开→取消且 Network 0 个发布请求；真实发布默认不做（需用户明确要求）。
+
+
+
 

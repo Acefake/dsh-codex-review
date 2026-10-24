@@ -20,6 +20,9 @@
  */
 
 import { execFile } from 'node:child_process'
+import { rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { AppError, USER_MESSAGES, isAbortError } from './errors.js'
 import { buildChatContext } from './chat.js'
@@ -69,6 +72,10 @@ const MAX_ISSUE_COMMENTS = 20
 const MAX_REVIEWS = 20
 const MAX_INLINE_COMMENTS = 50
 const MAX_COMMENT_BODY_CHARS = 4_000
+
+/** Review-comment pages read when deduplicating a publish (CONTRACT §7.2). */
+const REVIEW_COMMENT_PAGE_SIZE = 100
+const MAX_REVIEW_COMMENT_PAGES = 3
 
 /** Merge methods accepted by the merge route (CONTRACT §5.1). */
 export const MERGE_METHODS = Object.freeze(['merge', 'squash', 'rebase'])
@@ -790,9 +797,10 @@ export class GitHubClient {
   }
 
   /**
-   * Fallback transport: `gh api` through the async subprocess seam. Writes pass
-   * `--method` plus their body fields as raw string fields (gh serializes them
-   * into the JSON body for non-GET requests).
+   * Fallback transport: `gh api` through the async subprocess seam. Plain
+   * scalar writes pass `--method` plus `-f key=value` fields; writes whose body
+   * contains arrays/objects (e.g. review comments) are serialized to a temp JSON
+   * file and passed via `--input`, because `-f` cannot express nested values.
    * @param {string} path - REST path.
    * @param {{ accept?: string, signal?: AbortSignal, method?: string, body?: Record<string, unknown> }} [options] - request knobs.
    * @returns {Promise<{ data: any, headers: undefined }>} parsed body.
@@ -803,19 +811,36 @@ export class GitHubClient {
     const method = typeof options.method === 'string' && options.method !== '' ? options.method.toUpperCase() : 'GET'
     if (method !== 'GET') args.push('--method', method)
     if (options.accept !== undefined) args.push('-H', `Accept: ${options.accept}`)
-    if (options.body !== undefined && options.body !== null && typeof options.body === 'object') {
-      for (const [key, value] of Object.entries(options.body)) {
-        if (value === undefined || value === null) continue
-        args.push('-f', `${key}=${String(value)}`)
-      }
-    }
-    const { stdout } = await this.runGh(args, { signal: options.signal })
-    const text = stdout.trim()
-    if (text === '') return { data: null, headers: undefined }
+    /** @type {string | undefined} */
+    let inputPath
     try {
-      return { data: JSON.parse(text), headers: undefined }
-    } catch {
-      throw new AppError('GH_NETWORK', 'gh 返回了无法解析的 JSON 输出')
+      if (options.body !== undefined && options.body !== null && typeof options.body === 'object') {
+        const entries = Object.entries(options.body).filter(([, value]) => value !== undefined && value !== null)
+        const structured = entries.some(([, value]) => typeof value === 'object')
+        if (structured) {
+          inputPath = join(tmpdir(), `dsh-codex-review-gh-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+          writeFileSync(inputPath, JSON.stringify(options.body), 'utf8')
+          args.push('--input', inputPath)
+        } else {
+          for (const [key, value] of entries) args.push('-f', `${key}=${String(value)}`)
+        }
+      }
+      const { stdout } = await this.runGh(args, { signal: options.signal })
+      const text = stdout.trim()
+      if (text === '') return { data: null, headers: undefined }
+      try {
+        return { data: JSON.parse(text), headers: undefined }
+      } catch {
+        throw new AppError('GH_NETWORK', 'gh 返回了无法解析的 JSON 输出')
+      }
+    } finally {
+      if (inputPath !== undefined) {
+        try {
+          rmSync(inputPath, { force: true })
+        } catch {
+          // a leftover temp file is harmless; the OS cleans it up
+        }
+      }
     }
   }
 
@@ -1099,6 +1124,87 @@ export class GitHubClient {
   }
 
   /**
+   * Publish one GitHub PR review with `event: 'COMMENT'` (CONTRACT §7.2):
+   * an optional summary body plus inline comments anchored on the RIGHT side.
+   * Never cached — a write must reach GitHub. A 422 (e.g. a line outside the
+   * diff) is reported as BAD_REQUEST with GitHub's reason.
+   * @param {{ repo: string, number: number, headSha?: string, body?: string, comments?: Array<{ path: string, line: number, side?: string, body: string }> }} input - review to publish.
+   * @returns {Promise<{ reviewId: number, url: string, data: any }>} created review identity.
+   * @throws {AppError} GH_FORBIDDEN / GH_NOT_FOUND / GH_RATE_LIMIT / GH_NETWORK / BAD_REQUEST / INTERNAL.
+   */
+  async createPullReview(input = {}) {
+    const [owner, name] = splitRepo(input.repo)
+    const number = typeof input.number === 'number' ? input.number : Number(input.number)
+    if (!Number.isInteger(number) || number <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
+    /** @type {Array<{ path: string, line: number, side: string, body: string }>} */
+    const comments = []
+    for (const comment of Array.isArray(input.comments) ? input.comments : []) {
+      if (comment === null || typeof comment !== 'object') continue
+      const path = typeof comment.path === 'string' ? comment.path : ''
+      const line = typeof comment.line === 'number' ? comment.line : Number(comment.line)
+      const body = typeof comment.body === 'string' ? comment.body : ''
+      if (path === '' || !Number.isInteger(line) || line <= 0 || body === '') continue
+      comments.push({ path, line, side: typeof comment.side === 'string' && comment.side !== '' ? comment.side : 'RIGHT', body })
+    }
+    /** @type {Record<string, unknown>} */
+    const payload = { event: 'COMMENT' }
+    if (typeof input.body === 'string' && input.body !== '') payload.body = input.body
+    if (comments.length > 0) payload.comments = comments
+    if (typeof input.headSha === 'string' && input.headSha !== '') payload.commit_id = input.headSha
+    if (payload.body === undefined && payload.comments === undefined) {
+      throw new AppError('BAD_REQUEST', '没有可发布的审查内容')
+    }
+    /** @type {any} */
+    let data
+    try {
+      const response = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`, {
+        method: 'POST',
+        body: payload,
+      })
+      data = response.data !== null && typeof response.data === 'object' ? response.data : {}
+    } catch (error) {
+      throw mapReviewWriteError(error)
+    }
+    const reviewId = Number(data.id)
+    return {
+      reviewId: Number.isFinite(reviewId) && reviewId > 0 ? reviewId : 0,
+      url: typeof data.html_url === 'string' ? data.html_url : '',
+      data,
+    }
+  }
+
+  /**
+   * List the PR's existing inline review comments (all authors, newest pages
+   * included) so a publish can skip findings whose marker already exists.
+   * This read is deliberately uncached: it runs right after a write.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {Promise<Array<{ path: string, line: number | null, body: string, author: string, createdAt: string }>>} normalized comments.
+   */
+  async listPullReviewComments(repo, number) {
+    const [owner, name] = splitRepo(repo)
+    const numeric = typeof number === 'number' ? number : Number(number)
+    if (!Number.isInteger(numeric) || numeric <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
+    /** @type {Array<{ path: string, line: number | null, body: string, author: string, createdAt: string }>} */
+    const comments = []
+    for (let page = 1; page <= MAX_REVIEW_COMMENT_PAGES; page += 1) {
+      const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/comments?per_page=${REVIEW_COMMENT_PAGE_SIZE}&page=${page}`)
+      const batch = Array.isArray(data) ? data : []
+      for (const comment of batch) {
+        comments.push({
+          path: typeof comment?.path === 'string' ? comment.path : '',
+          line: Number.isInteger(comment?.line) ? comment.line : Number.isInteger(comment?.original_line) ? comment.original_line : null,
+          body: typeof comment?.body === 'string' ? comment.body : '',
+          author: typeof comment?.user?.login === 'string' ? comment.user.login : 'ghost',
+          createdAt: typeof comment?.created_at === 'string' ? comment.created_at : '',
+        })
+      }
+      if (batch.length < REVIEW_COMMENT_PAGE_SIZE) break
+    }
+    return comments
+  }
+
+  /**
    * Fetch and normalize every part of one PR.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
@@ -1316,6 +1422,32 @@ function mapMergeWriteError(error) {
     return new AppError('MERGE_CONFLICT', `${USER_MESSAGES.MERGE_CONFLICT}${message === '' ? '' : `（${message.slice(0, 200)}）`}`)
   }
   if (status === 403 || /HTTP 403/.test(message)) return new AppError('GH_FORBIDDEN', message || USER_MESSAGES.GH_FORBIDDEN)
+  if (status === 404 || /HTTP 404/.test(message)) return new AppError('GH_NOT_FOUND', message || USER_MESSAGES.GH_NOT_FOUND)
+  return error
+}
+
+/**
+ * Map a failed review write onto the contract codes (CONTRACT §7.2). GitHub
+ * answers 422 when a review is unacceptable (e.g. a comment line outside the
+ * diff), 403/404/429 land on the existing GH codes; the gh CLI fallback only
+ * exposes the status inside its message, so both carriers are inspected.
+ * @param {unknown} error - thrown value from the review request.
+ * @returns {unknown} a mapped AppError (or the original value).
+ */
+function mapReviewWriteError(error) {
+  if (!(error instanceof AppError)) return error
+  const status = error.details?.status
+  const message = typeof error.message === 'string' ? error.message : ''
+  const suffix = message === '' ? '' : `（${message.slice(0, 200)}）`
+  if (status === 422 || /HTTP 422/.test(message)) {
+    return new AppError('BAD_REQUEST', `${USER_MESSAGES.BAD_REQUEST}：GitHub 拒绝了本次发布${suffix}`)
+  }
+  if (status === 429 || /HTTP 429/.test(message)) return new AppError('GH_RATE_LIMIT', message || USER_MESSAGES.GH_RATE_LIMIT)
+  if (status === 403 || /HTTP 403/.test(message)) {
+    return /rate limit|secondary rate/i.test(message)
+      ? new AppError('GH_RATE_LIMIT', message || USER_MESSAGES.GH_RATE_LIMIT)
+      : new AppError('GH_FORBIDDEN', message || USER_MESSAGES.GH_FORBIDDEN)
+  }
   if (status === 404 || /HTTP 404/.test(message)) return new AppError('GH_NOT_FOUND', message || USER_MESSAGES.GH_NOT_FOUND)
   return error
 }

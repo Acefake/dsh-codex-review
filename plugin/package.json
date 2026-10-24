@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-review",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Code review workbench inside the DSH Web GUI: GitHub pull-request list, unified diff, inline findings, AI review options, PR conversation and approval-free explicit merge.",
   "type": "module",

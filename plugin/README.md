@@ -30,6 +30,8 @@
 7. 刷新/切面板不丢数据（Host 缓存），审查结果按 head SHA 失效。
 8. **合并 PR**（v2，写操作）：右上「合并」→ 确认弹层（合并方式 Squash / Merge commit / Rebase、删除源分支、head 版本、风险提示）→「确认合并」才会真正调用 GitHub。服务端会校验 `confirm===true`、`expectedHeadSha` 未移动、mergeable 状态；失败给出 `MERGE_HEAD_MOVED` / `MERGE_CONFLICT` / `MERGE_NOT_ALLOWED` 等明确原因。
 9. **就此 PR 提问**（v2）：底部输入框输入问题 → 右侧浮起对话面板，流式回答（可停止、清空、重试、三枚快捷提问）；回答上下文包含 PR 元信息/正文/文件清单/最近一次 AI 审查摘要/当前展开文件 patch；每个 PR 的历史独立保存在 `localStorage['codex-review:chat:<repo>#<number>']`（≤20 条）。
+10. **自动审查**（v2.1）：在「审查设置」里打开自动审查后，Host 每 180 秒（可调 60–3600）扫描一次，对新的/有新提交的 PR 自动跑审查；右栏「自动审查」卡显示状态与最近结果，列表行显示徽章，新结果会 toast。默认关闭；「立即检查」可手动触发一次。
+11. **发布审查到 GitHub**（v2.2，写操作）：审查完成且有发现时，审查卡出现「发布到 GitHub」→ 确认弹层（行内 / 汇总 / 两者、最低严重度、预计评论数、写操作警告）→「确认发布」才真正在 PR 上创建 review 评论；成功后显示「已发布 · 在 GitHub 查看」。「审查设置」里的自动发布开关默认关闭，开启需二次确认。
 
 ## v1.1 新增（0.2.0）
 
@@ -45,6 +47,24 @@
 - **合并写操作**：`POST /codex-review/merge`；显式确认 + head SHA 校验 + mergeable 守卫，成功后清缓存；删除源分支失败只降级告警、不影响合并结果。
 - **PR 对话（流式）**：`POST /codex-review/chat`（text/event-stream）；上下文含 PR 元信息/正文/文件清单/最近审查摘要/当前文件 patch，总预算 ≤24000 字；并发上限 2，客户端可中止上游。
 - **安全边界**：合并只在用户点击「确认合并」后执行；插件自身不做任何自动写；README 与契约均记录了网络围栏与请求校验。
+
+## v2.1 新增（0.4.0）：自动审查
+
+- **后台定时扫描**：Host 侧 `AutoReviewer` 按间隔拉取 `query`（默认 `is:open author:@me`），发现新 PR 或 PR 有新提交（headSha 变化）时自动跑 AI 审查；已审过的提交不会重复审查（seen 游标持久化）。
+- **默认关闭**：只有你在设置里打开才运行；关闭时立刻停止后台调度与页面轮询。间隔 60–3600 秒（默认 180），每次最多审 1–5 个（默认 2），深度默认 `fast`，阈值默认 `P2`，可排除草稿。
+- **结果可见**：右栏「自动审查」卡显示开关状态、上次/下次检查、最近结果（点击可跳到对应 PR）；PR 列表行显示自动审查徽章（问题数 / ✓）；新结果完成时页面 toast。
+- **持久化**：配置与 seen 游标存 `<DSH_PROFILE_DIR>/.codex-review/auto-review.json`（无 profile 时回退 `~/.dsh/codex-review/auto-review.json`），插件重载/宿主重启后继续生效（不会重复审同一提交）。
+- **安全**：自动审查只读 GitHub（绝不自动发评论、不合并、不改仓库）；手动「立即检查」可随时触发一次，勾选 force 时即使开关关闭也只跑一次。
+- 版本 0.4.0。
+
+## v2.2 新增（0.5.0）：把审查发布到 GitHub
+
+- **发布审查（写操作，显式确认）**：AI 审查完成且有点时，审查卡出现「发布到 GitHub」；确认弹层可选发布方式（行内评论 / 汇总评论 / 行内+汇总）与最低严重度，并显示预计评论数；只有点「确认发布」才调用 `POST /codex-review/review-publish`（带 `confirm: true`）。成功后在 GitHub 上创建一条 `event: 'COMMENT'` 的 PR Review，按钮变为「已发布 · 在 GitHub 查看」。
+- **幂等与去重**：每个 `repo#number@headSha` 只发布一次；重复发布回放已存结果、不发写请求；服务端对同一 head 的并发发布做 in-flight 去重，双击/多标签页不会产生两条 review；行内评论带 `<!-- dsh-codex-review:<hash> -->` marker，重发时跳过 GitHub 上已存在的评论。
+- **自动发布**：自动审查完成后可按需自动发布，默认关闭；开启需二次确认（写操作警告），只对之后自动审查的 PR 生效；失败只记 `lastError`，不重试风暴。
+- **已发布状态跨刷新**：`/pr` 的 review 快照带 `published` 记录（`url`/`reviewId`/`publishedAt`），刷新页面或重开工作台仍显示已发布；发布记录持久化在 auto-review 状态文件。
+- **安全**：发布只创建 review 评论，绝不修改代码、不推送、不合并；GitHub token 只留在 Host；手动发布必须 `confirm:true`，自动发布默认关闭。
+- 版本 0.5.0；测试 228 例。
 
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
@@ -69,32 +89,40 @@
 
 ## Host HTTP 路由
 
-JSON 路由（同源 POST，`{ok,value}|{ok:false,error}` 信封）：`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel,merge}`；SSE 路由：`POST /codex-review/chat`（`text/event-stream`，`data: {"delta"}` / `{"done":true}` / `{"error"}`）。契约见 [CONTRACT.md](CONTRACT.md) §1 与 §5。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB、15s 请求 deadline（chat 单独 5 分钟）、合并必须 `confirm:true` + head SHA 校验；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
+JSON 路由（同源 POST，`{ok,value}|{ok:false,error}` 信封）：`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel,merge,auto-review-status,auto-review-config,auto-review-run,review-publish}`；SSE 路由：`POST /codex-review/chat`（`text/event-stream`，`data: {"delta"}` / `{"done":true}` / `{"error"}`）。契约见 [CONTRACT.md](CONTRACT.md) §1、§5、§6、§7。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB（chat 512KiB）、15s 请求 deadline（chat 单独 5 分钟）、合并与发布必须 `confirm:true` + head SHA 校验；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
 
 ## 结构
 
 ```
-index.js           Host 入口：Config、路由注册、(llm, agentDefaultModel) 可选注入、merge/SSE chat 路由
+index.js           Host 入口：Config、路由注册、(llm, agentDefaultModel) 可选注入、merge/发布/SSE chat 路由
 lib/http.js        路由分发、信任围栏、body 限长、deadline、JSON 信封
-lib/github.js      gh token→fetch + gh CLI 兜底、缓存、截断、stack 推断、合并写操作、对话上下文
+lib/github.js      gh token→fetch + gh CLI 兜底、缓存、截断、stack 推断、合并写操作、发布 review、对话上下文
 lib/review.js      v1.1：审查选项/深度预设、文件级增量缓存、分块并发、复核轮、证据校验、job 状态机
-lib/config.js      Standard Schema（Schemastery 或自带兜底）+ 代码级 resolveConfig
-client.js          浏览器半边（module-loader bundle，React.createElement）：三栏工作台 + 行内发现卡 + 设置弹层 + 合并确认 + PR 对话
-test/              node --test：v2 新增合并守卫/对话上下文/SSE 编码等用例
+lib/chat.js        v2：PR 对话上下文拼装、SSE 帧编码、并发限流、错误映射
+lib/auto-review.js v2.1：自动审查调度器（定时扫描、seen 游标、状态持久化、配置夹取、自动发布）
+lib/publish.js     v2.2：发布审查到 GitHub（finding→评论映射、marker 去重、幂等记录、并发去重）
+lib/config.js      Standard Schema（Schemastery 三路解析或自带兜底）+ 代码级 resolveConfig
+lib/errors.js      错误码与面向用户的中文文案
+client.js          浏览器半边（module-loader bundle，React.createElement）：三栏工作台 + 行内发现卡 + 设置弹层 + 合并确认 + PR 对话 + 发布弹层
+test/              node --test：合并守卫/对话/自动审查/发布/SSE 编码等 228 例
 dev/               开发预览（preview.html + mock 路由 + Edge/CDP 截图校验），不进安装产物
 locale/            Plugin Manager 显示元数据（zh/en）
 ```
 
 ## 验证
 
-- `node --test` → **163/163**（v1 74 → v1.1 115 → v2 163；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码）；`node --check` 全部通过。
-- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
+- `node --test` → **228/228**（v1 74 → v1.1 115 → v2 163 → v2.1 186 → v2.2 228；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码、自动审查调度与持久化、发布映射/marker 去重/并发去重）；`node --check` 全部通过。
+- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12、v2.1 见 REPORT §13、v2.2 见 REPORT §14，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
 - AI 审查实测：v1.1 `depth=fast` 真实运行 + 同设置 `cached=true`；`severityThreshold=P0` 服务端过滤；文件级复用 `reusedFiles=24` 且 0 次额外模型调用（见 REPORT）。
 - 合并：**只做守卫测试，未对真实 PR 执行合并**（避免误操作）；对话：真实流式问答验证（SSE delta→done，1.4s 返回 603 字上下文相关回答）。
+- 发布：**只做校验分支与页面取消路径验证，未对真实 PR 发布评论**（`--v22` 硬约束：绝不发送 `confirm:true` + 已完成审查的组合）。
 
 ## 已知限制
 
 - 合并：需要 GitHub 仓库写权限；受保护分支/合并队列策略由 GitHub 决定，失败会回显 code/message。成功后不自动推送本地分支。
+- 发布：需要 GitHub token 有 `repo` 写权限（只读 token 会返回 `GH_FORBIDDEN`）；finding 的 `line` 必须落在 diff 的 RIGHT 行，GitHub 对越界行会拒绝整条 review（回显 `BAD_REQUEST`）。发布记录按 head SHA 存本机状态文件，多机不同步；同一 head 重复发布只回放记录，不会更新已有 review。
+- 自动发布默认关闭；开启后会对之后自动审查完成的 PR 真实创建 review 评论，可在「审查设置」里随时关闭。
+- 发布不做 auto-fix：不会修改代码、不会向分支推送提交（另行评估）。
 - 对话：回答基于 PR 上下文（元信息/正文/文件清单/最近审查摘要/当前文件 patch），不是全仓库检索；上下文预算 24k 字。
 - 评论功能（发评论/回复/解决评论线程）仍未接入（只读展示已有评论）。
 - 列表接口（GitHub search）不返回 head/base 分支，列表不显示分支；详情头有真实值。

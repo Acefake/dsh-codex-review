@@ -1074,3 +1074,201 @@ test('post() decodes ok/error envelopes and never throws', async () => {
   assert.equal(offline.ok, false)
   assert.match(offline.error.message, /宿主路由/)
 })
+
+// ---------------------------------------------------------------------------
+// v2.1: auto review config/status, polling decision, recent diff, badges
+// ---------------------------------------------------------------------------
+
+test('normalizeAutoReviewConfig clamps and defaults every field', () => {
+  assert.deepEqual(api.normalizeAutoReviewConfig(null), api.AUTO_REVIEW_DEFAULT)
+  assert.deepEqual(api.normalizeAutoReviewConfig('nope'), api.AUTO_REVIEW_DEFAULT)
+  const clamped = api.normalizeAutoReviewConfig({
+    enabled: 1,
+    intervalSeconds: 5,
+    query: '  is:closed author:@me  ',
+    depth: 'ultra',
+    severityThreshold: 'P9',
+    includeDrafts: 'yes',
+    maxPerCycle: 99,
+    unknown: 'ignored',
+  })
+  assert.equal(clamped.enabled, true)
+  assert.equal(clamped.intervalSeconds, api.AUTO_REVIEW_INTERVAL_MIN)
+  assert.equal(clamped.query, 'is:closed author:@me')
+  assert.equal(clamped.depth, 'fast')
+  assert.equal(clamped.severityThreshold, 'P2')
+  assert.equal(clamped.includeDrafts, true)
+  assert.equal(clamped.maxPerCycle, api.AUTO_REVIEW_MAX_PER_CYCLE_MAX)
+  assert.equal(Object.prototype.hasOwnProperty.call(clamped, 'unknown'), false)
+
+  const upper = api.normalizeAutoReviewConfig({
+    intervalSeconds: 99999,
+    maxPerCycle: 0,
+    depth: 'deep',
+    severityThreshold: 'P1',
+    includeDrafts: false,
+  })
+  assert.equal(upper.intervalSeconds, api.AUTO_REVIEW_INTERVAL_MAX)
+  assert.equal(upper.maxPerCycle, 1)
+  assert.equal(upper.depth, 'deep')
+  assert.equal(upper.severityThreshold, 'P1')
+  assert.equal(upper.includeDrafts, false)
+  assert.equal(api.clampInteger('nope', 1, 5, 2), 2)
+  assert.equal(api.clampInteger(3.6, 1, 5, 2), 4)
+})
+
+test('normalizeAutoReviewRecent filters, sorts by field and caps at 20', () => {
+  assert.deepEqual(api.normalizeAutoReviewRecent(undefined), [])
+  const list = api.normalizeAutoReviewRecent([
+    { repo: 'a/b', number: 1, state: 'done', findings: 3, finishedAt: 100, verdict: 'changes' },
+    { repo: 'a/b', number: 2, state: 'error', error: { code: 'LLM_ERROR', message: 'boom' }, finishedAt: 90 },
+    { repo: '', number: 3 },
+    { repo: 'a/b', number: 'x' },
+    null,
+  ])
+  assert.equal(list.length, 2)
+  assert.equal(list[0].findings, 3)
+  assert.equal(list[0].verdict, 'changes')
+  assert.equal(list[1].state, 'error')
+  assert.equal(list[1].error.code, 'LLM_ERROR')
+  assert.equal(api.normalizeAutoReviewRecentEntry({ repo: 'a/b', number: 1, findings: -2 }).findings, 0)
+  assert.equal(api.normalizeAutoReviewRecentEntry({ repo: 'a/b', number: 1, state: 'weird' }).state, 'done')
+  const many = []
+  for (let index = 0; index < 30; index += 1) {
+    many.push({ repo: 'a/b', number: index + 1, state: 'done', findings: 0, finishedAt: index + 1 })
+  }
+  assert.equal(api.normalizeAutoReviewRecent(many).length, api.AUTO_REVIEW_RECENT_LIMIT)
+})
+
+test('normalizeAutoReviewStatus fills config/running/recent and tolerates garbage', () => {
+  const status = api.normalizeAutoReviewStatus({
+    config: { enabled: true, intervalSeconds: 60, depth: 'deep' },
+    running: true,
+    lastCycleAt: 1792825340929,
+    nextCycleAt: 'nope',
+    seenCount: '7',
+    recent: [{ repo: 'a/b', number: 1, state: 'done', findings: 1 }],
+    lastError: { code: 'GH_TIMEOUT', message: 'timeout' },
+  })
+  assert.equal(status.config.enabled, true)
+  assert.equal(status.config.intervalSeconds, 60)
+  assert.equal(status.running, true)
+  assert.equal(status.lastCycleAt, 1792825340929)
+  assert.equal(status.nextCycleAt, 0)
+  assert.equal(status.seenCount, 7)
+  assert.equal(status.recent.length, 1)
+  assert.equal(status.lastError.code, 'GH_TIMEOUT')
+  const empty = api.normalizeAutoReviewStatus(null)
+  assert.deepEqual(empty.config, api.AUTO_REVIEW_DEFAULT)
+  assert.equal(empty.running, false)
+  assert.deepEqual(empty.recent, [])
+  assert.equal(empty.lastError, null)
+})
+
+test('autoReviewPollDecision decides polling from visibility + enabled + support', () => {
+  assert.deepEqual(api.autoReviewPollDecision({ supported: true, enabled: true, visible: true }), {
+    active: true,
+    intervalMs: api.AUTO_REVIEW_POLL_MS,
+    reason: 'polling',
+  })
+  assert.equal(
+    api.autoReviewPollDecision({ supported: true, enabled: false, visible: true }).active,
+    false,
+  )
+  assert.equal(
+    api.autoReviewPollDecision({ supported: true, enabled: true, visible: false }).reason,
+    'hidden',
+  )
+  assert.equal(
+    api.autoReviewPollDecision({ supported: false, enabled: true, visible: true }).reason,
+    'unsupported',
+  )
+  assert.equal(
+    api.autoReviewPollDecision({ supported: true, enabled: true, visible: true, intervalMs: 1200 })
+      .intervalMs,
+    1200,
+  )
+  assert.equal(api.autoReviewPollDecision(null).active, false)
+})
+
+test('diffAutoReviewRecent only reports newly finished done results', () => {
+  const first = [
+    { repo: 'a/b', number: 1, state: 'done', findings: 2, finishedAt: 100 },
+    { repo: 'a/b', number: 2, state: 'error', finishedAt: 90 },
+  ]
+  const next = [
+    { repo: 'a/b', number: 3, state: 'done', findings: 1, finishedAt: 200 },
+    { repo: 'a/b', number: 1, state: 'done', findings: 2, finishedAt: 100 },
+    { repo: 'a/b', number: 2, state: 'done', findings: 0, finishedAt: 210 },
+    { repo: 'a/b', number: 4, state: 'error', finishedAt: 220 },
+  ]
+  const newDone = api.diffAutoReviewRecent(first, next)
+  assert.deepEqual(
+    newDone.map((entry) => entry.number),
+    [3, 2],
+  )
+  assert.deepEqual(api.diffAutoReviewRecent([], next).map((entry) => entry.number), [3, 1, 2])
+  assert.deepEqual(api.diffAutoReviewRecent(first, first), [])
+  assert.equal(api.autoReviewRecentKey({ repo: 'a/b', number: 1, headSha: 'x', finishedAt: 5 }), 'a/b#1@x@5')
+})
+
+test('autoReviewBadgesByPr + autoReviewBadge describe list-row badges', () => {
+  const map = api.autoReviewBadgesByPr([
+    { repo: 'a/b', number: 1, state: 'done', findings: 2, finishedAt: 100 },
+    { repo: 'a/b', number: 1, state: 'done', findings: 0, finishedAt: 90 },
+    { repo: 'a/b', number: 2, state: 'done', findings: 0, finishedAt: 50 },
+    { repo: 'a/b', number: 3, state: 'error', finishedAt: 60, error: { code: 'X', message: 'boom' } },
+  ])
+  assert.equal(map['a/b#1'].findings, 2)
+  assert.deepEqual(api.autoReviewBadge(map['a/b#1']), {
+    kind: 'count',
+    text: '2',
+    titleKey: 'autoReviewBadgeCount',
+    titleVars: { n: 2 },
+  })
+  assert.deepEqual(api.autoReviewBadge(map['a/b#2']), {
+    kind: 'clean',
+    text: '✓',
+    titleKey: 'autoReviewBadgeClean',
+    titleVars: null,
+  })
+  assert.equal(api.autoReviewBadge(map['a/b#3']).kind, 'error')
+  assert.equal(api.autoReviewBadge(map['a/b#9']), null)
+  assert.equal(api.autoReviewBadge(null), null)
+})
+
+test('isAutoReviewRouteMissing + autoReviewRunState map host responses', () => {
+  assert.equal(api.isAutoReviewRouteMissing({ code: 'GH_NOT_FOUND', message: 'no' }), true)
+  assert.equal(api.isAutoReviewRouteMissing({ code: 'BAD_REQUEST', message: '没有这个路由' }), true)
+  assert.equal(api.isAutoReviewRouteMissing({ code: 'BAD_REQUEST', message: 'route missing' }), true)
+  assert.equal(api.isAutoReviewRouteMissing({ code: 'BAD_REQUEST', message: 'invalid patch' }), false)
+  assert.equal(api.isAutoReviewRouteMissing({ code: 'INTERNAL' }), false)
+  assert.equal(api.isAutoReviewRouteMissing(null), false)
+
+  assert.deepEqual(api.autoReviewRunState({ started: true }), {
+    kind: 'started',
+    messageKey: 'autoReviewRunStarted',
+  })
+  assert.equal(api.autoReviewRunState({ started: false, reason: 'running' }).kind, 'busy')
+  assert.equal(api.autoReviewRunState({ started: false, reason: 'disabled' }).kind, 'disabled')
+  // The Host sends Chinese reasons; the mapping must tolerate both languages.
+  assert.equal(api.autoReviewRunState({ started: false, reason: '已有自动审查 cycle 正在运行' }).kind, 'busy')
+  assert.equal(api.autoReviewRunState({ started: false, reason: '自动审查已关闭（可带 force:true 单次运行）' }).kind, 'disabled')
+  assert.equal(api.autoReviewRunState({ started: false, reason: '插件已卸载' }).kind, 'failed')
+  assert.equal(api.autoReviewRunState(null, { code: 'GH_NOT_FOUND' }).kind, 'unsupported')
+  assert.equal(api.autoReviewRunState(null, { code: 'INTERNAL' }).kind, 'failed')
+  assert.equal(api.autoReviewRunState({ started: false, reason: 'other' }).kind, 'busy')
+})
+
+test('autoReviewDoneToastText prefers findings count and falls back to clean', () => {
+  const t = (key) => api.locales.zh[key]
+  assert.equal(
+    api.autoReviewDoneToastText({ repo: 'Acefake/yingbox', number: 129, findings: 3 }, t),
+    '自动审查完成：Acefake/yingbox#129 · 3 个问题',
+  )
+  assert.equal(
+    api.autoReviewDoneToastText({ repo: 'a/b', number: 7, findings: 0 }, t),
+    '自动审查完成：a/b#7 · 未发现问题',
+  )
+  assert.equal(api.autoReviewDoneToastText(null, t), '')
+})

@@ -42,6 +42,35 @@ window.__ModuleLoader__.load({
     const CHAT_MESSAGE_CHARS = 4000
     /** Locale keys for the three quick questions shown in an empty chat panel. */
     const CHAT_QUICK_PROMPTS = ['chatSummarize', 'chatRisks', 'chatTest']
+    /** v2.1 auto review (CONTRACT §6): polling cadence + config defaults/bounds. */
+    const AUTO_REVIEW_POLL_MS = 15000
+    const AUTO_REVIEW_RUNNING_POLL_MS = 2000
+    const AUTO_REVIEW_RECENT_LIMIT = 20
+    const AUTO_REVIEW_INTERVAL_PRESETS = [60, 180, 600]
+    const AUTO_REVIEW_INTERVAL_MIN = 60
+    const AUTO_REVIEW_INTERVAL_MAX = 3600
+    const AUTO_REVIEW_MAX_PER_CYCLE_MIN = 1
+    const AUTO_REVIEW_MAX_PER_CYCLE_MAX = 5
+    const AUTO_REVIEW_DEFAULT = {
+      enabled: false,
+      intervalSeconds: 180,
+      query: 'is:open author:@me',
+      depth: 'fast',
+      severityThreshold: 'P2',
+      includeDrafts: false,
+      maxPerCycle: 2,
+    }
+    /** v2.2 review publishing (CONTRACT §7.1–§7.3). */
+    const PUBLISH_MODES = ['inline', 'summary', 'both']
+    const PUBLISH_MIN_SEVERITIES = ['P0', 'P1', 'P2']
+    const PUBLISH_MAX_COMMENTS_MIN = 1
+    const PUBLISH_MAX_COMMENTS_MAX = 50
+    const PUBLISH_DEFAULT_CONFIG = {
+      enabled: false,
+      mode: 'inline',
+      minSeverity: 'P2',
+      maxComments: 20,
+    }
 
     // ---------------------------------------------------------------------
     // Locale dictionaries
@@ -250,6 +279,93 @@ window.__ModuleLoader__.load({
       chatNoSelection: 'Select a pull request first',
       chatUnsupported: 'This browser cannot read streaming responses',
       chatHistoryHint: 'Saved in this browser for this pull request',
+      autoReview: 'Auto review',
+      autoReviewHint: 'Scans open pull requests in the background and reviews new commits. It never writes to GitHub.',
+      autoReviewEnabled: 'Enable auto review',
+      autoReviewDisabledState: 'Auto review is off',
+      autoReviewDisabledBody: 'Enable it in Review settings and the workbench will scan for new PRs / commits on a schedule.',
+      autoReviewEnableAction: 'Turn it on',
+      autoReviewInterval: 'Interval (seconds)',
+      autoReviewIntervalHint: '60–3600 seconds; the minimum is one minute.',
+      autoReviewIntervalCustom: 'Custom',
+      autoReviewIncludeDrafts: 'Include draft pull requests',
+      autoReviewMaxPerCycle: 'Max reviews per cycle',
+      autoReviewMaxPerCycleHint: '1–5; the remaining PRs wait for the next cycle.',
+      autoReviewQuery: 'Search query',
+      autoReviewQueryHint: 'GitHub search syntax; defaults to is:open author:@me.',
+      autoReviewStatusOn: 'On',
+      autoReviewStatusOff: 'Off',
+      autoReviewLastCycle: 'Last check: {time}',
+      autoReviewNextCycle: 'Next check: {time}',
+      autoReviewNever: 'not yet',
+      autoReviewSeen: '{n} PRs checked',
+      autoReviewRunning: 'Checking…',
+      autoReviewRunNow: 'Check now',
+      autoReviewRunStarted: 'Auto review started',
+      autoReviewRunAlready: 'A check is already running',
+      autoReviewRunDisabled: 'Enable auto review first',
+      autoReviewRunFailed: 'Could not start the auto review check',
+      autoReviewRecent: 'Recent results',
+      autoReviewNoRecent: 'No auto review results yet',
+      autoReviewRecentClean: 'No findings',
+      autoReviewRecentError: 'Review failed',
+      autoReviewMore: '{n} more',
+      autoReviewLastError: 'Last check failed: {message}',
+      autoReviewUnsupported: 'Auto review is not available in this host version',
+      autoReviewUnsupportedHint: 'The plugin version running here has no auto-review route; upgrade the plugin to enable it.',
+      autoReviewDoneToast: 'Auto review finished: {pr} · {n} findings',
+      autoReviewDoneToastClean: 'Auto review finished: {pr} · no findings',
+      autoReviewToastAction: 'Open',
+      autoReviewRefresh: 'Refresh auto review status',
+      autoReviewSettingsNote: 'Auto review is off by default and never writes to GitHub. Changes are saved immediately.',
+      autoReviewSaving: 'Saving…',
+      autoReviewConfigFailed: 'Saving auto review settings failed; reverted',
+      autoReviewBadgeCount: 'Auto review: {n} findings',
+      autoReviewBadgeClean: 'Auto review: no findings',
+      autoReviewBadgeError: 'Auto review failed',
+      autoReviewCollapse: 'Collapse auto review',
+      autoReviewExpand: 'Expand auto review',
+      publish: 'Publish to GitHub',
+      publishDialogTitle: 'Publish review to GitHub',
+      publishRepo: 'Pull request',
+      publishHeadSha: 'Reviewed commit',
+      publishMode: 'Publish mode',
+      publishModeInline: 'Inline comments',
+      publishModeInlineHint: 'One review comment per finding, anchored to the diff line.',
+      publishModeSummary: 'Summary comment',
+      publishModeSummaryHint: 'A single summary review in the PR conversation.',
+      publishModeBoth: 'Inline + summary',
+      publishModeBothHint: 'Inline comments first, with a summary review as well.',
+      publishMinSeverity: 'Minimum severity',
+      publishMinSeverityHint: 'Only findings at least this severe are published.',
+      publishExpected: 'Estimated comments',
+      publishExpectedValue: '{n}',
+      publishWarning: 'This is a write operation: it creates a real review (and comments) on this pull request.',
+      publishConfirm: 'Publish review',
+      publishSubmitting: 'Publishing…',
+      publishSuccess: 'Published to GitHub ({n} comments)',
+      publishPublishedLink: 'Published · view on GitHub',
+      publishPublishedBadge: 'Published',
+      publishView: 'View',
+      publishNotReady: 'Run the AI review first, then publish',
+      publishForbidden: 'The GitHub token has no write permission (repo scope required)',
+      publishBadRequest: 'The publish request was rejected',
+      publishFailed: 'Publishing the review failed',
+      publishUnsupported: 'Publishing reviews is not available in this host version',
+      publishNoFindings: 'Nothing to publish',
+      publishErrorTitle: 'Publish failed',
+      autoPublish: 'Publish reviews to GitHub',
+      autoPublishHint: 'When enabled, finished auto reviews are published to their pull requests. This writes to GitHub.',
+      autoPublishConfirmTitle: 'Enable automatic publishing?',
+      autoPublishConfirmBody: 'Finished auto reviews will create real review comments on their pull requests (up to the configured limit). This is a write operation.',
+      autoPublishConfirm: 'Enable publishing',
+      autoPublishStatusOn: 'Publishing: on',
+      autoPublishStatusOff: 'Publishing: off',
+      autoPublishMode: 'Publish mode',
+      autoPublishMinSeverity: 'Minimum severity',
+      autoPublishMaxComments: 'Max comments',
+      autoPublishMaxCommentsHint: '1–50 per review.',
+      autoPublishNote: 'Automatic publishing is off by default and only applies to future auto reviews.',
     }
 
     const zh = {
@@ -455,6 +571,93 @@ window.__ModuleLoader__.load({
       chatNoSelection: '请先选择一个 PR',
       chatUnsupported: '当前浏览器无法读取流式响应',
       chatHistoryHint: '本机缓存，仅对该 PR 生效',
+      autoReview: '自动审查',
+      autoReviewHint: '后台定时扫描开放 PR，发现新提交时自动审查；不会向 GitHub 写任何内容。',
+      autoReviewEnabled: '开启自动审查',
+      autoReviewDisabledState: '自动审查已关闭',
+      autoReviewDisabledBody: '在「审查设置」里开启后，工作台会按间隔自动扫描新 PR / 新提交。',
+      autoReviewEnableAction: '去开启',
+      autoReviewInterval: '检查间隔（秒）',
+      autoReviewIntervalHint: '60–3600 秒，最小 1 分钟。',
+      autoReviewIntervalCustom: '自定义',
+      autoReviewIncludeDrafts: '包含草稿 PR',
+      autoReviewMaxPerCycle: '每轮最多审查',
+      autoReviewMaxPerCycleHint: '1–5 个；其余留到下一轮。',
+      autoReviewQuery: '查询语句',
+      autoReviewQueryHint: 'GitHub 搜索语法，默认 is:open author:@me。',
+      autoReviewStatusOn: '已开启',
+      autoReviewStatusOff: '已关闭',
+      autoReviewLastCycle: '上次检查：{time}',
+      autoReviewNextCycle: '下次检查：{time}',
+      autoReviewNever: '尚未检查',
+      autoReviewSeen: '已审查 {n} 个 PR',
+      autoReviewRunning: '检查中…',
+      autoReviewRunNow: '立即检查',
+      autoReviewRunStarted: '已开始检查',
+      autoReviewRunAlready: '已有检查在进行中',
+      autoReviewRunDisabled: '请先开启自动审查',
+      autoReviewRunFailed: '无法启动自动检查',
+      autoReviewRecent: '最近结果',
+      autoReviewNoRecent: '还没有自动审查结果',
+      autoReviewRecentClean: '未发现问题',
+      autoReviewRecentError: '审查失败',
+      autoReviewMore: '还有 {n} 条',
+      autoReviewLastError: '最近一次检查失败：{message}',
+      autoReviewUnsupported: '宿主未启用自动审查',
+      autoReviewUnsupportedHint: '当前插件版本没有自动审查路由；升级插件后可用。',
+      autoReviewDoneToast: '自动审查完成：{pr} · {n} 个问题',
+      autoReviewDoneToastClean: '自动审查完成：{pr} · 未发现问题',
+      autoReviewToastAction: '查看',
+      autoReviewRefresh: '刷新自动审查状态',
+      autoReviewSettingsNote: '自动审查默认关闭，且不会向 GitHub 写任何内容；改动会立即保存。',
+      autoReviewSaving: '保存中…',
+      autoReviewConfigFailed: '自动审查设置保存失败，已回滚',
+      autoReviewBadgeCount: '自动审查：{n} 个问题',
+      autoReviewBadgeClean: '自动审查：未发现问题',
+      autoReviewBadgeError: '自动审查失败',
+      autoReviewCollapse: '收起自动审查',
+      autoReviewExpand: '展开自动审查',
+      publish: '发布到 GitHub',
+      publishDialogTitle: '发布审查到 GitHub',
+      publishRepo: 'Pull Request',
+      publishHeadSha: '已审查的提交',
+      publishMode: '发布方式',
+      publishModeInline: '行内评论',
+      publishModeInlineHint: '每条发现挂到对应的 diff 行上。',
+      publishModeSummary: '汇总评论',
+      publishModeSummaryHint: '在 PR 会话里发一条汇总 review。',
+      publishModeBoth: '行内 + 汇总',
+      publishModeBothHint: '以行内评论为主，同时发一条汇总。',
+      publishMinSeverity: '最低严重度',
+      publishMinSeverityHint: '只发布不弱于该级别的问题。',
+      publishExpected: '预计评论数',
+      publishExpectedValue: '{n} 条',
+      publishWarning: '这是写操作：会真的在这个 PR 上创建 review 评论，并可能通知订阅者。',
+      publishConfirm: '确认发布',
+      publishSubmitting: '发布中…',
+      publishSuccess: '已发布到 GitHub（{n} 条评论）',
+      publishPublishedLink: '已发布 · 在 GitHub 查看',
+      publishPublishedBadge: '已发布',
+      publishView: '查看',
+      publishNotReady: '请先运行一次 AI 审查再发布',
+      publishForbidden: '当前 GitHub token 没有写权限（需要 repo scope）',
+      publishBadRequest: '发布请求被判定为不合法',
+      publishFailed: '发布审查失败',
+      publishUnsupported: '当前宿主版本不支持发布审查',
+      publishNoFindings: '没有可发布的问题',
+      publishErrorTitle: '发布失败',
+      autoPublish: '发布审查到 GitHub',
+      autoPublishHint: '开启后，自动审查完成时会把结果发布到对应 PR；这会写入 GitHub。',
+      autoPublishConfirmTitle: '确认开启自动发布？',
+      autoPublishConfirmBody: '开启后，自动审查完成的 PR 会被自动创建 review 评论（按配置的上限过滤）。这是写操作。',
+      autoPublishConfirm: '确认开启',
+      autoPublishStatusOn: '发布：已开启',
+      autoPublishStatusOff: '发布：已关闭',
+      autoPublishMode: '发布方式',
+      autoPublishMinSeverity: '最低严重度',
+      autoPublishMaxComments: '最多评论数',
+      autoPublishMaxCommentsHint: '每次 review 1–50 条。',
+      autoPublishNote: '自动发布默认关闭，且只对之后的自动审查生效。',
     }
 
     // ---------------------------------------------------------------------
@@ -1049,6 +1252,7 @@ window.__ModuleLoader__.load({
         reusedFiles: Number.isFinite(reusedFiles) && reusedFiles > 0 ? Math.round(reusedFiles) : 0,
         options,
         guidelines: guidelinesPresent ? normalizeGuidelines(source.guidelines) : null,
+        published: normalizePublished(source.published || source.publishRecord || null),
         verdict: VERDICTS.indexOf(source.verdict) >= 0 ? source.verdict : null,
       }
     }
@@ -1461,6 +1665,420 @@ window.__ModuleLoader__.load({
       if (!last || last.role !== 'assistant') return list
       list[list.length - 1] = Object.assign({}, last, { stopped: true })
       return list
+    }
+
+    // ---------------------------------------------------------------------
+    // v2.1 helpers: auto review config/status, polling decision, recent diff
+    // ---------------------------------------------------------------------
+
+    /** Clamp a possibly-garbage number into [min, max], falling back when unusable. */
+    function clampInteger(value, min, max, fallback) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return fallback
+      return Math.min(max, Math.max(min, Math.round(number)))
+    }
+
+    /** Normalize the Host's AutoReviewConfig (echoed by status/config routes). */
+    function normalizeAutoReviewConfig(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const query =
+        typeof source.query === 'string' && source.query.trim() !== ''
+          ? source.query.trim().slice(0, 500)
+          : AUTO_REVIEW_DEFAULT.query
+      return {
+        enabled:
+          source.enabled === undefined ? AUTO_REVIEW_DEFAULT.enabled : Boolean(source.enabled),
+        intervalSeconds: clampInteger(
+          source.intervalSeconds,
+          AUTO_REVIEW_INTERVAL_MIN,
+          AUTO_REVIEW_INTERVAL_MAX,
+          AUTO_REVIEW_DEFAULT.intervalSeconds,
+        ),
+        query,
+        depth: DEPTHS.indexOf(source.depth) >= 0 ? source.depth : AUTO_REVIEW_DEFAULT.depth,
+        severityThreshold:
+          THRESHOLDS.indexOf(source.severityThreshold) >= 0
+            ? source.severityThreshold
+            : AUTO_REVIEW_DEFAULT.severityThreshold,
+        includeDrafts:
+          source.includeDrafts === undefined
+            ? AUTO_REVIEW_DEFAULT.includeDrafts
+            : Boolean(source.includeDrafts),
+        maxPerCycle: clampInteger(
+          source.maxPerCycle,
+          AUTO_REVIEW_MAX_PER_CYCLE_MIN,
+          AUTO_REVIEW_MAX_PER_CYCLE_MAX,
+          AUTO_REVIEW_DEFAULT.maxPerCycle,
+        ),
+      }
+    }
+
+    /** Normalize one AutoReviewStatus.recent entry. */
+    function normalizeAutoReviewRecentEntry(value) {
+      const source = value && typeof value === 'object' ? value : null
+      if (!source) return null
+      const repo = typeof source.repo === 'string' ? source.repo : ''
+      const number = Number(source.number)
+      if (repo === '' || !Number.isFinite(number) || number <= 0) return null
+      const findings = Number(source.findings)
+      const finishedAt = Number(source.finishedAt)
+      const state =
+        source.state === 'error' ? 'error' : source.state === 'cancelled' ? 'cancelled' : 'done'
+      const error =
+        source.error && typeof source.error === 'object'
+          ? {
+              code: String(source.error.code || 'INTERNAL'),
+              message: String(source.error.message || ''),
+            }
+          : null
+      return {
+        repo,
+        number: Math.trunc(number),
+        headSha: typeof source.headSha === 'string' ? source.headSha : '',
+        state,
+        findings: Number.isFinite(findings) && findings > 0 ? Math.round(findings) : 0,
+        verdict: VERDICTS.indexOf(source.verdict) >= 0 ? source.verdict : '',
+        overview: typeof source.overview === 'string' ? source.overview : '',
+        finishedAt: Number.isFinite(finishedAt) && finishedAt > 0 ? Math.round(finishedAt) : 0,
+        error,
+        published: normalizePublished(
+          source.published || source.publishResult || source.publish || null,
+        ),
+      }
+    }
+
+    /** Normalize AutoReviewStatus.recent (newest first, ≤20). */
+    function normalizeAutoReviewRecent(value) {
+      const list = []
+      for (const entry of asArray(value)) {
+        const normalized = normalizeAutoReviewRecentEntry(entry)
+        if (normalized) list.push(normalized)
+      }
+      return list.slice(0, AUTO_REVIEW_RECENT_LIMIT)
+    }
+
+    /** Normalize the whole AutoReviewStatus payload (CONTRACT §6.3). */
+    function normalizeAutoReviewStatus(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      const lastCycleAt = Number(source.lastCycleAt)
+      const nextCycleAt = Number(source.nextCycleAt)
+      const seenCount = Number(source.seenCount)
+      const lastError =
+        source.lastError && typeof source.lastError === 'object'
+          ? {
+              code: String(source.lastError.code || 'INTERNAL'),
+              message: String(source.lastError.message || ''),
+            }
+          : null
+      return {
+        config: normalizeAutoReviewConfig(source.config),
+        running: Boolean(source.running),
+        lastCycleAt: Number.isFinite(lastCycleAt) && lastCycleAt > 0 ? Math.round(lastCycleAt) : 0,
+        nextCycleAt: Number.isFinite(nextCycleAt) && nextCycleAt > 0 ? Math.round(nextCycleAt) : 0,
+        seenCount: Number.isFinite(seenCount) && seenCount > 0 ? Math.round(seenCount) : 0,
+        recent: normalizeAutoReviewRecent(source.recent),
+        publish:
+          source.publish && typeof source.publish === 'object'
+            ? normalizePublishConfig(source.publish)
+            : null,
+        lastError,
+      }
+    }
+
+    /** Stable identity of one recent result, used to spot new entries. */
+    function autoReviewRecentKey(entry) {
+      const value = entry && typeof entry === 'object' ? entry : {}
+      return (
+        String(value.repo || '') +
+        '#' +
+        String(value.number === undefined ? '' : value.number) +
+        '@' +
+        String(value.headSha || '') +
+        '@' +
+        String(value.finishedAt || 0)
+      )
+    }
+
+    /** Newly finished (done) results in `next` that were not in `previous`. */
+    function diffAutoReviewRecent(previous, next) {
+      const known = new Set(normalizeAutoReviewRecent(previous).map(autoReviewRecentKey))
+      return normalizeAutoReviewRecent(next).filter(
+        (entry) => entry.state === 'done' && !known.has(autoReviewRecentKey(entry)),
+      )
+    }
+
+    /** Whether auto-review polling should run, and at which cadence. */
+    function autoReviewPollDecision(input) {
+      const source = input && typeof input === 'object' ? input : {}
+      const interval = Number(source.intervalMs)
+      const intervalMs =
+        Number.isFinite(interval) && interval > 0 ? interval : AUTO_REVIEW_POLL_MS
+      if (source.supported === false) return { active: false, intervalMs, reason: 'unsupported' }
+      if (source.visible === false) return { active: false, intervalMs, reason: 'hidden' }
+      if (source.enabled !== true) return { active: false, intervalMs, reason: 'disabled' }
+      return { active: true, intervalMs, reason: 'polling' }
+    }
+
+    /** Latest auto-review state per PR key (repo#number). */
+    function autoReviewBadgesByPr(recent) {
+      const map = Object.create(null)
+      for (const entry of normalizeAutoReviewRecent(recent)) {
+        const key = entry.repo + '#' + entry.number
+        const existing = map[key]
+        if (!existing || entry.finishedAt >= existing.finishedAt) {
+          map[key] = {
+            findings: entry.findings,
+            state: entry.state,
+            verdict: entry.verdict,
+            overview: entry.overview,
+            error: entry.error,
+            finishedAt: entry.finishedAt,
+          }
+        }
+      }
+      return map
+    }
+
+    /** Badge descriptor for a PR row (CONTRACT §6.4). */
+    function autoReviewBadge(entry) {
+      if (!entry || typeof entry !== 'object') return null
+      if (entry.state === 'error') {
+        return { kind: 'error', text: '!', titleKey: 'autoReviewBadgeError', titleVars: null }
+      }
+      if (entry.state !== 'done') return null
+      const count = Number(entry.findings)
+      if (Number.isFinite(count) && count > 0) {
+        const rounded = Math.round(count)
+        return {
+          kind: 'count',
+          text: String(rounded),
+          titleKey: 'autoReviewBadgeCount',
+          titleVars: { n: rounded },
+        }
+      }
+      return { kind: 'clean', text: '✓', titleKey: 'autoReviewBadgeClean', titleVars: null }
+    }
+
+    /** True when an error means "this host has no auto-review routes". */
+    function isAutoReviewRouteMissing(error) {
+      const code = String((error && error.code) || '')
+      const message = String((error && error.message) || '')
+      if (code === 'GH_NOT_FOUND') return true
+      if (code === 'BAD_REQUEST') {
+        return (
+          message.indexOf('路由') >= 0 ||
+          message.indexOf('route') >= 0 ||
+          message.indexOf('not found') >= 0
+        )
+      }
+      return false
+    }
+
+    /** Map the auto-review-run response into what the toast should say. */
+    function autoReviewRunState(value, error) {
+      if (error) {
+        if (isAutoReviewRouteMissing(error)) {
+          return { kind: 'unsupported', messageKey: 'autoReviewUnsupported' }
+        }
+        return { kind: 'failed', messageKey: 'autoReviewRunFailed' }
+      }
+      const source = value && typeof value === 'object' ? value : {}
+      if (source.started === true) {
+        return { kind: 'started', messageKey: 'autoReviewRunStarted' }
+      }
+      const reason = String(source.reason || '')
+      if (/running|正在运行|运行中|进行中/i.test(reason)) {
+        return { kind: 'busy', messageKey: 'autoReviewRunAlready' }
+      }
+      if (/disabled|关闭/i.test(reason)) {
+        return { kind: 'disabled', messageKey: 'autoReviewRunDisabled' }
+      }
+      if (/卸载|unavailable|unsupported|路由/i.test(reason)) {
+        return { kind: 'failed', messageKey: 'autoReviewRunFailed' }
+      }
+      return { kind: 'busy', messageKey: 'autoReviewRunAlready' }
+    }
+
+    /** Toast text for a finished auto-review result. */
+    function autoReviewDoneToastText(entry, t) {
+      const value = entry && typeof entry === 'object' ? entry : null
+      if (!value) return ''
+      const pr =
+        String(value.repo || '') + '#' + String(value.number === undefined ? '' : value.number)
+      return Number(value.findings) > 0
+        ? tx(t, 'autoReviewDoneToast', { pr, n: Math.round(Number(value.findings)) })
+        : tx(t, 'autoReviewDoneToastClean', { pr })
+    }
+
+    // ---------------------------------------------------------------------
+    // v2.2 helpers: publish config/request/filter/result (CONTRACT §7)
+    // ---------------------------------------------------------------------
+
+    /** Normalize PublishConfig (auto review state file, CONTRACT §7.1). */
+    function normalizePublishConfig(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      return {
+        enabled:
+          source.enabled === undefined ? PUBLISH_DEFAULT_CONFIG.enabled : Boolean(source.enabled),
+        mode:
+          PUBLISH_MODES.indexOf(source.mode) >= 0 ? source.mode : PUBLISH_DEFAULT_CONFIG.mode,
+        minSeverity:
+          PUBLISH_MIN_SEVERITIES.indexOf(source.minSeverity) >= 0
+            ? source.minSeverity
+            : PUBLISH_DEFAULT_CONFIG.minSeverity,
+        maxComments: clampInteger(
+          source.maxComments,
+          PUBLISH_MAX_COMMENTS_MIN,
+          PUBLISH_MAX_COMMENTS_MAX,
+          PUBLISH_DEFAULT_CONFIG.maxComments,
+        ),
+      }
+    }
+
+    /** True when `severity` is at least as severe as `minSeverity` (P0 > P1 > P2). */
+    function severityAtLeast(severity, minSeverity) {
+      const sev = severityRank(severity)
+      if (sev > 3) return false
+      const min = severityRank(minSeverity)
+      return sev <= (min > 3 ? 2 : min)
+    }
+
+    /** Findings that would be published for a minimum severity (sorted). */
+    function filterPublishableFindings(findings, minSeverity) {
+      const min =
+        PUBLISH_MIN_SEVERITIES.indexOf(minSeverity) >= 0
+          ? minSeverity
+          : PUBLISH_DEFAULT_CONFIG.minSeverity
+      return sortFindings(findings).filter((finding) => {
+        if (!finding || typeof finding !== 'object') return false
+        if (
+          finding.severity !== 'P0' &&
+          finding.severity !== 'P1' &&
+          finding.severity !== 'P2'
+        ) {
+          return false
+        }
+        if (!severityAtLeast(finding.severity, min)) return false
+        if (typeof finding.file !== 'string' || finding.file === '') return false
+        const line = Number(finding.line)
+        return Number.isFinite(line) && line > 0
+      })
+    }
+
+    /** Estimated number of published comments (filtered + capped by maxComments). */
+    function countPublishableFindings(findings, minSeverity, maxComments) {
+      const limit = clampInteger(
+        maxComments,
+        PUBLISH_MAX_COMMENTS_MIN,
+        PUBLISH_MAX_COMMENTS_MAX,
+        PUBLISH_DEFAULT_CONFIG.maxComments,
+      )
+      return Math.min(filterPublishableFindings(findings, minSeverity).length, limit)
+    }
+
+    /** Build the /codex-review/review-publish body; null when required fields are missing. */
+    function buildPublishRequest(input) {
+      const source = input && typeof input === 'object' ? input : {}
+      const summary = source.summary && typeof source.summary === 'object' ? source.summary : {}
+      const repo = typeof summary.repo === 'string' ? summary.repo.trim() : ''
+      const number = Number(summary.number)
+      if (repo === '' || !Number.isFinite(number)) return null
+      const request = {
+        repo,
+        number: Math.trunc(number),
+        mode:
+          PUBLISH_MODES.indexOf(source.mode) >= 0 ? source.mode : PUBLISH_DEFAULT_CONFIG.mode,
+        minSeverity:
+          PUBLISH_MIN_SEVERITIES.indexOf(source.minSeverity) >= 0
+            ? source.minSeverity
+            : PUBLISH_DEFAULT_CONFIG.minSeverity,
+        confirm: true,
+      }
+      const body = typeof source.body === 'string' ? source.body.trim() : ''
+      if (body !== '') request.body = body.slice(0, 4000)
+      return request
+    }
+
+    /** Normalize a publish result / stored published record. */
+    function normalizePublished(value) {
+      const source = value && typeof value === 'object' ? value : null
+      if (!source) return null
+      const url =
+        typeof source.url === 'string' && /^https?:\/\//i.test(source.url) ? source.url : ''
+      const postedAt = Number(source.publishedAt)
+      const reviewId = Number(source.reviewId)
+      const comments = Number(source.comments)
+      const skipped = Number(source.skipped)
+      const result = {
+        url,
+        reviewId: Number.isFinite(reviewId) && reviewId > 0 ? Math.trunc(reviewId) : 0,
+        comments: Number.isFinite(comments) && comments > 0 ? Math.round(comments) : 0,
+        skipped: Number.isFinite(skipped) && skipped > 0 ? Math.round(skipped) : 0,
+        publishedAt: Number.isFinite(postedAt) && postedAt > 0 ? Math.round(postedAt) : 0,
+        headSha: typeof source.headSha === 'string' ? source.headSha : '',
+      }
+      if (result.url === '' && result.reviewId === 0) return null
+      return result
+    }
+
+    /** Normalize a successful /review-publish response (published:true). */
+    function normalizePublishResult(value) {
+      const source = value && typeof value === 'object' ? value : {}
+      if (source.published !== true) return null
+      return normalizePublished(source)
+    }
+
+    /** Locale key for a publish error code; '' means "use the Host message". */
+    function publishErrorKey(code) {
+      switch (String(code === undefined || code === null ? '' : code)) {
+        case 'REVIEW_NOT_READY':
+          return 'publishNotReady'
+        case 'GH_FORBIDDEN':
+          return 'publishForbidden'
+        case 'BAD_REQUEST':
+        case 'GH_NOT_FOUND':
+          return 'publishBadRequest'
+        case 'GH_RATE_LIMIT':
+          return 'publishFailed'
+        default:
+          return ''
+      }
+    }
+
+    /** True when an error means the Host has no review-publish route. */
+    function isPublishRouteMissing(error) {
+      return isAutoReviewRouteMissing(error)
+    }
+
+    /** Key for a published record: repo#number@headSha. */
+    function publishRecordKey(repo, number, headSha) {
+      const repoName = typeof repo === 'string' ? repo.trim() : ''
+      const prNumber = Number(number)
+      if (repoName === '' || !Number.isFinite(prNumber)) return ''
+      return repoName + '#' + Math.trunc(prNumber) + '@' + String(headSha || '')
+    }
+
+    /** Locale key for a publish mode label. */
+    function publishModeLabelKey(mode) {
+      return mode === 'summary'
+        ? 'publishModeSummary'
+        : mode === 'both'
+          ? 'publishModeBoth'
+          : 'publishModeInline'
+    }
+
+    /** Locale key for a publish mode hint. */
+    function publishModeHintKey(mode) {
+      return mode === 'summary'
+        ? 'publishModeSummaryHint'
+        : mode === 'both'
+          ? 'publishModeBothHint'
+          : 'publishModeInlineHint'
+    }
+
+    /** Auto-publish status label key for the auto-review card. */
+    function autoPublishStatusKey(enabled) {
+      return enabled ? 'autoPublishStatusOn' : 'autoPublishStatusOff'
     }
 
     // ---------------------------------------------------------------------
@@ -2022,6 +2640,70 @@ window.__ModuleLoader__.load({
 .cr-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:13px}
 .cr-modal-actions .cr-btn--ghost{margin-right:auto}
 
+/* ---------------- v2.1: auto review card / badges / settings section ---------------- */
+.cr-autoreview-head{display:flex;align-items:center;gap:6px}
+.cr-autoreview-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:0;border:0;background:transparent;color:var(--cr-text-2);font-size:13px;font-weight:500;line-height:18px;cursor:pointer;text-align:left}
+.cr-autoreview-toggle:hover{color:var(--cr-text)}
+.cr-autoreview-state{flex:none;display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:9px;font-size:10.5px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.cr-autoreview-state--on{color:var(--cr-green);background:color-mix(in srgb,var(--cr-green) 12%,transparent);border-color:color-mix(in srgb,var(--cr-green) 26%,transparent)}
+.cr-autoreview-state--off{color:var(--cr-text-3);background:var(--cr-raised);border-color:var(--cr-border-2)}
+.cr-autoreview-state--running{color:var(--cr-orange);background:color-mix(in srgb,var(--cr-orange) 12%,transparent);border-color:color-mix(in srgb,var(--cr-orange) 26%,transparent)}
+.cr-autoreview-body{margin-top:8px}
+.cr-autoreview-meta{display:flex;flex-direction:column;gap:3px;font-size:11.5px;line-height:17px;color:var(--cr-text-3)}
+.cr-autoreview-run{display:flex;align-items:center;gap:8px;margin-top:9px}
+.cr-autoreview-run .cr-btn{height:26px;padding:0 9px;border-radius:6px;font-size:12px}
+.cr-autoreview-error{margin-top:8px;padding:7px 9px;border-radius:7px;font-size:11px;line-height:16px;color:var(--cr-text-2);background:color-mix(in srgb,var(--cr-red) 8%,transparent);border:1px solid color-mix(in srgb,var(--cr-red) 20%,transparent)}
+.cr-autoreview-recent-title{margin-top:10px;font-size:11.5px;font-weight:600;color:var(--cr-text-2)}
+.cr-autoreview-recent{display:flex;flex-direction:column;gap:2px;margin-top:5px}
+.cr-autoreview-item{display:flex;align-items:center;gap:6px;width:calc(100% + 10px);padding:4px 5px;margin:0 -5px;border:0;border-radius:6px;background:transparent;cursor:pointer;text-align:left;color:var(--cr-text-2)}
+.cr-autoreview-item:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-autoreview-item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.cr-autoreview-item-pr{font-family:var(--cr-mono);font-size:11.5px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cr-autoreview-item-meta{font-size:10.5px;line-height:15px;color:var(--cr-text-3)}
+.cr-autoreview-item-state{flex:none;font-size:10px;font-weight:700;line-height:15px;padding:0 5px;border-radius:5px;color:var(--cr-text);background:var(--cr-raised)}
+.cr-autoreview-item-state--count{color:var(--cr-orange);background:color-mix(in srgb,var(--cr-orange) 15%,transparent)}
+.cr-autoreview-item-state--clean{color:var(--cr-green);background:color-mix(in srgb,var(--cr-green) 15%,transparent)}
+.cr-autoreview-item-state--error{color:var(--cr-red);background:color-mix(in srgb,var(--cr-red) 15%,transparent)}
+.cr-autoreview-empty{font-size:12px;line-height:18px;color:var(--cr-text-3)}
+.cr-autoreview-degraded{font-size:12px;line-height:18px;color:var(--cr-text-3);padding:2px 0}
+.cr-autoreview-degraded b{display:block;margin-bottom:2px;color:var(--cr-text-2);font-weight:600}
+.cr-row-auto{flex:none;margin-left:auto;display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 4px;border-radius:9px;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;border:1px solid transparent}
+.cr-row-auto--count{color:var(--cr-orange);background:color-mix(in srgb,var(--cr-orange) 14%,transparent);border-color:color-mix(in srgb,var(--cr-orange) 28%,transparent)}
+.cr-row-auto--clean{color:var(--cr-green);background:color-mix(in srgb,var(--cr-green) 14%,transparent);border-color:color-mix(in srgb,var(--cr-green) 28%,transparent)}
+.cr-row-auto--error{color:var(--cr-red);background:color-mix(in srgb,var(--cr-red) 14%,transparent);border-color:color-mix(in srgb,var(--cr-red) 28%,transparent)}
+.cr-auto-section{display:flex;flex-direction:column;gap:8px}
+.cr-auto-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--cr-text-2)}
+.cr-auto-title-spacer{flex:1}
+.cr-auto-note{margin:0;font-size:10.5px;line-height:15px;color:var(--cr-text-3)}
+.cr-auto-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cr-auto-label{flex:none;min-width:64px;font-size:11.5px;color:var(--cr-text-2)}
+.cr-auto-presets{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.cr-auto-preset{height:22px;padding:0 8px;border:1px solid var(--cr-border-2);border-radius:11px;background:transparent;color:var(--cr-text-3);font-size:11px;cursor:pointer}
+.cr-auto-preset:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-auto-preset--active{background:var(--cr-raised);border-color:var(--cr-border-strong);color:var(--cr-text)}
+.cr-auto-num{width:64px;height:24px;padding:0 7px;border:1px solid var(--cr-border-2);border-radius:6px;background:var(--cr-bg);color:var(--cr-text);font:inherit;font-size:11.5px}
+.cr-auto-query{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid var(--cr-border-2);border-radius:6px;background:var(--cr-bg);color:var(--cr-text);font:inherit;font-size:11.5px}
+.cr-auto-query:focus,.cr-auto-num:focus{outline:none;border-color:var(--cr-border-strong)}
+.cr-root .cr-toast--action{display:flex;align-items:center;gap:10px;bottom:74px;max-width:min(560px,calc(100% - 42px))}
+.cr-toast-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cr-toast-btn{flex:none;height:20px;padding:0 7px;border:1px solid var(--cr-border-strong);border-radius:5px;background:transparent;color:var(--cr-text);font-size:11px;cursor:pointer}
+.cr-toast-btn:hover{background:var(--cr-raised)}
+
+/* ---------------- v2.2: publish review to GitHub ---------------- */
+.cr-publish-published{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border:1px solid color-mix(in srgb,var(--cr-green) 32%,transparent);border-radius:6px;background:color-mix(in srgb,var(--cr-green) 10%,transparent);color:var(--cr-green);font-size:12px;font-weight:500;text-decoration:none;cursor:pointer;white-space:nowrap}
+.cr-publish-published:hover{background:color-mix(in srgb,var(--cr-green) 16%,transparent)}
+.cr-publish-expected{font-weight:600;color:var(--cr-text)}
+.cr-publish-error{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:11.5px;line-height:17px;color:var(--cr-text-2);background:color-mix(in srgb,var(--cr-red) 8%,transparent);border:1px solid color-mix(in srgb,var(--cr-red) 22%,transparent)}
+.cr-publish-error b{color:var(--cr-red);font-weight:600;margin-right:5px}
+.cr-autoreview-item-row{display:flex;align-items:center;gap:4px;margin:0 -5px}
+.cr-autoreview-item-row .cr-autoreview-item{flex:1;min-width:0;margin:0}
+.cr-autoreview-published{flex:none;padding:0 5px;border-radius:4px;font-size:10.5px;line-height:16px;color:var(--cr-blue);text-decoration:none;white-space:nowrap}
+.cr-autoreview-published:hover{text-decoration:underline;background:var(--cr-hover)}
+.cr-auto-publish-confirm{margin-top:6px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--cr-orange) 10%,transparent);border:1px solid color-mix(in srgb,var(--cr-orange) 24%,transparent);font-size:11px;line-height:16px;color:var(--cr-text-2)}
+.cr-auto-publish-confirm b{display:block;margin-bottom:3px;color:var(--cr-text)}
+.cr-auto-publish-actions{display:flex;gap:6px;margin-top:7px}
+.cr-auto-publish-status{font-size:10.5px;line-height:15px;color:var(--cr-text-3)}
+
 /* ---------------- v2: merge confirmation dialog ---------------- */
 .cr-modal-backdrop--center{align-items:center;justify-content:center;padding:24px}
 .cr-modal--merge{width:460px}
@@ -2401,6 +3083,26 @@ window.__ModuleLoader__.load({
           h(RelativeTime, { iso: pr.updatedAt, t }),
           pr.isDraft ? h('span', { className: 'cr-badge-draft' }, tx(t, 'draft')) : null,
           stateKey === 'closed' ? h('span', { className: 'cr-row-sep' }, '#' + pr.number) : null,
+          props.autoBadge
+            ? h(
+                'span',
+                {
+                  className: 'cr-row-auto cr-row-auto--' + props.autoBadge.kind,
+                  'data-auto-badge': props.autoBadge.kind,
+                  title: tx(
+                    t,
+                    props.autoBadge.titleKey,
+                    props.autoBadge.titleVars || undefined,
+                  ),
+                  'aria-label': tx(
+                    t,
+                    props.autoBadge.titleKey,
+                    props.autoBadge.titleVars || undefined,
+                  ),
+                },
+                props.autoBadge.text,
+              )
+            : null,
         ),
       )
     }
@@ -2487,6 +3189,11 @@ window.__ModuleLoader__.load({
                     h(PrRow, {
                       key: (pr.repo || '') + '#' + pr.number,
                       pr,
+                      autoBadge: autoReviewBadge(
+                        (props.autoBadges || Object.create(null))[
+                          String(pr.repo || '') + '#' + String(pr.number)
+                        ],
+                      ),
                       t,
                       active: selectedNumber !== null && Number(pr.number) === Number(selectedNumber),
                       onSelect: props.onSelect,
@@ -3263,6 +3970,40 @@ window.__ModuleLoader__.load({
                   tx(t, 'cancel'),
                 )
               : null,
+            !running &&
+            state === 'done' &&
+            findings.length > 0 &&
+            props.publish &&
+            props.publish.supported
+              ? props.publish.published && props.publish.published.url
+                ? h(
+                    'a',
+                    {
+                      className: 'cr-publish-published',
+                      'data-action': 'review-published-link',
+                      'data-publish-published': 'true',
+                      href: props.publish.published.url,
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      title: tx(t, 'publishPublishedLink'),
+                    },
+                    Icon('check', 12, { strokeWidth: 2 }),
+                    tx(t, 'publishPublishedLink'),
+                  )
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn',
+                      'data-action': 'review-publish',
+                      onClick: () => {
+                        if (typeof props.publish.onOpen === 'function') props.publish.onOpen()
+                      },
+                    },
+                    Icon('comment', 12),
+                    tx(t, 'publish'),
+                  )
+              : null,
             !running
               ? h(
                   'button',
@@ -3404,6 +4145,7 @@ window.__ModuleLoader__.load({
         h(ReviewCard, {
           review: props.review,
           t,
+          publish: props.publish,
           onStart: props.onStartReview,
           onRetry: props.onRetryReview,
           onCancel: props.onCancelReview,
@@ -4141,6 +4883,437 @@ window.__ModuleLoader__.load({
      * persisted immediately; Esc / the backdrop close it and focus returns to
      * the gear (handled by the workbench).
      */
+    /**
+     * Auto-review block at the top of the review-settings popover (CONTRACT §6.4).
+     * Every change is POSTed immediately; the Host echo is authoritative.
+     */
+    function AutoReviewSettings(props) {
+      const t = props.t
+      const supported = props.supported !== false
+      const status = props.autoReview ? normalizeAutoReviewStatus(props.autoReview) : null
+      const config = status ? status.config : normalizeAutoReviewConfig(null)
+      const busy = Boolean(props.busy)
+      const patch = (value) => {
+        if (typeof props.onPatch === 'function') props.onPatch(value)
+      }
+      const [intervalDraft, setIntervalDraft] = useState(String(config.intervalSeconds))
+      const [maxDraft, setMaxDraft] = useState(String(config.maxPerCycle))
+      const [queryDraft, setQueryDraft] = useState(config.query)
+      const publish = status && status.publish ? status.publish : null
+      const [publishPending, setPublishPending] = useState(false)
+      const [maxCommentsDraft, setMaxCommentsDraft] = useState(
+        String(publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments),
+      )
+      useEffect(() => {
+        setIntervalDraft(String(config.intervalSeconds))
+        setMaxDraft(String(config.maxPerCycle))
+        setQueryDraft(config.query)
+      }, [config.intervalSeconds, config.maxPerCycle, config.query, props.resetToken])
+      useEffect(() => {
+        setMaxCommentsDraft(
+          String(publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments),
+        )
+        if (publish && publish.enabled) setPublishPending(false)
+      }, [publish && publish.maxComments, publish && publish.enabled, props.resetToken])
+      const patchPublish = (partial) => patch({ publish: partial })
+      const commitMaxComments = () => {
+        const current = publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments
+        const value = clampInteger(
+          maxCommentsDraft,
+          PUBLISH_MAX_COMMENTS_MIN,
+          PUBLISH_MAX_COMMENTS_MAX,
+          current,
+        )
+        setMaxCommentsDraft(String(value))
+        if (value !== current) patchPublish({ maxComments: value })
+      }
+      const commitInterval = (raw) => {
+        const value = clampInteger(
+          raw,
+          AUTO_REVIEW_INTERVAL_MIN,
+          AUTO_REVIEW_INTERVAL_MAX,
+          config.intervalSeconds,
+        )
+        setIntervalDraft(String(value))
+        if (value !== config.intervalSeconds) patch({ intervalSeconds: value })
+      }
+      const commitMax = (raw) => {
+        const value = clampInteger(
+          raw,
+          AUTO_REVIEW_MAX_PER_CYCLE_MIN,
+          AUTO_REVIEW_MAX_PER_CYCLE_MAX,
+          config.maxPerCycle,
+        )
+        setMaxDraft(String(value))
+        if (value !== config.maxPerCycle) patch({ maxPerCycle: value })
+      }
+      const commitQuery = () => {
+        const next = String(queryDraft || '').trim()
+        if (next === '') {
+          setQueryDraft(config.query)
+          return
+        }
+        if (next !== config.query) patch({ query: next })
+      }
+      const numberKeyDown = (commit) => (event) => {
+        if (event && event.key === 'Enter') {
+          event.preventDefault()
+          commit()
+        }
+      }
+      if (!supported) {
+        return h(
+          'fieldset',
+          { className: 'cr-field', 'data-auto-settings': 'degraded' },
+          h('legend', null, tx(t, 'autoReview')),
+          h(
+            'p',
+            { className: 'cr-auto-note' },
+            tx(t, 'autoReviewUnsupported') + ' · ' + tx(t, 'autoReviewUnsupportedHint'),
+          ),
+        )
+      }
+      return h(
+        'fieldset',
+        { className: 'cr-field', 'data-auto-settings': 'ready' },
+        h(
+          'legend',
+          null,
+          h(
+            'span',
+            { className: 'cr-auto-title' },
+            tx(t, 'autoReview'),
+            busy ? h('span', { className: 'cr-spinner', style: { width: 9, height: 9 } }) : null,
+          ),
+        ),
+        h(
+          'div',
+          { className: 'cr-auto-section' },
+          h(
+            'label',
+            { className: 'cr-option' },
+            h('input', {
+              type: 'checkbox',
+              'data-auto-enabled': 'toggle',
+              checked: config.enabled,
+              disabled: busy,
+              onChange: (event) =>
+                patch({ enabled: Boolean(event && event.target && event.target.checked) }),
+            }),
+            h(
+              'span',
+              { className: 'cr-option-text' },
+              h('span', { className: 'cr-option-label' }, tx(t, 'autoReviewEnabled')),
+              h('span', { className: 'cr-option-hint' }, tx(t, 'autoReviewHint')),
+            ),
+          ),
+          !config.enabled
+            ? h('p', { className: 'cr-auto-note' }, tx(t, 'autoReviewDisabledBody'))
+            : null,
+          h(
+            React.Fragment,
+            null,
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoReviewInterval')),
+                  h(
+                    'div',
+                    { className: 'cr-auto-presets' },
+                    AUTO_REVIEW_INTERVAL_PRESETS.map((preset) =>
+                      h(
+                        'button',
+                        {
+                          key: preset,
+                          type: 'button',
+                          className:
+                            'cr-auto-preset' +
+                            (config.intervalSeconds === preset ? ' cr-auto-preset--active' : ''),
+                          'data-auto-interval-preset': String(preset),
+                          disabled: busy,
+                          onClick: () => commitInterval(preset),
+                        },
+                        String(preset) + 's',
+                      ),
+                    ),
+                    h('input', {
+                      type: 'number',
+                      className: 'cr-auto-num',
+                      min: AUTO_REVIEW_INTERVAL_MIN,
+                      max: AUTO_REVIEW_INTERVAL_MAX,
+                      step: 10,
+                      value: intervalDraft,
+                      'data-auto-interval-input': 'ready',
+                      'aria-label': tx(t, 'autoReviewInterval'),
+                      disabled: busy,
+                      onChange: (event) => setIntervalDraft(String(event.target.value)),
+                      onBlur: () => commitInterval(intervalDraft),
+                      onKeyDown: numberKeyDown(() => commitInterval(intervalDraft)),
+                    }),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'depth')),
+                  DEPTHS.map((depth) =>
+                    h(
+                      'label',
+                      { key: depth, className: 'cr-option', style: { padding: '2px 5px' } },
+                      h('input', {
+                        type: 'radio',
+                        name: 'cr-auto-depth',
+                        'data-auto-depth': depth,
+                        checked: config.depth === depth,
+                        disabled: busy,
+                        onChange: () => patch({ depth }),
+                      }),
+                      h(
+                        'span',
+                        { className: 'cr-option-text' },
+                        h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
+                      ),
+                    ),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'severityThreshold')),
+                  THRESHOLDS.map((threshold) =>
+                    h(
+                      'label',
+                      { key: threshold, className: 'cr-option', style: { padding: '2px 5px' } },
+                      h('input', {
+                        type: 'radio',
+                        name: 'cr-auto-threshold',
+                        'data-auto-threshold': threshold,
+                        checked: config.severityThreshold === threshold,
+                        disabled: busy,
+                        onChange: () => patch({ severityThreshold: threshold }),
+                      }),
+                      h(
+                        'span',
+                        { className: 'cr-option-text' },
+                        h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
+                      ),
+                    ),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h(
+                    'label',
+                    { className: 'cr-option', style: { padding: '2px 5px' } },
+                    h('input', {
+                      type: 'checkbox',
+                      'data-auto-drafts': 'toggle',
+                      checked: config.includeDrafts,
+                      disabled: busy,
+                      onChange: (event) =>
+                        patch({
+                          includeDrafts: Boolean(event && event.target && event.target.checked),
+                        }),
+                    }),
+                    h(
+                      'span',
+                      { className: 'cr-option-text' },
+                      h('span', { className: 'cr-option-label' }, tx(t, 'autoReviewIncludeDrafts')),
+                    ),
+                  ),
+                  h(
+                    'span',
+                    { className: 'cr-auto-label', style: { minWidth: 0 } },
+                    tx(t, 'autoReviewMaxPerCycle'),
+                  ),
+                  h('input', {
+                    type: 'number',
+                    className: 'cr-auto-num',
+                    min: AUTO_REVIEW_MAX_PER_CYCLE_MIN,
+                    max: AUTO_REVIEW_MAX_PER_CYCLE_MAX,
+                    step: 1,
+                    value: maxDraft,
+                    'data-auto-max': 'ready',
+                    'aria-label': tx(t, 'autoReviewMaxPerCycle'),
+                    disabled: busy,
+                    onChange: (event) => setMaxDraft(String(event.target.value)),
+                    onBlur: () => commitMax(maxDraft),
+                    onKeyDown: numberKeyDown(() => commitMax(maxDraft)),
+                  }),
+                ),
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoReviewQuery')),
+                  h('input', {
+                    type: 'text',
+                    className: 'cr-auto-query',
+                    value: queryDraft,
+                    spellCheck: false,
+                    'data-auto-query': 'ready',
+                    'aria-label': tx(t, 'autoReviewQuery'),
+                    disabled: busy,
+                    onChange: (event) => setQueryDraft(String(event.target.value)),
+                    onBlur: commitQuery,
+                    onKeyDown: numberKeyDown(commitQuery),
+                  }),
+                ),
+                h('p', { className: 'cr-auto-note' }, tx(t, 'autoReviewSettingsNote')),
+          ),
+          publish
+            ? h(
+                'div',
+                {
+                  className: 'cr-auto-row',
+                  'data-auto-publish-section': 'ready',
+                  style: { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingTop: 6, borderTop: '1px solid var(--cr-border)' },
+                },
+                h(
+                  'label',
+                  { className: 'cr-option', style: { padding: '2px 5px' } },
+                  h('input', {
+                    type: 'checkbox',
+                    'data-auto-publish': 'toggle',
+                    checked: publish.enabled || publishPending,
+                    disabled: busy,
+                    onChange: (event) => {
+                      const next = Boolean(event && event.target && event.target.checked)
+                      if (next && !publish.enabled) {
+                        setPublishPending(true)
+                      } else if (!next) {
+                        setPublishPending(false)
+                        if (publish.enabled) patchPublish({ enabled: false })
+                      }
+                    },
+                  }),
+                  h(
+                    'span',
+                    { className: 'cr-option-text' },
+                    h('span', { className: 'cr-option-label' }, tx(t, 'autoPublish')),
+                    h('span', { className: 'cr-option-hint' }, tx(t, 'autoPublishHint')),
+                  ),
+                ),
+                publishPending && !publish.enabled
+                  ? h(
+                      'div',
+                      { className: 'cr-auto-publish-confirm', 'data-auto-publish-confirm': 'ready' },
+                      h('b', null, tx(t, 'autoPublishConfirmTitle')),
+                      h('span', null, tx(t, 'autoPublishConfirmBody')),
+                      h(
+                        'div',
+                        { className: 'cr-auto-publish-actions' },
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'cr-btn cr-btn--primary',
+                            style: { height: 24, padding: '0 9px', borderRadius: 6, fontSize: 11 },
+                            'data-action': 'auto-publish-confirm',
+                            disabled: busy,
+                            onClick: () => {
+                              setPublishPending(false)
+                              patchPublish({ enabled: true })
+                            },
+                          },
+                          tx(t, 'autoPublishConfirm'),
+                        ),
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'cr-btn cr-btn--ghost',
+                            style: { height: 24, fontSize: 11 },
+                            'data-action': 'auto-publish-cancel',
+                            onClick: () => setPublishPending(false),
+                          },
+                          tx(t, 'cancel'),
+                        ),
+                      ),
+                    )
+                  : null,
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoPublishMode')),
+                  PUBLISH_MODES.map((value) =>
+                    h(
+                      'label',
+                      { key: value, className: 'cr-option', style: { padding: '2px 5px' } },
+                      h('input', {
+                        type: 'radio',
+                        name: 'cr-auto-publish-mode',
+                        'data-auto-publish-mode': value,
+                        checked: publish.mode === value,
+                        disabled: busy,
+                        onChange: () => patchPublish({ mode: value }),
+                      }),
+                      h(
+                        'span',
+                        { className: 'cr-option-text' },
+                        h('span', { className: 'cr-option-label' }, tx(t, publishModeLabelKey(value))),
+                      ),
+                    ),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'cr-auto-row' },
+                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoPublishMinSeverity')),
+                  PUBLISH_MIN_SEVERITIES.map((value) =>
+                    h(
+                      'label',
+                      { key: value, className: 'cr-option', style: { padding: '2px 5px' } },
+                      h('input', {
+                        type: 'radio',
+                        name: 'cr-auto-publish-min',
+                        'data-auto-publish-min': value,
+                        checked: publish.minSeverity === value,
+                        disabled: busy,
+                        onChange: () => patchPublish({ minSeverity: value }),
+                      }),
+                      h(
+                        'span',
+                        { className: 'cr-option-text' },
+                        h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(value))),
+                      ),
+                    ),
+                  ),
+                  h(
+                    'span',
+                    { className: 'cr-auto-label', style: { minWidth: 0 } },
+                    tx(t, 'autoPublishMaxComments'),
+                  ),
+                  h('input', {
+                    type: 'number',
+                    className: 'cr-auto-num',
+                    min: PUBLISH_MAX_COMMENTS_MIN,
+                    max: PUBLISH_MAX_COMMENTS_MAX,
+                    step: 1,
+                    value: maxCommentsDraft,
+                    'data-auto-publish-max': 'ready',
+                    'aria-label': tx(t, 'autoPublishMaxComments'),
+                    disabled: busy,
+                    onChange: (event) => setMaxCommentsDraft(String(event.target.value)),
+                    onBlur: commitMaxComments,
+                    onKeyDown: numberKeyDown(commitMaxComments),
+                  }),
+                ),
+                h('p', { className: 'cr-auto-note' }, tx(t, 'autoPublishNote')),
+                h(
+                  'div',
+                  {
+                    className: 'cr-auto-publish-status',
+                    'data-auto-publish-settings-status': publish.enabled ? 'on' : 'off',
+                  },
+                  tx(t, autoPublishStatusKey(publish.enabled)),
+                ),
+              )
+            : null,
+        ),
+      )
+    }
+
     function ReviewSettings(props) {
       const t = props.t
       const settings = normalizeSettings(props.settings)
@@ -4237,6 +5410,14 @@ window.__ModuleLoader__.load({
               Icon('close', 13, { strokeWidth: 2 }),
             ),
           ),
+          h(AutoReviewSettings, {
+            t,
+            autoReview: props.autoReview,
+            supported: props.autoReviewSupported,
+            busy: props.autoReviewBusy,
+            resetToken: props.autoReviewResetToken,
+            onPatch: props.onAutoReviewPatch,
+          }),
           h(
             'fieldset',
             { className: 'cr-field' },
@@ -4561,6 +5742,557 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Publish-review confirmation dialog (CONTRACT §7.3). Nothing is sent until
+     * 确认发布; cancelling / Esc / backdrop never calls the publish route.
+     */
+    function PublishDialog(props) {
+      const t = props.t
+      const summary = props.summary && typeof props.summary === 'object' ? props.summary : {}
+      const headSha = typeof props.headSha === 'string' ? props.headSha : ''
+      const mode = PUBLISH_MODES.indexOf(props.mode) >= 0 ? props.mode : PUBLISH_DEFAULT_CONFIG.mode
+      const minSeverity =
+        PUBLISH_MIN_SEVERITIES.indexOf(props.minSeverity) >= 0
+          ? props.minSeverity
+          : PUBLISH_DEFAULT_CONFIG.minSeverity
+      const phase = props.phase === 'submitting' ? 'submitting' : 'idle'
+      const error = props.error && typeof props.error === 'object' ? props.error : null
+      const expectedNumber = Number(props.expected)
+      const expected =
+        Number.isFinite(expectedNumber) && expectedNumber > 0 ? Math.round(expectedNumber) : 0
+      const dialogRef = useRef(null)
+      const disabled = phase === 'submitting'
+      useEffect(() => {
+        try {
+          const node = dialogRef.current
+          const first =
+            node && typeof node.querySelector === 'function'
+              ? node.querySelector('input[type="radio"]')
+              : null
+          const target = first || node
+          if (target && typeof target.focus === 'function') target.focus()
+        } catch {
+          /* focus is best effort */
+        }
+      }, [])
+      const cancel = () => {
+        if (disabled) return
+        if (typeof props.onCancel === 'function') props.onCancel()
+      }
+      const onKeyDown = (event) => {
+        try {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            cancel()
+          }
+        } catch {
+          /* never break the dialog */
+        }
+      }
+      const number = summary.number === undefined ? '' : summary.number
+      const repoName = String(summary.repo || '')
+      const errorKey = error ? publishErrorKey(error.code) : ''
+      return h(
+        'div',
+        {
+          className: 'cr-modal-backdrop cr-modal-backdrop--center',
+          'data-cr-publish-dialog': 'ready',
+          onMouseDown: (event) => {
+            if (event && event.target === event.currentTarget) cancel()
+          },
+        },
+        h(
+          'div',
+          {
+            className: 'cr-modal cr-modal--merge',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'cr-publish-title',
+            tabIndex: -1,
+            ref: dialogRef,
+            onKeyDown,
+            'data-publish-phase': phase,
+            'data-publish-mode': mode,
+          },
+          h(
+            'div',
+            { className: 'cr-modal-head' },
+            h(
+              'span',
+              { className: 'cr-modal-title', id: 'cr-publish-title' },
+              tx(t, 'publishDialogTitle'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-modal-close',
+                'aria-label': tx(t, 'cancel'),
+                title: tx(t, 'cancel'),
+                disabled,
+                onClick: cancel,
+              },
+              Icon('close', 13, { strokeWidth: 2 }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'cr-merge-rows' },
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'publishRepo')),
+              h(
+                'span',
+                { className: 'cr-merge-row-val cr-merge-row-val--mono', 'data-publish-repo': 'ready' },
+                repoName + (number === '' ? '' : ' #' + number),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'publishHeadSha')),
+              h(
+                'span',
+                { className: 'cr-merge-row-val cr-merge-row-val--mono', title: headSha },
+                shortSha(headSha) || '—',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'cr-merge-row' },
+              h('span', { className: 'cr-merge-row-key' }, tx(t, 'publishExpected')),
+              h(
+                'span',
+                {
+                  className: 'cr-merge-row-val cr-publish-expected',
+                  'data-publish-expected': String(expected),
+                },
+                tx(t, 'publishExpectedValue', { n: expected }),
+              ),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'publishMode')),
+            PUBLISH_MODES.map((value) =>
+              h(
+                'label',
+                { key: value, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-publish-mode',
+                  value,
+                  'data-publish-mode-value': value,
+                  checked: mode === value,
+                  disabled,
+                  onChange: () => {
+                    if (typeof props.onModeChange === 'function') props.onModeChange(value)
+                  },
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, publishModeLabelKey(value))),
+                  h('span', { className: 'cr-option-hint' }, tx(t, publishModeHintKey(value))),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'publishMinSeverity')),
+            PUBLISH_MIN_SEVERITIES.map((value) =>
+              h(
+                'label',
+                { key: value, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-publish-min-severity',
+                  value,
+                  'data-publish-min-value': value,
+                  checked: minSeverity === value,
+                  disabled,
+                  onChange: () => {
+                    if (typeof props.onMinSeverityChange === 'function') {
+                      props.onMinSeverityChange(value)
+                    }
+                  },
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(value))),
+                ),
+              ),
+            ),
+            h('p', { className: 'cr-modal-note' }, tx(t, 'publishMinSeverityHint')),
+          ),
+          h('div', { className: 'cr-merge-risk', role: 'note' }, Icon('alert', 12), ' ', tx(t, 'publishWarning')),
+          error
+            ? h(
+                'div',
+                {
+                  className: 'cr-publish-error',
+                  'data-publish-error': error.code || 'INTERNAL',
+                  role: 'alert',
+                },
+                h('b', null, String(error.code || 'INTERNAL')),
+                h('span', null, errorKey ? tx(t, errorKey) : String(error.message || '')),
+              )
+            : null,
+          h(
+            'div',
+            { className: 'cr-modal-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--ghost',
+                'data-action': 'publish-cancel',
+                disabled,
+                onClick: cancel,
+              },
+              tx(t, 'cancel'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--primary',
+                'data-action': 'publish-confirm',
+                disabled,
+                'aria-busy': disabled ? 'true' : 'false',
+                onClick: () => {
+                  if (!disabled && typeof props.onConfirm === 'function') props.onConfirm()
+                },
+              },
+              disabled ? h('span', { className: 'cr-spinner' }) : Icon('comment', 13),
+              tx(t, disabled ? 'publishSubmitting' : 'publishConfirm'),
+            ),
+          ),
+        ),
+      )
+    }
+
+    /**
+     * Right-column auto review card (CONTRACT §6.4): collapsible state, recent
+     * results, "check now", and the degraded block for an older Host.
+     */
+    function AutoReviewCard(props) {
+      const t = props.t
+      const state = props.state && typeof props.state === 'object' ? props.state : {}
+      const supported = state.supported !== false
+      const status = state.status ? normalizeAutoReviewStatus(state.status) : null
+      const config = status ? status.config : normalizeAutoReviewConfig(null)
+      const open = props.open !== false
+      const runBusy = Boolean(props.runBusy)
+      const running = Boolean(status && status.running)
+      const recent = status ? status.recent : []
+      const shown = recent.slice(0, 6)
+      const toggleLabel = open ? tx(t, 'autoReviewCollapse') : tx(t, 'autoReviewExpand')
+      const stateLabel = running
+        ? tx(t, 'autoReviewRunning')
+        : config.enabled
+          ? tx(t, 'autoReviewStatusOn')
+          : tx(t, 'autoReviewStatusOff')
+      const stateClass = running ? 'running' : config.enabled ? 'on' : 'off'
+      const relativeLabel = (value) => {
+        const relative = relativeTime(value, props.now)
+        return relative ? formatRelative(relative, t) : ''
+      }
+      const lastText =
+        status && status.lastCycleAt > 0
+          ? relativeLabel(status.lastCycleAt)
+          : tx(t, 'autoReviewNever')
+      return h(
+        'section',
+        {
+          className: 'cr-sec',
+          'data-cr-autoreview': 'ready',
+          'data-auto-supported': supported ? 'true' : 'false',
+          'data-auto-enabled': config.enabled ? 'true' : 'false',
+          'data-auto-running': running ? 'true' : 'false',
+          'data-auto-recent': String(recent.length),
+        },
+        h(
+          'div',
+          { className: 'cr-autoreview-head' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-autoreview-toggle',
+              'aria-expanded': open ? 'true' : 'false',
+              'data-action': 'auto-review-toggle',
+              title: toggleLabel,
+              onClick: () => {
+                if (typeof props.onToggle === 'function') props.onToggle()
+              },
+            },
+            h(
+              'span',
+              { className: 'cr-chev', style: { transform: open ? 'rotate(90deg)' : 'none' } },
+              Icon('chevronRight', 13, { strokeWidth: 2 }),
+            ),
+            h('span', null, tx(t, 'autoReview')),
+            h(
+              'span',
+              { className: 'cr-autoreview-state cr-autoreview-state--' + stateClass },
+              running
+                ? h('span', { className: 'cr-spinner', style: { width: 9, height: 9 } })
+                : null,
+              stateLabel,
+            ),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-chat-head-btn',
+              'data-action': 'auto-review-refresh',
+              'aria-label': tx(t, 'autoReviewRefresh'),
+              title: tx(t, 'autoReviewRefresh'),
+              disabled: !supported,
+              onClick: () => {
+                if (typeof props.onRefresh === 'function') props.onRefresh()
+              },
+            },
+            Icon('refresh', 13),
+          ),
+        ),
+        open
+          ? h(
+              'div',
+              { className: 'cr-autoreview-body' },
+              !supported
+                ? h(
+                    'div',
+                    { className: 'cr-autoreview-degraded' },
+                    h('b', null, tx(t, 'autoReviewUnsupported')),
+                    h('span', null, tx(t, 'autoReviewUnsupportedHint')),
+                  )
+                : !status
+                  ? h(
+                      'div',
+                      { className: 'cr-autoreview-empty' },
+                      state.error
+                        ? tx(t, 'autoReviewLastError', {
+                            message:
+                              String(
+                                (state.error && (state.error.message || state.error.code)) || '',
+                              ) || String(state.error),
+                          })
+                        : tx(t, 'loading'),
+                    )
+                  : config.enabled
+                    ? h(
+                        React.Fragment,
+                        null,
+                        h(
+                          'div',
+                          { className: 'cr-autoreview-meta' },
+                          h(
+                            'span',
+                            null,
+                            tx(t, 'autoReviewLastCycle', { time: lastText }),
+                          ),
+                          running || status.nextCycleAt > 0
+                            ? h(
+                                'span',
+                                null,
+                                running
+                                  ? tx(t, 'autoReviewRunning')
+                                  : tx(t, 'autoReviewNextCycle', {
+                                      time: relativeLabel(status.nextCycleAt),
+                                    }),
+                              )
+                            : null,
+                          h('span', null, tx(t, 'autoReviewSeen', { n: status.seenCount })),
+                          status.publish
+                            ? h(
+                                'span',
+                                {
+                                  className: 'cr-auto-publish-status',
+                                  'data-auto-publish-status': status.publish.enabled
+                                    ? 'on'
+                                    : 'off',
+                                },
+                                tx(t, autoPublishStatusKey(status.publish.enabled)),
+                              )
+                            : null,
+                        ),
+                        status.lastError
+                          ? h(
+                              'div',
+                              { className: 'cr-autoreview-error', 'data-auto-last-error': 'true' },
+                              tx(t, 'autoReviewLastError', {
+                                message: status.lastError.message || status.lastError.code,
+                              }),
+                            )
+                          : null,
+                        h(
+                          'div',
+                          { className: 'cr-autoreview-run' },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'cr-btn',
+                              'data-action': 'auto-review-run',
+                              disabled: running || runBusy,
+                              'aria-busy': running ? 'true' : 'false',
+                              onClick: () => {
+                                if (typeof props.onRun === 'function') props.onRun()
+                              },
+                            },
+                            running || runBusy
+                              ? h('span', { className: 'cr-spinner' })
+                              : Icon('refresh', 12),
+                            running ? tx(t, 'autoReviewRunning') : tx(t, 'autoReviewRunNow'),
+                          ),
+                        ),
+                        h(
+                          'div',
+                          { className: 'cr-autoreview-recent-title' },
+                          tx(t, 'autoReviewRecent'),
+                        ),
+                        recent.length === 0
+                          ? h(
+                              'div',
+                              { className: 'cr-autoreview-empty', style: { marginTop: 4 } },
+                              tx(t, 'autoReviewNoRecent'),
+                            )
+                          : h(
+                              'div',
+                              { className: 'cr-autoreview-recent' },
+                              shown.map((entry, index) => {
+                                const badge = autoReviewBadge(entry)
+                                const meta =
+                                  entry.state === 'error'
+                                    ? tx(t, 'autoReviewRecentError') +
+                                      (entry.error && entry.error.message
+                                        ? ' · ' + entry.error.message
+                                        : '')
+                                    : entry.findings > 0
+                                      ? tx(t, 'findingsCount', { n: entry.findings })
+                                      : tx(t, 'autoReviewRecentClean')
+                                return h(
+                                  'div',
+                                  {
+                                    key: autoReviewRecentKey(entry) + ':' + index,
+                                    className: 'cr-autoreview-item-row',
+                                  },
+                                  h(
+                                    'button',
+                                    {
+                                      type: 'button',
+                                      className: 'cr-autoreview-item',
+                                      'data-action': 'auto-review-jump',
+                                      'data-auto-pr':
+                                        String(entry.repo || '') + '#' + String(entry.number),
+                                      title: entry.error
+                                        ? entry.error.message
+                                        : entry.overview || '',
+                                      onClick: () => {
+                                        if (typeof props.onJump === 'function') props.onJump(entry)
+                                      },
+                                    },
+                                    h(
+                                      'span',
+                                      { className: 'cr-autoreview-item-main' },
+                                      h(
+                                        'span',
+                                        { className: 'cr-autoreview-item-pr' },
+                                        String(entry.repo || '').split('/').pop() +
+                                          ' #' +
+                                          String(entry.number),
+                                      ),
+                                      h(
+                                        'span',
+                                        { className: 'cr-autoreview-item-meta' },
+                                        meta +
+                                          (entry.finishedAt > 0
+                                            ? ' · ' + relativeLabel(entry.finishedAt)
+                                            : ''),
+                                      ),
+                                    ),
+                                    badge
+                                      ? h(
+                                          'span',
+                                          {
+                                            className:
+                                              'cr-autoreview-item-state cr-autoreview-item-state--' +
+                                              badge.kind,
+                                          },
+                                          badge.text,
+                                        )
+                                      : null,
+                                  ),
+                                  entry.published && entry.published.url
+                                    ? h(
+                                        'a',
+                                        {
+                                          className: 'cr-autoreview-published',
+                                          'data-auto-published': 'link',
+                                          href: entry.published.url,
+                                          target: '_blank',
+                                          rel: 'noopener noreferrer',
+                                          title: tx(t, 'publishPublishedBadge'),
+                                        },
+                                        tx(t, 'publishView'),
+                                      )
+                                    : null,
+                                )
+                              }),
+                            ),
+                        recent.length > shown.length
+                          ? h(
+                              'div',
+                              { className: 'cr-autoreview-empty', style: { marginTop: 4 } },
+                              tx(t, 'autoReviewMore', { n: recent.length - shown.length }),
+                            )
+                          : null,
+                      )
+                    : h(
+                        'div',
+                        {
+                          className: 'cr-autoreview-empty',
+                          style: { display: 'flex', flexDirection: 'column', gap: 6 },
+                        },
+                        h(
+                          'span',
+                          { style: { fontWeight: 600, color: 'var(--cr-text-2)' } },
+                          tx(t, 'autoReviewDisabledState'),
+                        ),
+                        h('span', null, tx(t, 'autoReviewDisabledBody')),
+                        h(
+                          'div',
+                          { className: 'cr-autoreview-run' },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'cr-btn cr-btn--ghost',
+                              'data-action': 'auto-review-open-settings',
+                              onClick: () => {
+                                if (typeof props.onOpenSettings === 'function') {
+                                  props.onOpenSettings()
+                                }
+                              },
+                            },
+                            tx(t, 'autoReviewEnableAction'),
+                          ),
+                        ),
+                      ),
+            )
+          : null,
+      )
+    }
+
     function RightPanel(props) {
       const t = props.t
       const detail = props.detail || {}
@@ -4575,6 +6307,18 @@ window.__ModuleLoader__.load({
           findingsByFile: props.findingsByFile,
           onJump: () => props.onTabChange('changes'),
           onJumpFile: props.onJumpFile,
+        }),
+        h(AutoReviewCard, {
+          t,
+          state: props.autoReview,
+          open: props.autoReviewOpen,
+          runBusy: props.autoReviewRunBusy,
+          now: props.now,
+          onToggle: props.onAutoReviewToggle,
+          onRefresh: props.onAutoReviewRefresh,
+          onRun: props.onAutoReviewRun,
+          onJump: props.onAutoReviewJump,
+          onOpenSettings: props.onOpenSettings,
         }),
         h(StackCard, { stack: detail.stack, t }),
         h(CommentsCard, { comments: detail.comments, t }),
@@ -4889,14 +6633,25 @@ window.__ModuleLoader__.load({
       return new Promise((resolve) => setTimeout(resolve, ms))
     }
 
-    /** Toast that auto-dismisses; returns [message, show]. */
+    /** Toast that auto-dismisses; returns [toast, show, dismiss]. `toast` may be {text, action}. */
     function useToast() {
       const [message, setMessage] = useState(null)
       const timerRef = useRef(null)
-      const show = useCallback((next) => {
+      const dismiss = useCallback(() => {
+        if (timerRef.current !== null) {
+          clearTimeout(timerRef.current)
+          timerRef.current = null
+        }
+        setMessage(null)
+      }, [])
+      const show = useCallback((next, durationMs) => {
         setMessage(next)
         if (timerRef.current !== null) clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setMessage(null), 2000)
+        const duration = Number(durationMs)
+        timerRef.current = setTimeout(
+          () => setMessage(null),
+          Number.isFinite(duration) && duration > 0 ? duration : 2000,
+        )
       }, [])
       useEffect(
         () => () => {
@@ -4904,7 +6659,7 @@ window.__ModuleLoader__.load({
         },
         [],
       )
-      return [message, show]
+      return [message, show, dismiss]
     }
 
     /** Health banner text for a non-ok health snapshot. */
@@ -4933,7 +6688,7 @@ window.__ModuleLoader__.load({
       const [settings, setSettings] = useState(() => readSettings(localStore()))
       const [settingsOpen, setSettingsOpen] = useState(false)
       const [jumpTarget, setJumpTarget] = useState(null)
-      const [toast, showToast] = useToast()
+      const [toast, showToast, dismissToast] = useToast()
       const [clock] = useState(() => Date.now())
       // v2: merge dialog + PR chat state (CONTRACT §5)
       const [mergeDialog, setMergeDialog] = useState({
@@ -4946,6 +6701,37 @@ window.__ModuleLoader__.load({
       const [mergedPrs, setMergedPrs] = useState({})
       const [composerText, setComposerText] = useState('')
       const [chat, setChat] = useState({ open: false, messages: [], streaming: false, error: null })
+      // v2.1: auto review status (CONTRACT §6.4)
+      const [autoReview, setAutoReview] = useState({ supported: true, loading: true, status: null })
+      const [autoReviewOpen, setAutoReviewOpen] = useState(true)
+      const [autoReviewBusy, setAutoReviewBusy] = useState(false)
+      const [autoReviewRunBusy, setAutoReviewRunBusy] = useState(false)
+      const [autoReviewResetToken, setAutoReviewResetToken] = useState(0)
+      const [pageVisible, setPageVisible] = useState(() => {
+        try {
+          return typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+        } catch {
+          return true
+        }
+      })
+      const [autoReviewPollMs] = useState(() => {
+        try {
+          const override = typeof window !== 'undefined' ? Number(window.__CR_AUTO_POLL_MS__) : 0
+          return Number.isFinite(override) && override > 0 ? override : AUTO_REVIEW_POLL_MS
+        } catch {
+          return AUTO_REVIEW_POLL_MS
+        }
+      })
+      // v2.2: publish review to GitHub (CONTRACT §7.3)
+      const [publishDialog, setPublishDialog] = useState({
+        open: false,
+        mode: 'inline',
+        minSeverity: 'P2',
+        phase: 'idle',
+        error: null,
+      })
+      const [publishRecords, setPublishRecords] = useState({})
+      const [publishUnsupported, setPublishUnsupported] = useState(false)
 
       const docRef = useRef(null)
       const listGeneration = useRef(0)
@@ -4967,6 +6753,14 @@ window.__ModuleLoader__.load({
       chatRef.current = chat
       const mergeDialogRef = useRef(null)
       mergeDialogRef.current = mergeDialog
+      const autoReviewRef = useRef(null)
+      autoReviewRef.current = autoReview
+      const autoReviewBaselineRef = useRef(false)
+      const jumpAutoRef = useRef(null)
+      const reviewRef = useRef(null)
+      reviewRef.current = review
+      const publishDialogRef = useRef(null)
+      publishDialogRef.current = publishDialog
 
       // health: one shot, drives the top notice bar only
       useEffect(() => {
@@ -5290,6 +7084,11 @@ window.__ModuleLoader__.load({
                 cancelMerge()
                 return
               }
+              if (publishDialogRef.current && publishDialogRef.current.open) {
+                event.preventDefault()
+                cancelPublish()
+                return
+              }
               if (chatRef.current && chatRef.current.open) {
                 event.preventDefault()
                 setChat((previous) => Object.assign({}, previous, { open: false }))
@@ -5299,6 +7098,7 @@ window.__ModuleLoader__.load({
             }
             if (settingsOpen) return
             if (mergeDialogRef.current && mergeDialogRef.current.open) return
+            if (publishDialogRef.current && publishDialogRef.current.open) return
             if (isTyping(event.target)) return
             if (key === 'j' || key === 'k') {
               const items = Array.isArray(list.items) ? list.items : []
@@ -5686,6 +7486,294 @@ window.__ModuleLoader__.load({
         })
       }, [detail.value, loadDetail, showToast, t])
 
+      // -------------------------------------------------------------------
+      // v2.1: auto review status / polling / notifications (CONTRACT §6.4)
+      // -------------------------------------------------------------------
+
+      /** Jump to a PR referenced by an auto-review result (list hit or synthesized). */
+      const jumpToAutoReviewPr = useCallback(
+        (entry) => {
+          if (!entry || entry.number === undefined) return
+          const number = Number(entry.number)
+          if (!Number.isFinite(number)) return
+          const items = Array.isArray(list.items) ? list.items : []
+          const repo = String(entry.repo || '')
+          const match =
+            items.find(
+              (item) => Number(item.number) === number && (repo === '' || String(item.repo) === repo),
+            ) || items.find((item) => Number(item.number) === number)
+          if (match) {
+            selectPr(match)
+            return
+          }
+          selectPr({
+            repo,
+            number,
+            title: '#' + String(number),
+            author: '',
+            isDraft: false,
+            state: 'open',
+            updatedAt: '',
+            url: '',
+          })
+        },
+        [list.items, selectPr],
+      )
+      jumpAutoRef.current = jumpToAutoReviewPr
+
+      /** Apply a Host AutoReviewStatus; toast new done results (not on first load). */
+      const applyAutoReviewStatus = useCallback(
+        (value) => {
+          const status = normalizeAutoReviewStatus(value)
+          const previousState = autoReviewRef.current
+          const previousRecent =
+            previousState && previousState.status ? previousState.status.recent : []
+          const firstLoad = !autoReviewBaselineRef.current
+          autoReviewBaselineRef.current = true
+          const newDone = firstLoad ? [] : diffAutoReviewRecent(previousRecent, status.recent)
+          setAutoReview({ supported: true, loading: false, status })
+          if (newDone.length > 0) {
+            const last = newDone[newDone.length - 1]
+            const target = { repo: last.repo, number: last.number }
+            showToast(
+              {
+                text: autoReviewDoneToastText(last, t),
+                action: {
+                  label: tx(t, 'autoReviewToastAction'),
+                  onClick: () => {
+                    if (jumpAutoRef.current) jumpAutoRef.current(target)
+                  },
+                },
+              },
+              5000,
+            )
+          }
+        },
+        [showToast, t],
+      )
+
+      const refreshAutoReview = useCallback(() => {
+        post(ROUTE + '/auto-review-status', {}).then((result) => {
+          if (result.ok) {
+            applyAutoReviewStatus(result.value)
+            return
+          }
+          if (isAutoReviewRouteMissing(result.error)) {
+            setAutoReview({ supported: false, loading: false, status: null })
+            return
+          }
+          setAutoReview((previous) =>
+            Object.assign({}, previous, { loading: false, error: result.error }),
+          )
+        })
+      }, [applyAutoReviewStatus])
+
+      /** Persist one auto-review config patch; the Host echo wins. */
+      const patchAutoReview = useCallback(
+        (patch) => {
+          if (!patch || typeof patch !== 'object') return
+          setAutoReviewBusy(true)
+          post(ROUTE + '/auto-review-config', { patch }).then((result) => {
+            setAutoReviewBusy(false)
+            if (result.ok) {
+              applyAutoReviewStatus(result.value)
+              return
+            }
+            if (isAutoReviewRouteMissing(result.error)) {
+              setAutoReview({ supported: false, loading: false, status: null })
+              showToast(tx(t, 'autoReviewUnsupported'))
+              return
+            }
+            // Rollback: the card/dialog read the Host status, and the drafts reset.
+            showToast(tx(t, 'autoReviewConfigFailed'))
+            setAutoReviewResetToken((token) => token + 1)
+            refreshAutoReview()
+          })
+        },
+        [applyAutoReviewStatus, refreshAutoReview, showToast, t],
+      )
+
+      const runAutoReview = useCallback(() => {
+        if (autoReviewRunBusy) return
+        setAutoReviewRunBusy(true)
+        post(ROUTE + '/auto-review-run', { force: true }).then((result) => {
+          setAutoReviewRunBusy(false)
+          const outcome = autoReviewRunState(result.ok ? result.value : null, result.ok ? null : result.error)
+          if (outcome.kind === 'unsupported') {
+            setAutoReview({ supported: false, loading: false, status: null })
+            showToast(tx(t, 'autoReviewUnsupported'))
+            return
+          }
+          showToast(tx(t, outcome.messageKey))
+          refreshAutoReview()
+        })
+      }, [autoReviewRunBusy, refreshAutoReview, showToast, t])
+
+      // Visibility tracking: hidden tabs pause auto-review polling.
+      useEffect(() => {
+        const handler = () => {
+          try {
+            setPageVisible(
+              typeof document === 'undefined' ? true : document.visibilityState !== 'hidden',
+            )
+          } catch {
+            setPageVisible(true)
+          }
+        }
+        try {
+          document.addEventListener('visibilitychange', handler)
+        } catch {
+          /* ignore */
+        }
+        return () => {
+          try {
+            document.removeEventListener('visibilitychange', handler)
+          } catch {
+            /* ignore */
+          }
+        }
+      }, [])
+
+      // One initial read so the card knows the config even while disabled.
+      useEffect(() => {
+        refreshAutoReview()
+      }, [refreshAutoReview])
+
+      const autoEnabled = Boolean(autoReview.status && autoReview.status.config.enabled)
+      const autoPollDecision = autoReviewPollDecision({
+        supported: autoReview.supported !== false,
+        enabled: autoEnabled,
+        visible: pageVisible,
+        intervalMs: autoReviewPollMs,
+      })
+      useEffect(() => {
+        if (!autoPollDecision.active) return undefined
+        const timer = setInterval(refreshAutoReview, autoPollDecision.intervalMs)
+        return () => clearInterval(timer)
+      }, [autoPollDecision.active, autoPollDecision.intervalMs, refreshAutoReview])
+
+      const autoRunning = Boolean(autoReview.status && autoReview.status.running)
+      useEffect(() => {
+        if (!autoPollDecision.active || !autoRunning) return undefined
+        const timer = setInterval(
+          refreshAutoReview,
+          Math.min(AUTO_REVIEW_RUNNING_POLL_MS, autoReviewPollMs),
+        )
+        return () => clearInterval(timer)
+      }, [autoPollDecision.active, autoRunning, autoReviewPollMs, refreshAutoReview])
+
+      // -------------------------------------------------------------------
+      // v2.2: publish the current review to GitHub (CONTRACT §7.3)
+      // -------------------------------------------------------------------
+
+      const openPublishDialog = useCallback(() => {
+        const current = selectedRef.current
+        if (!current) return
+        const currentReview = reviewRef.current
+        if (!currentReview || currentReview.state !== 'done') {
+          showToast(tx(t, 'publishNotReady'))
+          return
+        }
+        const autoState = autoReviewRef.current
+        const config =
+          autoState && autoState.status && autoState.status.publish
+            ? autoState.status.publish
+            : normalizePublishConfig(null)
+        setPublishDialog({
+          open: true,
+          mode: config.mode,
+          minSeverity: config.minSeverity,
+          phase: 'idle',
+          error: null,
+        })
+      }, [showToast, t])
+
+      const updatePublishDialog = useCallback((patch) => {
+        setPublishDialog((previous) => Object.assign({}, previous, patch))
+      }, [])
+
+      const cancelPublish = useCallback(() => {
+        setPublishDialog((previous) =>
+          Object.assign({}, previous, { open: false, phase: 'idle', error: null }),
+        )
+      }, [])
+
+      const confirmPublish = useCallback(() => {
+        const current = selectedRef.current
+        const dialog = publishDialogRef.current
+        if (!current || !dialog || dialog.phase === 'submitting') return
+        const request = buildPublishRequest({
+          summary: current,
+          mode: dialog.mode,
+          minSeverity: dialog.minSeverity,
+        })
+        if (!request) {
+          setPublishDialog((previous) =>
+            Object.assign({}, previous, {
+              phase: 'idle',
+              error: { code: 'BAD_REQUEST', message: '' },
+            }),
+          )
+          showToast(tx(t, 'publishBadRequest'))
+          return
+        }
+        setPublishDialog((previous) =>
+          Object.assign({}, previous, { phase: 'submitting', error: null }),
+        )
+        post(ROUTE + '/review-publish', request).then((result) => {
+          if (result.ok) {
+            const value = result.value || {}
+            const record = normalizePublishResult(value)
+            const headSha =
+              (typeof value.headSha === 'string' ? value.headSha : '') ||
+              (reviewRef.current && reviewRef.current.headSha) ||
+              ''
+            const key = publishRecordKey(current.repo, current.number, headSha)
+            if (record && key !== '') {
+              setPublishRecords((previous) => Object.assign({}, previous, { [key]: record }))
+            }
+            setPublishDialog({
+              open: false,
+              mode: 'inline',
+              minSeverity: 'P2',
+              phase: 'idle',
+              error: null,
+            })
+            showToast(tx(t, 'publishSuccess', { n: record ? record.comments : 0 }))
+            return
+          }
+          const error = result.error || { code: 'INTERNAL', message: '' }
+          if (isPublishRouteMissing(error)) {
+            setPublishUnsupported(true)
+            setPublishDialog({
+              open: false,
+              mode: 'inline',
+              minSeverity: 'P2',
+              phase: 'idle',
+              error: null,
+            })
+            showToast(tx(t, 'publishUnsupported'))
+            return
+          }
+          setPublishDialog((previous) =>
+            Object.assign({}, previous, { phase: 'idle', error }),
+          )
+          const localeKey = publishErrorKey(error.code)
+          showToast(tx(t, localeKey || 'publishFailed'))
+        })
+      }, [showToast, t])
+
+      // A new review / PR switch invalidates an open publish confirmation.
+      useEffect(() => {
+        if (review.state !== 'done') {
+          setPublishDialog((previous) =>
+            previous.open
+              ? Object.assign({}, previous, { open: false, phase: 'idle', error: null })
+              : previous,
+          )
+        }
+      }, [review.state, review.jobId])
+
       const notice = healthNotice(health, t)
       const detailValue = detail.value
       const reviewValue = review || { state: 'none' }
@@ -5716,6 +7804,34 @@ window.__ModuleLoader__.load({
           )
       const currentHeadSha = resolveHeadSha(detailValue)
       const canChat = Boolean(selected)
+      const autoStatus = autoReview.status
+      const autoBadges = useMemo(
+        () => autoReviewBadgesByPr(autoStatus ? autoStatus.recent : []),
+        [autoStatus],
+      )
+      const publishConfig = autoStatus && autoStatus.publish ? autoStatus.publish : null
+      const publishSupported =
+        !publishUnsupported && autoReview.supported !== false && publishConfig !== null
+      const reviewHeadSha = reviewValue.headSha || currentHeadSha
+      const reviewPublishKey = publishRecordKey(summary.repo, summary.number, reviewHeadSha)
+      const localPublished =
+        reviewPublishKey !== '' ? publishRecords[reviewPublishKey] || null : null
+      const reviewPublished =
+        localPublished ||
+        (reviewValue.published &&
+        (reviewValue.published.headSha === '' || reviewValue.published.headSha === reviewHeadSha)
+          ? reviewValue.published
+          : null)
+      const reviewPublish = {
+        supported: publishSupported,
+        published: reviewPublished,
+        onOpen: openPublishDialog,
+      }
+      const publishExpectedCount = countPublishableFindings(
+        findings,
+        publishDialog.minSeverity,
+        publishConfig ? publishConfig.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments,
+      )
 
       let docBody
       if (!selected && detail.state === 'idle') {
@@ -5764,6 +7880,7 @@ window.__ModuleLoader__.load({
             : h(SummaryView, {
                 detail: detailValue || {},
                 review: reviewValue,
+                publish: reviewPublish,
                 onStartReview: startReview,
                 onRetryReview: startReview,
                 onCancelReview: cancelReview,
@@ -5801,6 +7918,15 @@ window.__ModuleLoader__.load({
           'data-cr-chat-open': chat.open ? 'open' : 'closed',
           'data-cr-chat-streaming': chat.streaming ? 'true' : 'false',
           'data-cr-chat-messages': String(Array.isArray(chat.messages) ? chat.messages.length : 0),
+          'data-cr-auto-supported': autoReview.supported ? 'true' : 'false',
+          'data-cr-auto-enabled': autoEnabled ? 'true' : 'false',
+          'data-cr-auto-running': autoRunning ? 'true' : 'false',
+          'data-cr-auto-recent': String(autoStatus ? autoStatus.recent.length : 0),
+          'data-cr-auto-open': autoReviewOpen ? 'true' : 'false',
+          'data-cr-publish-supported': publishSupported ? 'true' : 'false',
+          'data-cr-publish-dialog': publishDialog.open ? 'open' : 'closed',
+          'data-cr-publish-published':
+            reviewPublished && reviewPublished.url ? 'true' : 'false',
         },
         h('style', null, CSS),
         h(PrList, {
@@ -5810,6 +7936,7 @@ window.__ModuleLoader__.load({
           t,
           inputRef: searchRef,
           listRef,
+          autoBadges,
           onSelect: selectPr,
           onQueryChange: setQueryInput,
           onRefresh: () => setQuery(queryInput),
@@ -5874,6 +8001,15 @@ window.__ModuleLoader__.load({
                     detail: detailValue,
                     review: reviewValue,
                     findingsByFile,
+                    now: clock,
+                    autoReview,
+                    autoReviewOpen,
+                    autoReviewRunBusy,
+                    onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),
+                    onAutoReviewRefresh: refreshAutoReview,
+                    onAutoReviewRun: runAutoReview,
+                    onAutoReviewJump: jumpToAutoReviewPr,
+                    onOpenSettings: () => setSettingsOpen(true),
                     t,
                     onTabChange: changeTab,
                     onJumpFile: jumpToFile,
@@ -5891,6 +8027,27 @@ window.__ModuleLoader__.load({
               onChange: updateSettings,
               onReset: resetSettings,
               onClose: closeSettings,
+              autoReview: autoReview.status,
+              autoReviewSupported: autoReview.supported !== false,
+              autoReviewBusy,
+              autoReviewResetToken,
+              onAutoReviewPatch: patchAutoReview,
+            })
+          : null,
+        publishDialog.open && selected
+          ? h(PublishDialog, {
+              summary,
+              headSha: reviewHeadSha,
+              mode: publishDialog.mode,
+              minSeverity: publishDialog.minSeverity,
+              expected: publishExpectedCount,
+              phase: publishDialog.phase,
+              error: publishDialog.error,
+              t,
+              onModeChange: (mode) => updatePublishDialog({ mode }),
+              onMinSeverityChange: (minSeverity) => updatePublishDialog({ minSeverity }),
+              onConfirm: confirmPublish,
+              onCancel: cancelPublish,
             })
           : null,
         chat.open && selected
@@ -5930,7 +8087,38 @@ window.__ModuleLoader__.load({
           canChat,
           inputRef: composerRef,
         }),
-        toast ? h('div', { className: 'cr-toast', role: 'status' }, String(toast)) : null,
+        toast
+          ? h(
+              'div',
+              {
+                className: 'cr-toast' + (toast && toast.action ? ' cr-toast--action' : ''),
+                role: 'status',
+              },
+              h(
+                'span',
+                { className: 'cr-toast-text' },
+                typeof toast === 'string' ? toast : String((toast && toast.text) || ''),
+              ),
+              toast && toast.action
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-toast-btn',
+                      onClick: () => {
+                        try {
+                          toast.action.onClick()
+                        } catch {
+                          /* a toast action must never break the page */
+                        }
+                        dismissToast()
+                      },
+                    },
+                    String(toast.action.label || ''),
+                  )
+                : null,
+            )
+          : null,
       )
     }
 
@@ -6150,6 +8338,46 @@ window.__ModuleLoader__.load({
         markChatStopped,
         post,
         streamPost,
+        AUTO_REVIEW_POLL_MS,
+        AUTO_REVIEW_RUNNING_POLL_MS,
+        AUTO_REVIEW_RECENT_LIMIT,
+        AUTO_REVIEW_INTERVAL_PRESETS,
+        AUTO_REVIEW_INTERVAL_MIN,
+        AUTO_REVIEW_INTERVAL_MAX,
+        AUTO_REVIEW_MAX_PER_CYCLE_MIN,
+        AUTO_REVIEW_MAX_PER_CYCLE_MAX,
+        AUTO_REVIEW_DEFAULT,
+        clampInteger,
+        normalizeAutoReviewConfig,
+        normalizeAutoReviewRecentEntry,
+        normalizeAutoReviewRecent,
+        normalizeAutoReviewStatus,
+        autoReviewRecentKey,
+        diffAutoReviewRecent,
+        autoReviewPollDecision,
+        autoReviewBadgesByPr,
+        autoReviewBadge,
+        isAutoReviewRouteMissing,
+        autoReviewRunState,
+        autoReviewDoneToastText,
+        PUBLISH_MODES,
+        PUBLISH_MIN_SEVERITIES,
+        PUBLISH_MAX_COMMENTS_MIN,
+        PUBLISH_MAX_COMMENTS_MAX,
+        PUBLISH_DEFAULT_CONFIG,
+        normalizePublishConfig,
+        severityAtLeast,
+        filterPublishableFindings,
+        countPublishableFindings,
+        buildPublishRequest,
+        normalizePublished,
+        normalizePublishResult,
+        publishErrorKey,
+        isPublishRouteMissing,
+        publishRecordKey,
+        publishModeLabelKey,
+        publishModeHintKey,
+        autoPublishStatusKey,
       },
     }
   },

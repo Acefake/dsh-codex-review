@@ -578,3 +578,121 @@ test('GitHubClient reads guidelines through the gh CLI fallback when no token ex
   })
   assert.ok(calls.some((args) => args[0] === 'api' && args[1].includes('contents/AGENTS.md')))
 })
+
+// ---------------------------------------------------------------------------
+// v2.2: publishing a PR review (CONTRACT §7.2)
+// ---------------------------------------------------------------------------
+
+test('createPullReview posts event COMMENT, inline comments and the head commit without caching', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const calls = []
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, method: init.method, headers: init.headers, body: init.body === undefined ? undefined : JSON.parse(init.body) })
+      return responseOf({ id: 77, html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77' })
+    }
+    const client = makeClient({}, fetchImpl)
+    const request = {
+      repo: 'Acme/repo',
+      number: 1,
+      headSha: 'sha-1',
+      body: '摘要',
+      comments: [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: '**[P0] x**' }],
+    }
+    const result = await client.createPullReview(request)
+    assert.deepEqual(result, { reviewId: 77, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77', data: { id: 77, html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77' } })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].method, 'POST')
+    assert.ok(calls[0].url.endsWith('/repos/Acme/repo/pulls/1/reviews'))
+    assert.equal(calls[0].headers['content-type'], 'application/json')
+    assert.deepEqual(calls[0].body, {
+      event: 'COMMENT',
+      body: '摘要',
+      comments: [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: '**[P0] x**' }],
+      commit_id: 'sha-1',
+    })
+    await client.createPullReview(request)
+    assert.equal(calls.length, 2, 'a write must never be served from the cache')
+  })
+})
+
+test('createPullReview validates its content and maps GitHub failures', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    /** @type {Array<(url: string, init: any) => any>} */
+    const responders = []
+    const fetchImpl = async (url, init) => responders.shift()(url, init)
+    const client = makeClient({}, fetchImpl)
+
+    // Nothing to publish: rejected before any request.
+    await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 1, comments: [] }), (error) => error.code === 'BAD_REQUEST')
+    await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 0, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
+
+    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'GH_NETWORK']]) {
+      responders.push(() => responseOf({ message: `HTTP ${status}` }, status))
+      await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 1, body: 'x' }), (error) => {
+        assert.equal(error.code, code)
+        return true
+      })
+    }
+    responders.push(() => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })
+    })
+    await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 1, body: 'x' }), (error) => error.code === 'GH_NETWORK')
+  })
+})
+
+test('createPullReview falls back to gh api with --input for structured bodies', async () => {
+  const calls = []
+  const execFileImpl = async (file, args) => {
+    calls.push(args)
+    if (args[0] === 'auth') {
+      throw Object.assign(new Error('not logged in'), { code: 4, stderr: 'You are not logged into any GitHub hosts. To log in, run: gh auth login' })
+    }
+    if (args[0] !== 'api') throw new Error(`unexpected gh ${args.join(' ')}`)
+    return { stdout: JSON.stringify({ id: 88, html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-88' }), stderr: '' }
+  }
+  const client = makeClient({}, async () => { throw new Error('fetch must not be used') }, execFileImpl)
+  await withEnv('GH_TOKEN', undefined, async () => {
+    await withEnv('GITHUB_TOKEN', undefined, async () => {
+      const result = await client.createPullReview({
+        repo: 'Acme/repo',
+        number: 1,
+        headSha: 'sha-1',
+        comments: [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: 'x' }],
+      })
+      assert.equal(result.reviewId, 88)
+    })
+  })
+  const apiArgs = calls.find((args) => args[0] === 'api')
+  assert.ok(apiArgs.includes('--method'))
+  assert.ok(apiArgs.includes('POST'))
+  assert.ok(apiArgs.includes('--input'), 'structured bodies go through --input')
+  assert.ok(!apiArgs.includes('-f'), '-f cannot express nested comment arrays')
+})
+
+test('listPullReviewComments paginates and normalizes existing comments', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const urls = []
+    const fetchImpl = async (url) => {
+      urls.push(url)
+      if (url.endsWith('&page=1')) {
+        return responseOf(Array.from({ length: 100 }, (_, index) => ({
+          path: 'src/a.ts',
+          line: index + 1,
+          body: `comment ${index}`,
+          user: { login: 'reviewer' },
+          created_at: '2026-10-24T00:00:00Z',
+        })))
+      }
+      return responseOf([{ path: 'src/b.ts', line: null, original_line: 7, body: 'tail', user: { login: 'u2' }, created_at: 'c' }])
+    }
+    const client = makeClient({}, fetchImpl)
+    const comments = await client.listPullReviewComments('Acme/repo', 1)
+    assert.equal(comments.length, 101)
+    assert.deepEqual(comments[0], { path: 'src/a.ts', line: 1, body: 'comment 0', author: 'reviewer', createdAt: '2026-10-24T00:00:00Z' })
+    assert.equal(comments[100].line, 7, 'falls back to original_line')
+    assert.equal(urls.length, 2)
+    assert.ok(urls[0].includes('/pulls/1/comments?per_page=100&page=1'))
+    assert.ok(urls[1].includes('/pulls/1/comments?per_page=100&page=2'))
+  })
+})
+

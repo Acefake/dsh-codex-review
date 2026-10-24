@@ -9,7 +9,9 @@
 - `serve.mjs`：零依赖静态服务 + 与 Host 同名同信封（`{ok,value}` / `{ok:false,error}`）的
   mock 路由：`/codex-review/health|prs|pr|review-start|review-status|review-cancel`，
   v2 追加 `/codex-review/merge`（守卫镜像 + 写请求记录）与 `/codex-review/chat`
-  （`text/event-stream`，可脚本化 delta/错误帧），以及 dev-only 的 `dev-state` / `dev-reset`。
+  （`text/event-stream`，可脚本化 delta/错误帧），v2.1 追加
+  `/codex-review/auto-review-status|auto-review-config|auto-review-run`
+  （配置夹取回显、模拟 cycle、可脚本化错误），以及 dev-only 的 `dev-state` / `dev-reset`。
 - `mock/*.json`：由 `build-mocks.mjs` 从 `recon/probe-output.json`（真实 `gh` 抓取）归一化成
   CONTRACT.md §1.2 的形状；`review-*.json` 是 done / running / error / empty 四种审查终态。
 - `build-mocks.mjs`：重新生成 mock；findings 的行号从真实 patch 的新增行里取，保证能定位到 diff。
@@ -19,11 +21,13 @@
   并量出三栏宽度（238 / 760 / 300）、列表行数、diff 行数、审查状态；v1.1 追加
   verdict / 过滤 chips / options+guidelines+reusedFiles 行 / 行内 finding 卡展开 /
   设置弹层 / 已有评论 / `j` `/` `Esc` 键盘断言；v2 追加合并弹层字段 + 取消不写 +
-  确认请求字段、chat 流式增量 / 停止 / 历史持久化与按 PR 隔离。
+  确认请求字段、chat 流式增量 / 停止 / 历史持久化与按 PR 隔离；v2.1 追加自动审查开关
+  请求体、立即检查、完成 toast、PR 行徽章、轮询开关与旧 Host 降级不轮询。
 - `shots.mjs`：用同一套 CDP 装置给全部场景出图（1600×1100），一次重建 `shots/`。
 - `vendor/react/`：React 18.3.1 UMD（dev-only，见该目录 README 的来源说明）。
 - `shots/`：默认态、Changes、审查结果、运行中、错误、空列表、浅色、部分完成，
-  v1.1 的行内 finding 卡 / 设置弹层 / 已有评论，以及 v2 的合并弹层 / PR 对话。
+  v1.1 的行内 finding 卡 / 设置弹层 / 已有评论，v2 的合并弹层 / PR 对话，
+  以及 v2.1 的自动审查。
 
 ## 跑起来
 
@@ -51,6 +55,8 @@ node plugin/dev/shots.mjs                # 重出全部截图（另开一个终�
 | `/?scene=v11-existing-comments` | 已有 GitHub 行内评论卡（含 >400 字截断与文件级评论） |
 | `/?scene=v2-merge-dialog` | 合并确认弹层：三种合并方式 / 删除源分支 / head sha / 写操作风险提示 |
 | `/?scene=v2-chat` | PR 对话面板：发送快捷提问 → 流式回答、历史气泡 |
+| `/?scene=v2.1-auto-review` | 自动审查：设置里开启 → 立即检查 → 结果列表 + 完成 toast + 列表行徽章 |
+| `/?scene=v2.1-auto-review-missing` | 旧 Host 降级：右栏「宿主未启用自动审查」，不轮询 |
 | `&theme=light` | 浅色主题（验证 token 双主题可用） |
 
 ```bash
@@ -78,5 +84,10 @@ node plugin/dev/shots.mjs                # 重出全部截图（另开一个终�
   `conflict` / `not-allowed` 可复现守卫错误），往 `/codex-review/chat` 带 `mockChat`
   （`v2-chat` 场景第二次提问用 `slow`，便于断言「停止」）；`v2-*` 场景启动时会清掉该 origin 的
   `codex-review:chat:*` 历史，保证截图稳定。
+- v2.1 场景的 dev 注入：preview 会把 `window.__CR_AUTO_POLL_MS__` 设为 1200（仅预览，真实 DSH
+  仍是 15s），往 auto-review 请求带 `mockAuto`（`config-error` / `run-busy` / `run-disabled`），
+  或对该路由整体返回 404 JSON 模拟旧 Host；mock server 的「立即检查」1.5s 后追加一条 #129
+  的 done 结果并写入 `recent`，客户端轮询到新增 done 即弹 toast + 列表行徽章。
+  check-preview 每个场景前都会 `dev-reset`（配置回到默认关闭）。
 - 预览页的标题栏、左侧图标 rails、`PREVIEW` 角标只存在于 `preview.html`，`client.js` 不渲染它们。
 - `mock/`、`vendor/`、`shots/`、本文件都不应进入安装包 `files`（Host 侧 package.json 负责）。
