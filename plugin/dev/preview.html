@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="data:," />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>代码审查 · 开发预览</title>
+    <style>
+      /* ------------------------------------------------------------------
+         Preview-only chrome. In DSH the window frame, titlebar, rails and
+         the --dsw-alias-* theme tokens are supplied by the host; this shell
+         reproduces them so the workbench can be screenshotted standalone.
+         Dark values below are the colors measured from the Codex reference
+         screenshot (recon/ui-spec.md §5.1), not new design tokens.
+         ------------------------------------------------------------------ */
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: #202020;
+        color: #fff;
+        font: 14px/20px Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        overflow: hidden;
+      }
+
+      body[data-theme="dark"] {
+        --pv-chrome: #202020;
+        --pv-divider: #2b2b2b;
+        --dsw-alias-bg-base: #181818;
+        --dsw-alias-bg-layer-1: #1b1b1b;
+        --dsw-alias-bg-layer-2: #2d2d2d;
+        --dsw-alias-bg-layer-3: #383838;
+        --dsw-alias-bg-skeleton: #ffffff14;
+        --dsw-alias-bg-mask-1: #00000080;
+        --dsw-alias-bg-mask-2: #00000055;
+        --dsw-alias-border-l1: #2b2b2b;
+        --dsw-alias-border-l2: #2b2b2b;
+        --dsw-alias-border-l3: #3e3e3e;
+        --dsw-alias-border-l4: #4a4a4a;
+        --dsw-alias-label-primary: #ffffff;
+        --dsw-alias-label-secondary: #aeaeae;
+        --dsw-alias-label-tertiary: #9e9e9e;
+        --dsw-alias-label-caption: #6e6e6e;
+        --dsw-alias-label-dimmed: #686868;
+        --dsw-alias-label-primary-foreground: #171717;
+        --dsw-alias-brand-primary: #ffffff;
+        --dsw-alias-link: #7ab7ff;
+        --dsw-alias-state-success-primary: #40c977;
+        --dsw-alias-state-error-primary: #fa423e;
+        --dsw-alias-state-warn-primary: #ff8549;
+        --dsw-alias-state-warn-secondary: #e3b341;
+        --dsw-alias-state-warn-label: #ff8549;
+        --dsw-alias-state-business-primary: #7ab7ff;
+        --dsw-alias-code-diff-added: #40c9771a;
+        --dsw-alias-code-diff-deleted: #fa423e1a;
+        --dsw-alias-markdown-inline-code: #303030;
+        --dsw-alias-markdown-code-block: #111111;
+        --dsw-alias-scrollbar-bg-l2: #3c3c3c;
+        --dsw-alias-toast-bg: #3a3a3a;
+        --dsw-alias-interactive-bg-hover: #ffffff0b;
+        --dsw-alias-interactive-bg-active: #ffffff14;
+        --dsw-alias-button-primary-fill: #ffffff;
+        --dsw-alias-button-primary-hover: #e6e6e6;
+      }
+
+      body[data-theme="light"] {
+        --pv-chrome: #f1f3f5;
+        --pv-divider: #e1e5ee;
+        --dsw-alias-bg-base: #ffffff;
+        --dsw-alias-bg-layer-1: #f7f8fa;
+        --dsw-alias-bg-layer-2: #eef0f3;
+        --dsw-alias-bg-layer-3: #e3e6ea;
+        --dsw-alias-bg-skeleton: #0000000a;
+        --dsw-alias-bg-mask-1: #0000003d;
+        --dsw-alias-bg-mask-2: #0000001f;
+        --dsw-alias-border-l1: #e5e7eb;
+        --dsw-alias-border-l2: #dfe3e8;
+        --dsw-alias-border-l3: #cbd1d9;
+        --dsw-alias-border-l4: #b3bac3;
+        --dsw-alias-label-primary: #0f1115;
+        --dsw-alias-label-secondary: #4b5158;
+        --dsw-alias-label-tertiary: #6b727a;
+        --dsw-alias-label-caption: #8d949c;
+        --dsw-alias-label-dimmed: #b6bcc4;
+        --dsw-alias-label-primary-foreground: #ffffff;
+        --dsw-alias-brand-primary: #0f1115;
+        --dsw-alias-link: #2563eb;
+        --dsw-alias-state-success-primary: #16a34a;
+        --dsw-alias-state-error-primary: #dc2626;
+        --dsw-alias-state-warn-primary: #d97706;
+        --dsw-alias-state-warn-secondary: #b45309;
+        --dsw-alias-state-warn-label: #b45309;
+        --dsw-alias-state-business-primary: #2563eb;
+        --dsw-alias-code-diff-added: #22c55e14;
+        --dsw-alias-code-diff-deleted: #ec131314;
+        --dsw-alias-markdown-inline-code: #f1f3f5;
+        --dsw-alias-markdown-code-block: #f7f8fa;
+        --dsw-alias-scrollbar-bg-l2: #c9ced6;
+        --dsw-alias-toast-bg: #2c2c2e;
+        --dsw-alias-interactive-bg-hover: #2631480f;
+        --dsw-alias-interactive-bg-active: #2631481a;
+        --dsw-alias-button-primary-fill: #0f1115;
+        --dsw-alias-button-primary-hover: #43454a;
+      }
+
+      /* window frame ---------------------------------------------------- */
+      .pv-window { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+      .pv-titlebar {
+        flex: none; display: flex; align-items: center; gap: 16px; height: 44px;
+        padding: 0 16px 0 14px; background: var(--pv-chrome); color: #8f8f8f;
+        -webkit-user-select: none; user-select: none;
+      }
+      body[data-theme="light"] .pv-titlebar { color: #61666b; }
+      .pv-nav { display: inline-flex; align-items: center; gap: 14px; }
+      .pv-menu { display: inline-flex; align-items: center; gap: 18px; font-size: 13px; }
+      .pv-titlebar-spacer { flex: 1; }
+      .pv-preview-tag {
+        font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+        color: #8f8f8f; border: 1px solid #3a3a3a; border-radius: 4px; padding: 1px 5px;
+      }
+      body[data-theme="light"] .pv-preview-tag { border-color: #d5d9df; color: #8d949c; }
+      .pv-wincontrols { display: inline-flex; align-items: center; gap: 20px; }
+      .pv-body { flex: 1; display: flex; min-height: 0; background: var(--pv-chrome); }
+
+      /* left icon rail --------------------------------------------------- */
+      .pv-rail {
+        flex: 0 0 52px; width: 52px; display: flex; flex-direction: column;
+        align-items: center; gap: 6px; padding: 10px 0 14px; color: #aeaeae;
+      }
+      body[data-theme="light"] .pv-rail { color: #6b727a; }
+      .pv-rail-item {
+        display: grid; place-items: center; width: 36px; height: 36px;
+        border-radius: 8px; color: inherit; opacity: .62;
+      }
+      .pv-rail-item--active {
+        opacity: 1; background: #2d2d2d; color: #fff;
+      }
+      body[data-theme="light"] .pv-rail-item--active { background: #e3e6ea; color: #0f1115; }
+      .pv-rail-sep { width: 24px; height: 1px; background: #2b2b2b; margin: 4px 0; }
+      body[data-theme="light"] .pv-rail-sep { background: #e1e5ee; }
+      .pv-rail-avatar {
+        margin-top: auto; width: 25px; height: 25px; border-radius: 50%;
+        background: #4a4f55; color: #fff; display: grid; place-items: center;
+        font-size: 11px; font-weight: 700;
+      }
+
+      /* plugin stage ----------------------------------------------------- */
+      #pv-stage { flex: 1; min-width: 0; min-height: 0; display: flex; }
+      #root { flex: 1; min-width: 0; min-height: 0; }
+      .pv-loading { padding: 32px; color: #aeaeae; font-size: 13px; }
+    </style>
+  </head>
+  <body data-theme="dark">
+    <div class="pv-window" aria-hidden="true">
+      <header class="pv-titlebar" data-preview-chrome>
+        <span class="pv-nav">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 6 9 12l6 6" /></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m9 6 6 6-6 6" /></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M9 4.5v15" /></svg>
+        </span>
+        <span class="pv-menu"><span>文件</span><span>编辑</span><span>视图</span><span>帮助</span></span>
+        <span class="pv-titlebar-spacer"></span>
+        <span class="pv-preview-tag">preview</span>
+        <span class="pv-wincontrols">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 12h14" /></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4.5" y="4.5" width="15" height="15" rx="2" /></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </span>
+      </header>
+      <div class="pv-body">
+        <nav class="pv-rail" data-preview-chrome>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1v-9.5Z" /></svg></span>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="m6 15 3.5-4 3 3.2L15 11l3 4" /><circle cx="9" cy="9" r="1.1" /></svg></span>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8.2" /><path d="M12 7.5V12l3.2 2" /></svg></span>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></svg></span>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 12a8 8 0 1 1 2.4 5.7" /><path d="M4 20v-5h5" /></svg></span>
+          <span class="pv-rail-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 12h.01M12 12h.01M18 12h.01" /></svg></span>
+          <span class="pv-rail-sep"></span>
+          <span class="pv-rail-item pv-rail-item--active"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.2h7.2L19 8.5v11.3a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.2a1 1 0 0 1 1-1Z" /><path d="M13 3.4V9h5.4" /><path d="m8.6 14.2 2 2 4-4.2" /></svg></span>
+          <span class="pv-rail-avatar">A</span>
+        </nav>
+        <div id="pv-stage">
+          <div id="root"><div class="pv-loading">正在加载 client.js…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="vendor/react/react.development.js"></script>
+    <script src="vendor/react/react-dom.development.js"></script>
+    <script>
+      /* ------------------------------------------------------------------
+         Preview host shim: implements just enough of the DSH client contract
+         (window.__ModuleLoader__, ctx.locale/ctx.slots) to mount the very same
+         plugin bundle the Host ships, then drives it into a screenshot scene.
+         ------------------------------------------------------------------ */
+      ;(function () {
+        'use strict'
+        var params = new URLSearchParams(location.search)
+        var theme = params.get('theme') === 'light' ? 'light' : 'dark'
+        document.body.dataset.theme = theme
+
+        var scene = params.get('scene') || 'default'
+        var mockMode = params.get('mode') || (scene === 'review' ? 'done' : scene)
+
+        // Route review-start to the mock server's mode (dev-only field).
+        var nativeFetch = window.fetch.bind(window)
+        window.fetch = function (input, init) {
+          try {
+            if (typeof input === 'string' && input.indexOf('codex-review/') >= 0 && init && typeof init.body === 'string') {
+              if (input.indexOf('review-start') >= 0) {
+                var payload = JSON.parse(init.body)
+                payload.mockMode = mockMode
+                init = Object.assign({}, init, { body: JSON.stringify(payload) })
+              }
+            }
+            if (typeof input === 'string' && input.indexOf('codex-review/health') >= 0 && scene === 'health') {
+              return Promise.resolve(new Response(JSON.stringify({ ok: true, value: { gh: 'not-logged-in', llm: 'ok', version: '0.1.0' } }), { headers: { 'content-type': 'application/json' } }))
+            }
+          } catch (error) {
+            /* fall through to the real fetch */
+          }
+          return nativeFetch(input, init)
+        }
+
+        window.addEventListener('error', function (event) {
+          document.body.dataset.previewError = String((event && (event.message || (event.error && event.error.stack))) || 'error')
+        })
+        window.addEventListener('unhandledrejection', function (event) {
+          document.body.dataset.previewError = String((event && event.reason && (event.reason.stack || event.reason.message)) || 'unhandledrejection')
+        })
+
+        var definitions = []
+        window.__ModuleLoader__ = {
+          load: function (definition) {
+            if (!definition || typeof definition.factory !== 'function') {
+              throw new Error('preview loader: bundle did not call load() with a factory')
+            }
+            definitions.push(definition)
+          },
+        }
+
+        function boot() {
+          if (definitions.length !== 1) {
+            document.getElementById('root').innerHTML =
+              '<div class="pv-loading">client.js 没有注册 module（definitions=' + definitions.length + '）</div>'
+            return
+          }
+          var definition = definitions[0]
+          var platform = {
+            react: window.React,
+            'react-dom': window.ReactDOM,
+            'react-dom/client': window.ReactDOM,
+            'react/jsx-runtime': {
+              jsx: window.React.createElement,
+              jsxs: window.React.createElement,
+              Fragment: window.React.Fragment,
+            },
+          }
+          var plugin = definition.factory(function (name) {
+            if (Object.prototype.hasOwnProperty.call(platform, name)) return platform[name]
+            throw new Error('preview loader: unsupported platform module ' + name)
+          })
+
+          var zh = plugin.__test.locales.zh
+          var t = function (key) {
+            return Object.prototype.hasOwnProperty.call(zh, key) ? zh[key] : key
+          }
+          var registrations = []
+          var localeNamespaces = []
+          var ctx = {
+            effect: function (factory) {
+              var dispose = factory()
+              return function () {
+                if (typeof dispose === 'function') dispose()
+              }
+            },
+            locale: {
+              register: function (namespace, dictionaries) {
+                localeNamespaces.push(namespace)
+                return function () {}
+              },
+              bind: function () {
+                return t
+              },
+            },
+            slots: {
+              inject: function (key, callback) {
+                callback()
+                return function () {}
+              },
+              register: function (options, component) {
+                registrations.push({ options: options, component: component })
+                return function () {}
+              },
+            },
+          }
+          plugin.apply(ctx)
+
+          var main = registrations.filter(function (entry) { return entry.options.name === 'main' })[0]
+          var panels = registrations.filter(function (entry) { return entry.options.name === 'sidebar.panellist' })[0]
+          if (!main) throw new Error('preview loader: plugin did not register a main slot')
+
+          // Expose the registration facts so the dev shell can assert them.
+          window.__CR_PREVIEW__ = {
+            id: definition.id,
+            registrations: registrations.map(function (entry) { return entry.options }),
+            localeNamespaces: localeNamespaces,
+            panelLabel: panels && typeof panels.options.label === 'function' ? panels.options.label() : null,
+            test: plugin.__test,
+          }
+          document.title = '代码审查 · ' + scene
+
+          var root = window.ReactDOM.createRoot(document.getElementById('root'))
+          root.render(window.React.createElement(main.component, { t: t }))
+          drive(plugin, main)
+        }
+
+        function waitFor(predicate, timeout) {
+          var limit = timeout || 8000
+          var start = Date.now()
+          return new Promise(function (resolve) {
+            ;(function tick() {
+              var value = false
+              try {
+                value = predicate()
+              } catch (error) {
+                value = false
+              }
+              if (value) return resolve(true)
+              if (Date.now() - start > limit) return resolve(false)
+              requestAnimationFrame(tick)
+            })()
+          })
+        }
+
+        function click(selector) {
+          var node = document.querySelector(selector)
+          if (!node) return false
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+          return true
+        }
+
+        function setInput(selector, value) {
+          var input = document.querySelector(selector)
+          if (!input) return false
+          var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          setter.call(input, value)
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+          return true
+        }
+
+        function scrollDocTo(selector, offset) {
+          var doc = document.querySelector('.cr-doc')
+          var node = document.querySelector(selector)
+          if (!doc || !node) return
+          var docBox = doc.getBoundingClientRect()
+          var nodeBox = node.getBoundingClientRect()
+          doc.scrollTop = doc.scrollTop + (nodeBox.top - docBox.top) - (offset || 8)
+        }
+
+        function drive(plugin, main) {
+          var ready = false
+          Promise.resolve()
+            .then(function () { return waitFor(function () { return document.querySelector('[data-pr-number]') }) })
+            .then(function (found) {
+              if (!found) return
+              if (scene === 'empty') {
+                setInput('.cr-search input', 'zzz-不存在的关键词')
+                return waitFor(function () { return document.querySelector('.cr-list-state') })
+              }
+              click('[data-pr-number="129"]')
+              return waitFor(function () { return document.querySelector('[data-cr-pr-head]') })
+            })
+            .then(function () {
+              if (scene === 'changes') {
+                click('[data-tab="changes"]')
+                return waitFor(function () { return document.querySelector('[data-cr-changes]') }).then(function () {
+                  click('button[data-file-index="1"]')
+                  click('button[data-file-index="2"]')
+                  return waitFor(function () { return document.querySelectorAll('.cr-file--open .cr-diff').length >= 2 })
+                })
+              }
+              if (scene === 'review' || scene === 'running' || scene === 'error' || scene === 'empty-review') {
+                click('[data-action="review"]')
+                var wanted = scene === 'running' ? 'running' : scene === 'error' ? 'error' : 'done'
+                return waitFor(function () {
+                  return document.querySelector('[data-cr-review-state="' + wanted + '"]')
+                }, 12000).then(function () {
+                  var doc = document.querySelector('.cr-doc')
+                  if (doc) doc.scrollTop = 0
+                })
+              }
+              return null
+            })
+            .then(function () {
+              if (scene === 'changes') {
+                scrollDocTo('.cr-changes-head', 6)
+              }
+              return waitFor(function () { return document.querySelector('.cr-md, [data-cr-changes]') })
+            })
+            .then(function () {
+              ready = true
+              document.body.dataset.previewReady = '1'
+              document.body.dataset.previewScene = scene
+              window.__PREVIEW_READY__ = true
+              if (window.console && console.info) {
+                console.info('[preview] scene ready:', scene, 'mode:', mockMode)
+              }
+            })
+            .catch(function (error) {
+              document.body.dataset.previewError = String((error && error.stack) || error)
+              console.error('[preview] scene failed', error)
+            })
+        }
+
+        // Load the real plugin bundle once the shim above exists, then boot.
+        var bundle = document.createElement('script')
+        bundle.src = 'client.js'
+        bundle.onload = boot
+        bundle.onerror = function () {
+          document.getElementById('root').innerHTML = '<div class="pv-loading">client.js 加载失败</div>'
+        }
+        document.head.appendChild(bundle)
+      })()
+    </script>
+  </body>
+</html>

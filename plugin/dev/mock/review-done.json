@@ -1,0 +1,80 @@
+{
+  "jobId": "mock-job-1",
+  "headSha": "f31cec5c712d88c5f26bb0e6fcbf2e09e3954585",
+  "model": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro"
+  },
+  "findings": [
+    {
+      "id": "src/main/intro-detect/match.ts:92:9wigx7",
+      "severity": "P1",
+      "file": "src/main/intro-detect/match.ts",
+      "line": 92,
+      "title": "倒排索引候选为空时会退化成全量扫描，长季会卡住主进程",
+      "why": "当改动让两集没有任何 32 位指纹完全相同的点时，`findCandidates` 返回空数组，`matchEpisodes` 随即进入分批全量扫描；一季 12 集 × 每集 5 分钟指纹 = 每批约 24 亿次汉明比较，批间只让出一次事件循环，播放器主线程会长时间不可用。",
+      "fix": "给全量扫描加一个「最大比较次数」预算（例如 2e8），超出就直接返回 `null` 并把结果标为 `no-match`；或在扫描前用 `POINT_SECONDS` 做一次粗粒度抽样筛候选。",
+      "category": "performance"
+    },
+    {
+      "id": "src/main/intro-detect/queue.ts:41:9lyzeb",
+      "severity": "P1",
+      "file": "src/main/intro-detect/queue.ts",
+      "line": 41,
+      "title": "取消后队列没有出队，同一季会永久卡在「检测中」",
+      "why": "`cancel()` 只 abort 当前 ffmpeg 并清空 `current`，但没有把该季从 `pending` 里移除，也没重置 `running`；下一次队列 tick 看到 `running === false` 但 `pending` 里仍有同一季，会静默跳过，UI 永远拿不到「已取消」的终态。",
+      "fix": "在 `cancel()` 里同时 `pending.delete(key)`、`running = false`，并给等待中的 Promise 一个 `{ cancelled: true }` 的 resolve/reject，让调用方一定能收到终态。",
+      "category": "concurrency"
+    },
+    {
+      "id": "src/main/intro-detect/vote.ts:87:ka89oc",
+      "severity": "P2",
+      "file": "src/main/intro-detect/vote.ts",
+      "line": 87,
+      "title": "票数刚好一半时按「≥ max(2, 一半)」放行，2 集季会误判片头",
+      "why": "2 集时 `Math.max(2, Math.ceil(2 / 2))` = 2，要求 2 个不同集支持，而一次两两比对只产生 2 集的候选，起止误差正好落在 5 秒边界时可能只算 1 个支持，于是整季被判为「没有统一片头」，手动标记被覆盖成空。",
+      "fix": "票数门槛改为 `Math.max(2, Math.ceil(total / 2))` 并显式处理 `total === 2`：要么要求 1 个支持（2 集时任意一对都算全票），要么在文档里明确 2 集季不支持自动检测。",
+      "category": "correctness"
+    },
+    {
+      "id": "src/renderer/src/features/player/skip/detect-merge.ts:41:ffcumz",
+      "severity": "P2",
+      "file": "src/renderer/src/features/player/skip/detect-merge.ts",
+      "line": 41,
+      "title": "手动标记只比较 `start/end`，片尾长度变化时会被自动结果覆盖",
+      "why": "`isManual` 依据仅来自 `introSource` 字段，老记录没有该字段时按手动算；但迁移代码写回时只补 `introSource = manual` 而没有保留原有 `end`，第二次检测会把手动标好的片尾区间整体替换掉。",
+      "fix": "迁移时对已有标记同时写 `introSource: \"manual\"` 并保留原有区间字段；合并时用 `Object.assign({}, auto, manual)` 让手动字段整体优先，而不是逐字段覆盖。",
+      "category": "data"
+    },
+    {
+      "id": "src/main/intro-detect/ffmpeg.ts:115:xzbbqb",
+      "severity": "P2",
+      "file": "src/main/intro-detect/ffmpeg.ts",
+      "line": 115,
+      "title": "ffmpeg 输出到 stderr 进度信息时未限长，stdout 二进制可能撑爆 maxBuffer",
+      "why": "`runBinary` 只对 stdout 收集 chunks，但 `-progress` 未关闭，stderr 上每 0.1 秒一行；30 分钟分析会产生约 18000 行日志，Node 默认 `maxBuffer`（1 MiB）被撑满后进程被 SIGTERM 杀掉，表现为「检测随机失败」。",
+      "fix": "spawn 时显式 `maxBuffer` 并给 stdout 设上限（例如 32 MiB）；关闭 `-progress`/`-nostats`，或按行消费 stderr 只保留最后 20 行。",
+      "category": "correctness"
+    },
+    {
+      "id": "tests/intro-detect.test.ts:251:mhfb5k",
+      "severity": "P2",
+      "file": "tests/intro-detect.test.ts",
+      "line": 251,
+      "title": "新增的单测只覆盖纯函数，队列取消与子进程清理没有回归保护",
+      "why": "`queue.ts`、`ffmpeg.ts` 的取消路径（abort 后清理 map、子进程 kill）没有任何断言；上面两个 P1 都属于这条路径，后续重构会再次漏测。",
+      "fix": "为队列补两个用例：取消后再入队能重新开始、子进程 signal 后被等待结束；用 fake ffmpeg 脚本（node -e \"process.exit(0)\"）替代真实二进制。",
+      "category": "test"
+    }
+  ],
+  "overview": "2 个 P1 · 4 个 P2",
+  "partial": false,
+  "state": "done",
+  "progress": {
+    "phase": "done",
+    "filesDone": 24,
+    "filesTotal": 24,
+    "startedAt": 1792825340929,
+    "elapsedMs": 38000
+  }
+}

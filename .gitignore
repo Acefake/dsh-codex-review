@@ -1,9 +1,12 @@
-﻿# extracted / throwaway
+# extracted / throwaway
 .asar/
+.tmp/
 recon/crops/
 recon/tools/
+recon/measure/
 plugin/dev/vendor/
 plugin/dev/shots/
+verify/out/
 verify/baseline/
 node_modules/
 *.log

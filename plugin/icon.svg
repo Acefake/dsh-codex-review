@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>Code review</title>
+  <rect x="7.5" y="7.5" width="49" height="49" rx="11" stroke="#4C8DF6" stroke-width="3"/>
+  <path d="M15 23h13M15 31h22M15 39h17" stroke="#4C8DF6" stroke-width="3" stroke-linecap="round"/>
+  <path d="M40 40.5l4.5 4.5L54 35" stroke="#22C55E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

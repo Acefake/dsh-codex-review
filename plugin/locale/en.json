@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Code Review",
+    "description": "Browse GitHub pull requests, read unified diffs and run an AI review inside the DSH Web GUI."
+  }
+}

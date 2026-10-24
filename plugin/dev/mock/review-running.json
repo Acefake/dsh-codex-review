@@ -1,0 +1,19 @@
+{
+  "jobId": "mock-job-1",
+  "headSha": "f31cec5c712d88c5f26bb0e6fcbf2e09e3954585",
+  "model": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro"
+  },
+  "findings": [],
+  "overview": "2 个 P1 · 4 个 P2",
+  "partial": false,
+  "state": "running",
+  "progress": {
+    "phase": "reviewing",
+    "filesDone": 12,
+    "filesTotal": 24,
+    "startedAt": 1792825372729,
+    "elapsedMs": 6200
+  }
+}

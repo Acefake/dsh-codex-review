@@ -1,0 +1,8 @@
+# dsh-codex-review bundle patch: inserts the dual-face plugin row into the
+# profile roster. The node half (exports ".") runs in the Host process: GitHub
+# data channel + /codex-review/* JSON routes + the AI review engine. The
+# dsh.client declaration in package.json loads the browser half
+# (exports "./client", served at /plugins/dsh-codex-review/client.js).
+- insert:
+    - id: dsh-codex-review
+      name: dsh-codex-review
