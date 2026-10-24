@@ -1,0 +1,35 @@
+﻿from PIL import Image
+from collections import Counter
+p = r"C:\Users\10228\.dsh\attachments\v1\objects\2b\2bd0e6be35481a2e4381a5ed3928e286802660c40f8187084bad745f7fb0d9f0"
+im = Image.open(p).convert("RGB"); px=im.load()
+def stats(x0,y0,x1,y1,name):
+    cnt=Counter()
+    for y in range(y0,y1):
+        for x in range(x0,x1): cnt[px[x,y]]+=1
+    tot=sum(cnt.values())
+    top=cnt.most_common(4)
+    br=max(cnt, key=lambda c:0.299*c[0]+0.587*c[1]+0.114*c[2])
+    print(f"{name:28s} top={[(c,f'{n*100//tot}%') for c,n in top]} brightest={br}")
+stats(150,700,400,760,"sidebar_plain_area")
+stats(140,200,400,300,"sidebar_selected_card")
+stats(230,160,400,190,"search_pill_bg")
+stats(470,160,560,195,"seg_active_seg")
+stats(600,170,760,195,"seg_container_bg")
+stats(2145,160,2300,195,"review_btn_bg")
+stats(2390,160,2520,195,"merge_btn_bg")
+stats(680,320,780,365,"open_badge_bg")
+stats(1870,320,1930,345,"right_label_Changes")
+stats(2040,355,2100,380,"right_green_2117")
+stats(2110,355,2160,380,"right_red_25")
+stats(1700,1440,2500,1490,"composer_bg")
+stats(2470,1440,2530,1490,"composer_blue_btn")
+stats(836,700,980,745,"inline_code_chip")
+stats(1866,680,1960,720,"no_comments_text")
+stats(1900,415,2400,430,"divider_row")
+stats(1930,420,2010,470,"stack_chip1")
+stats(1930,480,2010,530,"stack_chip2")
+stats(90,60,300,110,"sidebar_header_text")
+stats(240,170,300,185,"sidebar_card_text")
+stats(240,250,400,270,"sidebar_meta_text")
+stats(600,540,1700,590,"body_para")
+stats(1865,395,1990,420,"stack_title_text")
