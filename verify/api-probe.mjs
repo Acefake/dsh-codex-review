@@ -24,6 +24,8 @@
  * error, 3 plugin routes not ready.
  */
 import { parseArgs } from 'node:util'
+import { existsSync, readFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { GuiClient } from './lib/gui.mjs'
 import { EXIT, fail, isoTimestamp, OUT_ROOT, timestampForFile, writeJson } from './lib/util.mjs'
@@ -67,6 +69,9 @@ const USAGE = `用法: node verify/api-probe.mjs [选项]
   --v2-skip-chat            跳过 v2 的真实 chat 提问（只测合并守卫与 chat 参数校验）
   --v2-closed-pr <ref>      额外验证「非 open PR → MERGE_NOT_ALLOWED」（如 Acefake/yingbox#129，已合并；用全零 stale sha，绝不真实合并）
   --v2-pr <ref>             v2 守卫/chat 的目标 PR（如 Acefake/s-skills#18）；默认自动选列表第一个 open PR
+  --v21                     启用 v2.1 自动审查断言：status 默认/config 夹取/force 真实 cycle/seen 去重/无 GitHub 写
+  --v21-skip-force          跳过 v2.1 的真实 force cycle（只测 status/config/run 守卫）
+  --v22                     启用 v2.2 发布断言：review-publish 路由/守卫 + REVIEW_NOT_READY 分支（绝不真实发布）
   --out-dir <dir>           报告目录（默认 verify/out）
   --report <json>           报告路径（默认 <out-dir>/api-probe-<时间>.json）
   --json                    只输出 JSON 摘要
@@ -97,6 +102,9 @@ function parseCli() {
         'v2-skip-chat': { type: 'boolean', default: false },
         'v2-closed-pr': { type: 'string', default: '' },
         'v2-pr': { type: 'string', default: '' },
+        v21: { type: 'boolean', default: false },
+        'v21-skip-force': { type: 'boolean', default: false },
+        v22: { type: 'boolean', default: false },
         'out-dir': { type: 'string', default: OUT_ROOT },
         report: { type: 'string' },
         json: { type: 'boolean', default: false },
@@ -140,6 +148,9 @@ function parseCli() {
     v2SkipChat: values['v2-skip-chat'],
     v2ClosedPr: String(values['v2-closed-pr'] ?? '').trim(),
     v2Pr: String(values['v2-pr'] ?? '').trim(),
+    v21: values.v21,
+    v21SkipForce: values['v21-skip-force'],
+    v22: values.v22,
     reportPath: path.resolve(outDir, values.report ?? `api-probe-${timestampForFile()}.json`),
     jsonOnly: values.json,
   }
@@ -1282,6 +1293,729 @@ if (options.v2) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.1 assertions (CONTRACT §6.5): auto-review status/config/run, force cycle,
+// seen dedup and the "no GitHub write" safety check. `enabled` is restored to
+// false in a finally block even when a probe fails.
+// ---------------------------------------------------------------------------
+const AUTO_DEFAULTS = Object.freeze({
+  enabled: false,
+  intervalSeconds: 180,
+  query: 'is:open author:@me',
+  depth: 'fast',
+  severityThreshold: 'P2',
+  includeDrafts: false,
+  maxPerCycle: 2,
+})
+const AUTO_DEPTHS = new Set(['fast', 'standard', 'deep'])
+const AUTO_RECENT_STATES = new Set(['done', 'error', 'cancelled'])
+
+/**
+ * Validate `AutoReviewConfig` (CONTRACT §6.1).
+ * @param {unknown} config
+ * @returns {string[]} problems
+ */
+function validateAutoConfig(config) {
+  if (!isObject(config)) return ['config 不是对象']
+  const problems = []
+  if (typeof config.enabled !== 'boolean') problems.push('enabled 不是布尔')
+  if (!Number.isInteger(config.intervalSeconds) || config.intervalSeconds < 60 || config.intervalSeconds > 3600) problems.push(`intervalSeconds 越界（${JSON.stringify(config.intervalSeconds)}）`)
+  if (!isNonEmptyString(config.query)) problems.push('query 为空')
+  if (!AUTO_DEPTHS.has(config.depth)) problems.push(`depth 非法（${JSON.stringify(config.depth)}）`)
+  if (!THRESHOLDS.has(config.severityThreshold)) problems.push(`severityThreshold 非法（${JSON.stringify(config.severityThreshold)}）`)
+  if (typeof config.includeDrafts !== 'boolean') problems.push('includeDrafts 不是布尔')
+  if (!Number.isInteger(config.maxPerCycle) || config.maxPerCycle < 1 || config.maxPerCycle > 5) problems.push(`maxPerCycle 越界（${JSON.stringify(config.maxPerCycle)}）`)
+  return problems
+}
+
+/**
+ * Validate one `recent` entry (CONTRACT §6.3).
+ * @param {unknown} entry
+ * @returns {string[]} problems
+ */
+function validateAutoRecentEntry(entry) {
+  if (!isObject(entry)) return ['recent 条目不是对象']
+  const problems = []
+  if (!isNonEmptyString(entry.repo) || !/^[^/\s]+\/[^/\s]+$/u.test(entry.repo)) problems.push('repo 非法')
+  if (!isPositiveInt(entry.number)) problems.push('number 非法')
+  if (!isNonEmptyString(entry.headSha)) problems.push('headSha 为空')
+  if (!AUTO_RECENT_STATES.has(entry.state)) problems.push(`state 非法（${JSON.stringify(entry.state)}）`)
+  if (typeof entry.findings !== 'number' || entry.findings < 0) problems.push('findings 非法')
+  if (entry.verdict !== undefined && !VERDICTS.has(entry.verdict)) problems.push(`verdict 非法（${JSON.stringify(entry.verdict)}）`)
+  if (entry.overview !== undefined && typeof entry.overview !== 'string') problems.push('overview 不是字符串')
+  if (typeof entry.finishedAt !== 'number') problems.push('finishedAt 不是数字')
+  return problems
+}
+
+/**
+ * Validate `AutoReviewStatus` (CONTRACT §6.3).
+ * @param {unknown} status
+ * @returns {string[]} problems
+ */
+function validateAutoStatus(status) {
+  if (!isObject(status)) return ['status 不是对象']
+  const problems = []
+  problems.push(...validateAutoConfig(status.config).map((problem) => `config.${problem}`))
+  if (typeof status.running !== 'boolean') problems.push('running 不是布尔')
+  if (typeof status.seenCount !== 'number' || status.seenCount < 0) problems.push('seenCount 非法')
+  if (!Array.isArray(status.recent)) problems.push('recent 不是数组')
+  else if (status.recent.length > 20) problems.push(`recent 超过 20 条（${status.recent.length}）`)
+  else status.recent.forEach((entry, index) => problems.push(...validateAutoRecentEntry(entry).map((problem) => `recent[${index}].${problem}`)))
+  if (status.lastCycleAt !== undefined && typeof status.lastCycleAt !== 'number') problems.push('lastCycleAt 不是数字')
+  if (status.nextCycleAt !== undefined && typeof status.nextCycleAt !== 'number') problems.push('nextCycleAt 不是数字')
+  if (status.lastError !== undefined && (!isObject(status.lastError) || !isNonEmptyString(status.lastError.code) || typeof status.lastError.message !== 'string')) problems.push('lastError 形状非法')
+  return problems
+}
+
+if (options.v21) {
+  const v21 = { enabled: true, checks: [], status: {}, config: {}, runs: {}, safety: {}, stateFile: null }
+  report.v21 = v21
+  const v21Start = checks.length
+  const stateFileCandidates = [
+    process.env.DSH_PROFILE_DIR ? path.join(process.env.DSH_PROFILE_DIR, '.codex-review', 'auto-review.json') : null,
+    process.env.DSH_HOME ? path.join(process.env.DSH_HOME, 'codex-review', 'auto-review.json') : null,
+    path.join(os.homedir(), '.dsh', 'codex-review', 'auto-review.json'),
+  ].filter(Boolean)
+  const stateFile = stateFileCandidates.find((candidate) => existsSync(candidate)) ?? stateFileCandidates[0]
+  v21.stateFile = stateFile
+  v21.stateFileCandidates = stateFileCandidates
+
+  const readStateFile = () => {
+    try {
+      return { path: stateFile, value: JSON.parse(readFileSync(stateFile, 'utf8')) }
+    } catch (error) {
+      return { path: stateFile, error: error.message }
+    }
+  }
+  const getStatus = async () => {
+    const response = await client.post('codex-review/auto-review-status', {}, { timeoutMs: 20_000 })
+    const envelope = parseEnvelope(response)
+    return { response, envelope, value: envelope.ok ? envelope.value : undefined }
+  }
+  const postConfig = async (patch) => {
+    const response = await client.post('codex-review/auto-review-config', { patch }, { timeoutMs: 20_000 })
+    const envelope = parseEnvelope(response)
+    return { response, envelope, value: envelope.ok ? envelope.value : undefined }
+  }
+  const postRun = async (body) => {
+    const response = await client.post('codex-review/auto-review-run', body, { timeoutMs: 20_000 })
+    const envelope = parseEnvelope(response)
+    return { response, envelope, value: envelope.ok ? envelope.value : undefined }
+  }
+  const waitCycleIdle = async (timeoutMs) => {
+    const deadline = Date.now() + timeoutMs
+    let last = null
+    while (Date.now() < deadline) {
+      const status = await getStatus()
+      if (!status.envelope.envelope || !status.envelope.ok) return { status: last, note: `status 轮询失败 HTTP ${status.response.status}` }
+      last = status.value
+      if (last.running === false) return { status: last }
+      await delay(options.pollMs)
+    }
+    return { status: last, note: `超时 ${timeoutMs}ms cycle 仍在 running` }
+  }
+
+  try {
+    // Capability: the v2.1 status route answers a JSON envelope once deployed.
+    const capability = await getStatus()
+    const v21Active = capability.response.status !== 404 && capability.response.status !== 405 && capability.envelope.envelope
+    v21.active = v21Active
+    check('v2.1: Host 已部署自动审查路由（status/config/run 返回 JSON 信封）', v21Active, `status HTTP ${capability.response.status}${capability.envelope.error ? `/${capability.envelope.error.code}` : ''}`)
+
+    if (!v21Active) {
+      checkPending('v2.1 status 默认结构（config 默认值/running/recent/seenCount）', 'v2.1 尚未生效')
+      checkPending('v2.1 config 夹取（interval 60–3600、maxPerCycle 1–5、非法 depth 回退、未知字段忽略）', 'v2.1 尚未生效')
+      checkPending('v2.1 run {force:false} + disabled → started:false + reason', 'v2.1 尚未生效')
+      checkPending('v2.1 run {force:true} 真实 cycle → recent done + findings/verdict 合法', 'v2.1 尚未生效')
+      checkPending('v2.1 第二次 force 命中 seen（不重复审查）', 'v2.1 尚未生效')
+      checkPending('v2.1 安全：auto-review 无 GitHub 写（PR state/评论数未变）', 'v2.1 尚未生效')
+    } else {
+      // --- status defaults ---------------------------------------------------
+      // Normalize to contract defaults first: an earlier operator smoke may have
+      // left interval/maxPerCycle or recent history behind (enabled must be off).
+      const normalize = await postConfig({ ...AUTO_DEFAULTS })
+      check('v2.1 status: 可先归一化到契约默认配置', normalize.envelope.ok && normalize.value?.config?.enabled === false, JSON.stringify(normalize.value?.config ?? normalize.envelope.error ?? {}).slice(0, 240))
+      const initialStatus = await getStatus()
+      const initial = initialStatus.value
+      v21.status.initial = initial
+      check('v2.1 status: 信封合法且 value 为对象', initialStatus.envelope.ok && isObject(initial), JSON.stringify(initialStatus.envelope.error ?? {}).slice(0, 200))
+      const initialProblems = validateAutoStatus(initial)
+      check('v2.1 status: AutoReviewStatus 结构合法', initialProblems.length === 0, initialProblems.slice(0, 6).join('；'))
+      if (isObject(initial?.config)) {
+        const cfg = initial.config
+        check(
+          'v2.1 status: config 默认值（enabled=false/interval=180/query/depth=fast/P2/includeDrafts=false/maxPerCycle=2）',
+          cfg.enabled === false
+            && cfg.intervalSeconds === AUTO_DEFAULTS.intervalSeconds
+            && cfg.query === AUTO_DEFAULTS.query
+            && cfg.depth === AUTO_DEFAULTS.depth
+            && cfg.severityThreshold === AUTO_DEFAULTS.severityThreshold
+            && cfg.includeDrafts === AUTO_DEFAULTS.includeDrafts
+            && cfg.maxPerCycle === AUTO_DEFAULTS.maxPerCycle,
+          JSON.stringify(cfg),
+        )
+      }
+      // Data-aware: recent may already contain results from the operator smoke
+      // (contract only bounds the list at 20); assert structure + idle state.
+      check(
+        'v2.1 status: running=false、recent 为数组（≤20）、seenCount≥0',
+        initial?.running === false
+          && Array.isArray(initial?.recent)
+          && initial.recent.length <= 20
+          && typeof initial?.seenCount === 'number'
+          && initial.seenCount >= 0,
+        JSON.stringify({ running: initial?.running, recent: initial?.recent?.length, seenCount: initial?.seenCount }),
+      )
+
+      // --- config clamping ---------------------------------------------------
+      const clamp = await postConfig({ enabled: true, intervalSeconds: 30, maxPerCycle: 99, depth: 'nope', unknownKey: 1 })
+      const clamped = clamp.value
+      v21.config.clamped = clamped
+      check('v2.1 config: 信封合法且回显 status', clamp.envelope.ok && isObject(clamped?.config), JSON.stringify(clamp.envelope.error ?? {}).slice(0, 200))
+      if (isObject(clamped?.config)) {
+        const cfg = clamped.config
+        check('v2.1 config: intervalSeconds 30→夹取为 60', cfg.intervalSeconds === 60, JSON.stringify(cfg.intervalSeconds))
+        check('v2.1 config: maxPerCycle 99→夹取为 5', cfg.maxPerCycle === 5, JSON.stringify(cfg.maxPerCycle))
+        check('v2.1 config: 非法 depth 回退 fast', cfg.depth === 'fast', JSON.stringify(cfg.depth))
+        check('v2.1 config: 未知字段被忽略', cfg.unknownKey === undefined, JSON.stringify(Object.keys(cfg)))
+        check('v2.1 config: enabled=true 生效', cfg.enabled === true, JSON.stringify(cfg.enabled))
+      }
+      const persisted = readStateFile()
+      v21.stateFileContent = persisted
+      if (persisted.value) {
+        check(
+          'v2.1 config: 状态文件持久化（intervalSeconds=60/maxPerCycle=5/depth=fast/enabled=true）',
+          persisted.value?.config?.intervalSeconds === 60 && persisted.value?.config?.maxPerCycle === 5 && persisted.value?.config?.depth === 'fast' && persisted.value?.config?.enabled === true,
+          JSON.stringify(persisted.value?.config),
+        )
+      } else {
+        checkPending('v2.1 config: 状态文件持久化', `无法读取 ${stateFile}：${persisted.error}`)
+      }
+
+      // Immediately turn it off again (default is off; never leave it enabled).
+      const off = await postConfig({ enabled: false })
+      check('v2.1 config: 可恢复 enabled=false', off.envelope.ok && off.value?.config?.enabled === false, JSON.stringify(off.value?.config ?? off.envelope.error ?? {}).slice(0, 200))
+
+      // --- run without force while disabled ---------------------------------
+      const guarded = await postRun({ force: false })
+      check('v2.1 run: {force:false} + disabled → started:false 且带 reason', guarded.envelope.ok && guarded.value?.started === false && isNonEmptyString(guarded.value?.reason), JSON.stringify(guarded.value ?? guarded.envelope.error ?? {}).slice(0, 240))
+      v21.runs.guarded = guarded.value
+
+      // --- force cycle (real review, depth=fast) ----------------------------
+      const openList = await client.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+      const openItems = openList.json?.value?.items ?? []
+      v21.openPrCount = openItems.length
+      let safetyBefore = null
+      if (openItems.length > 0) {
+        const target = openItems[0]
+        const detail = await client.post('codex-review/pr', { repo: target.repo, number: target.number }, { timeoutMs: 30_000 })
+        const envelope = parseEnvelope(detail)
+        if (envelope.ok) {
+          safetyBefore = {
+            repo: target.repo,
+            number: target.number,
+            state: envelope.value?.summary?.state ?? null,
+            headSha: envelope.value?.headSha ?? envelope.value?.summary?.headSha ?? null,
+            commentsTotal: envelope.value?.comments?.total ?? null,
+            inlineCount: Array.isArray(envelope.value?.comments?.inline) ? envelope.value.comments.inline.length : null,
+          }
+        }
+      }
+      v21.safety.before = safetyBefore
+      if (options.v21SkipForce) {
+        checkPending('v2.1 run: {force:true} 真实 cycle → recent done + findings/verdict 合法', '按 --v21-skip-force 跳过')
+        checkPending('v2.1 第二次 force 命中 seen（不重复审查）', '按 --v21-skip-force 跳过')
+        checkPending('v2.1 安全：auto-review 无 GitHub 写（PR state/评论数未变）', '按 --v21-skip-force 跳过')
+      } else {
+        const recentBeforeForce = Array.isArray(initial?.recent) ? initial.recent : []
+        const beforeKeys = new Set(recentBeforeForce.map((entry) => `${entry?.repo}#${entry?.number}`))
+        const force = await postRun({ force: true })
+        v21.runs.force = force.value
+        check('v2.1 run: {force:true} → started:true', force.envelope.ok && force.value?.started === true, JSON.stringify(force.value ?? force.envelope.error ?? {}).slice(0, 240))
+        const cycle = await waitCycleIdle(options.reviewTimeoutMs)
+        const after = cycle.status
+        v21.status.afterForce = after
+        check('v2.1 run: cycle 结束（status.running=false）', Boolean(after) && after.running === false, cycle.note || `running=${String(after?.running)}`)
+        if (isObject(after)) {
+          const recent = Array.isArray(after.recent) ? after.recent : []
+          const doneEntry = recent.find((entry) => entry?.state === 'done')
+          const newEntries = recent.slice(0, Math.max(0, recent.length - recentBeforeForce.length))
+          v21.runs.newRecentEntries = newEntries
+          v21.runs.recentBeforeForce = recentBeforeForce.length
+          if (openItems.length === 0) {
+            checkPending('v2.1 run: recent 出现 done 结果', '当前没有 open PR，cycle 无目标（契约允许）')
+          } else if (newEntries.length === 0 && doneEntry === undefined) {
+            checkPending(
+              'v2.1 run: recent 出现 done 结果',
+              '本轮无新增审查（open PR 均已在 seen 中）；且已知实现缺陷：recent 未持久化、插件重载后 in-memory 为空，待 Host 0.5.0 修复后复跑',
+            )
+          } else {
+            check('v2.1 run: recent 含 done 结果（可为此前已审结果）', Boolean(doneEntry), JSON.stringify(recent.slice(0, 3)).slice(0, 400))
+          }
+          if (doneEntry) {
+            const entryProblems = validateAutoRecentEntry(doneEntry)
+            check('v2.1 run: recent done 条目 findings/verdict 合法', entryProblems.length === 0 && typeof doneEntry.findings === 'number' && (doneEntry.verdict === undefined || VERDICTS.has(doneEntry.verdict)), entryProblems.slice(0, 4).join('；'))
+            v21.runs.doneEntry = doneEntry
+          }
+          // Data-aware: any newly added result must belong to a PR that was not
+          // already reviewed before this cycle; zero new entries is fine when
+          // every open PR is already in `seen` (operator smoke).
+          if (newEntries.length > 0) {
+            check(
+              'v2.1 run: 新增 recent 条目对应此前未审 PR（seen 语义）',
+              newEntries.every((entry) => !beforeKeys.has(`${entry?.repo}#${entry?.number}`)),
+              JSON.stringify({ newEntries: newEntries.map((entry) => `${entry?.repo}#${entry?.number}`), before: [...beforeKeys] }),
+            )
+          } else if (openItems.length > 0) {
+            checkPending('v2.1 run: 新增 recent 条目对应此前未审 PR（seen 语义）', '本轮没有新增审查（所有 open PR 已在 seen 中，operator smoke 已审）')
+          }
+          // 0.5.0 persists `recent` to the state file: verify when a result exists.
+          const persistedAfterCycle = readStateFile()
+          if (persistedAfterCycle.value) {
+            const fileRecent = Array.isArray(persistedAfterCycle.value.recent) ? persistedAfterCycle.value.recent : null
+            v21.stateFileAfterCycle = { recentLength: fileRecent?.length ?? null, keys: persistedAfterCycle.value.recent === undefined ? 'missing' : 'present' }
+            if (fileRecent === null) {
+              check('v2.1 status: recent 持久化到状态文件（0.5.0）', false, '状态文件缺少 recent 字段')
+            } else if (fileRecent.length > 0) {
+              check(
+                'v2.1 status: recent 持久化到状态文件（0.5.0，条数与 status 一致）',
+                fileRecent.length === (Array.isArray(after.recent) ? after.recent.length : -1),
+                `文件 recent=${fileRecent.length}，status recent=${Array.isArray(after.recent) ? after.recent.length : '?'}`,
+              )
+            } else {
+              checkPending('v2.1 status: recent 持久化到状态文件（0.5.0）', '本轮无新增审查结果，recent 为空；需有新结果后再验证')
+            }
+          }
+          // seen dedup: a second force must not add another recent entry.
+          const recentLenBefore = recent.length
+          const force2 = await postRun({ force: true })
+          check('v2.1 run: 第二次 {force:true} → started:true', force2.envelope.ok && force2.value?.started === true, JSON.stringify(force2.value ?? force2.envelope.error ?? {}).slice(0, 240))
+          const cycle2 = await waitCycleIdle(Math.min(options.reviewTimeoutMs, 120_000))
+          const after2 = cycle2.status
+          v21.status.afterSecondForce = after2
+          check('v2.1 run: 第二轮 cycle 结束（running=false）', Boolean(after2) && after2.running === false, cycle2.note || `running=${String(after2?.running)}`)
+          if (isObject(after2)) {
+            check(
+              'v2.1 run: seen 命中，不重复审查（recent 条数不增加）',
+              Array.isArray(after2.recent) && after2.recent.length === recentLenBefore,
+              `recent ${recentLenBefore} → ${Array.isArray(after2.recent) ? after2.recent.length : '?'}`,
+            )
+          }
+        }
+
+        // --- safety: no GitHub write happened ---------------------------------
+        if (safetyBefore) {
+          const detail = await client.post('codex-review/pr', { repo: safetyBefore.repo, number: safetyBefore.number }, { timeoutMs: 30_000 })
+          const envelope = parseEnvelope(detail)
+          const afterSafety = envelope.ok
+            ? {
+                repo: safetyBefore.repo,
+                number: safetyBefore.number,
+                state: envelope.value?.summary?.state ?? null,
+                headSha: envelope.value?.headSha ?? envelope.value?.summary?.headSha ?? null,
+                commentsTotal: envelope.value?.comments?.total ?? null,
+                inlineCount: Array.isArray(envelope.value?.comments?.inline) ? envelope.value.comments.inline.length : null,
+              }
+            : null
+          v21.safety.after = afterSafety
+          check(
+            'v2.1 安全: auto-review 后 PR state 未变',
+            Boolean(afterSafety) && afterSafety.state === safetyBefore.state,
+            `${safetyBefore.state} → ${afterSafety?.state}`,
+          )
+          if (safetyBefore.headSha === null || afterSafety?.headSha === null) {
+            checkPending('v2.1 安全: auto-review 后 headSha 未变', 'PrDetail 未返回 headSha（改为 state + 评论数保证），该条记 pending')
+          } else {
+            check(
+              'v2.1 安全: auto-review 后 headSha 未变',
+              afterSafety.headSha === safetyBefore.headSha,
+              `${String(safetyBefore.headSha).slice(0, 12)}… → ${String(afterSafety?.headSha).slice(0, 12)}…`,
+            )
+          }
+          check(
+            'v2.1 安全: auto-review 后评论数未变（未发评论）',
+            Boolean(afterSafety) && afterSafety.commentsTotal === safetyBefore.commentsTotal && afterSafety.inlineCount === safetyBefore.inlineCount,
+            `total ${safetyBefore.commentsTotal} → ${afterSafety?.commentsTotal}，inline ${safetyBefore.inlineCount} → ${afterSafety?.inlineCount}`,
+          )
+        }
+      }
+    }
+  } catch (error) {
+    check('v2.1 自动审查流程执行', false, error instanceof Error ? error.message : String(error))
+    v21.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  } finally {
+    // Never leave periodic auto-review running: restore defaults, then verify.
+    if (v21.active === false) {
+      checkPending('v2.1 测试后 enabled 恢复 false（不留下后台自动审查）', 'v2.1 尚未生效，无需恢复')
+    } else {
+      try {
+        const restore = await postConfig({ ...AUTO_DEFAULTS })
+        v21.restore = restore.value?.config ?? null
+        const status = await getStatus()
+        v21.finalStatus = status.value ?? null
+        check(
+          'v2.1 测试后 enabled 恢复 false（不留下后台自动审查）',
+          status.envelope.ok && status.value?.config?.enabled === false,
+          JSON.stringify(status.value?.config ?? {}).slice(0, 240),
+        )
+        const persisted = readStateFile()
+        if (persisted.value) {
+          check(
+            'v2.1 状态文件恢复 enabled=false 且 interval/maxPerCycle 回默认',
+            persisted.value?.config?.enabled === false && persisted.value?.config?.intervalSeconds === AUTO_DEFAULTS.intervalSeconds && persisted.value?.config?.maxPerCycle === AUTO_DEFAULTS.maxPerCycle,
+            JSON.stringify(persisted.value?.config),
+          )
+          v21.stateFileAfter = persisted.value
+        }
+      } catch (error) {
+        check('v2.1 测试后 enabled 恢复 false（不留下后台自动审查）', false, `恢复失败：${error.message}`)
+      }
+    }
+  }
+  v21.checks = checks.slice(v21Start)
+  v21.pendingCount = v21.checks.filter((entry) => entry.pending === true).length
+  v21.failedCount = v21.checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
+// v2.2 assertions (CONTRACT §7.4): review-publish guards + REVIEW_NOT_READY.
+//
+// SAFETY (hard rules, mirrored in verify/README.md §4.9):
+//   1. NEVER send `confirm:true` for a PR whose current head already has a
+//      `done` review — that would create a real GitHub review on the user's PR.
+//   2. Before EVERY `confirm:true` request, re-read `POST /codex-review/pr` and
+//      require `review.state !== 'done'`; when the state is `done` (or cannot be
+//      read) the probe records `pending` and does NOT send the request.
+//   3. The `mode` / `minSeverity` / `body` guards may only use `confirm:true`
+//      because the Host validates them *before* it touches GitHub
+//      (`index.js` reviewPublish) and only behind rule 2. Nothing here can reach
+//      `POST /pulls/{n}/reviews`.
+// ---------------------------------------------------------------------------
+const PUBLISH_SUMMARY_MAX_CHARS = 4_000
+
+if (options.v22) {
+  const v22 = {
+    enabled: true,
+    active: null,
+    routeStatus: null,
+    checks: [],
+    target: null,
+    candidates: [],
+    requests: [],
+    safety: {},
+    reviewNotReady: null,
+  }
+  report.v22 = v22
+  const v22Start = checks.length
+  const publishRequests = []
+  v22.requests = publishRequests
+
+  /**
+   * Read the PR detail used by rule 2: the review state of the *current* head.
+   * @param {string} repo
+   * @param {number} number
+   * @returns {Promise<{response: any, envelope: any, state: string | null, headSha: string | null, findings: number | null, comments: any}>}
+   */
+  const readReviewState = async (repo, number) => {
+    const response = await client.post('codex-review/pr', { repo, number }, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    const value = envelope.ok ? envelope.value : undefined
+    const comments = isObject(value?.comments)
+      ? {
+          total: typeof value.comments.total === 'number' ? value.comments.total : null,
+          reviews: Array.isArray(value.comments.reviews) ? value.comments.reviews.length : null,
+          inline: Array.isArray(value.comments.inline) ? value.comments.inline.length : null,
+        }
+      : null
+    return {
+      response,
+      envelope,
+      state: typeof value?.review?.state === 'string' ? value.review.state : null,
+      headSha: typeof value?.review?.headSha === 'string'
+        ? value.review.headSha
+        : typeof value?.summary?.headSha === 'string' ? value.summary.headSha : null,
+      findings: Array.isArray(value?.review?.findings) ? value.review.findings.length : null,
+      comments,
+    }
+  }
+
+  /**
+   * POST one review-publish probe. Rule 2 is enforced here for every
+   * `confirm:true` body: the request is only sent after `/pr` shows that the
+   * current head has no `done` review.
+   * @param {Record<string, any>} body
+   * @param {string} label
+   * @returns {Promise<any>} the recorded request entry.
+   */
+  const publishProbe = async (body, label) => {
+    const entry = {
+      label,
+      request: {
+        repo: body.repo,
+        number: body.number,
+        confirm: body.confirm,
+        mode: body.mode,
+        minSeverity: body.minSeverity,
+        bodyLength: typeof body.body === 'string' ? body.body.length : null,
+      },
+      reviewStateBefore: null,
+      headShaBefore: null,
+      sent: false,
+      skipped: false,
+      response: null,
+    }
+    publishRequests.push(entry)
+    if (body.confirm === true) {
+      const gate = await readReviewState(body.repo, body.number)
+      entry.reviewStateBefore = gate.state
+      entry.headShaBefore = gate.headSha
+      entry.gate = {
+        httpStatus: gate.response.status,
+        envelope: gate.envelope.envelope,
+        errorCode: gate.envelope.error?.code ?? null,
+        findings: gate.findings,
+      }
+      if (!gate.envelope.ok || gate.state === 'done' || gate.state === null) {
+        entry.skipped = true
+        entry.skipReason = gate.envelope.ok
+          ? `当前 head 已有 done 审查或状态不可判定（review.state=${String(gate.state)}），按安全红线跳过，不发 confirm:true`
+          : `无法读取审查状态（${gate.envelope.error?.code ?? `HTTP ${gate.response.status}`}），按安全红线跳过，不发 confirm:true`
+        return entry
+      }
+    }
+    const response = await client.post('codex-review/review-publish', body, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    entry.sent = true
+    entry.response = {
+      status: response.status,
+      elapsedMs: response.elapsedMs,
+      envelope: envelope.envelope,
+      ok: envelope.envelope ? envelope.ok : null,
+      code: envelope.error?.code ?? null,
+      message: typeof envelope.error?.message === 'string' ? envelope.error.message.slice(0, 300) : '',
+      published: envelope.ok && isObject(envelope.value) ? envelope.value.published ?? null : null,
+    }
+    return entry
+  }
+
+  try {
+    // --- route readiness + confirm:false guard ------------------------------
+    // `confirm:false` can never publish: the Host rejects it before any GitHub
+    // access, so this doubles as the capability probe.
+    const guardRef = { repo: options.pr.repo, number: options.pr.number }
+    const capability = await publishProbe({ repo: guardRef.repo, number: guardRef.number, confirm: false }, 'route-ready-confirm-false')
+    const capStatus = capability.response?.status ?? 0
+    const capReady = capStatus === 200 && capability.response?.envelope === true
+    v22.routeStatus = capStatus
+    v22.active = capReady
+    const pendingRest = (detail) => {
+      for (const name of [
+        'v2.2 守卫: confirm:false → BAD_REQUEST',
+        'v2.2 守卫: 缺 confirm → BAD_REQUEST',
+        'v2.2 守卫: 非法 mode → BAD_REQUEST',
+        'v2.2 守卫: 非法 minSeverity → BAD_REQUEST',
+        'v2.2 守卫: body 超 4000 → BAD_REQUEST',
+        'v2.2 REVIEW_NOT_READY: 当前 head 无 done 审查 → REVIEW_NOT_READY',
+        'v2.2 安全: 未发出任何「confirm:true + 已有 done 审查」的发布请求',
+        'v2.2 安全: 每个 confirm:true 请求前都先 POST /pr 确认 state !== done',
+        'v2.2 安全: 未观察到 published:true（未在 GitHub 创建 review）',
+      ]) checkPending(name, detail)
+    }
+    if (capStatus === 404 || capStatus === 405) {
+      // Older Hosts have the /codex-review prefix handler but no publish route:
+      // it answers HTTP 404 with `{error:"not found"}` instead of an envelope.
+      checkPending('v2.2 路由就绪: POST /codex-review/review-publish 返回 JSON 信封', `Host 无该路由（HTTP ${capStatus}）；v2.2 断言全部记 pending`)
+      pendingRest(`v2.2 路由未就绪（HTTP ${capStatus}）`)
+    } else if (!capReady) {
+      check('v2.2 路由就绪: POST /codex-review/review-publish 返回 JSON 信封', false, `HTTP ${capStatus}，但响应不是 {ok:...} 信封`)
+      pendingRest(`review-publish 响应不是合法信封（HTTP ${capStatus}）`)
+    } else {
+      check('v2.2 路由就绪: POST /codex-review/review-publish 返回 JSON 信封', true, `HTTP ${capStatus}，${capability.response.elapsedMs}ms`)
+      check(
+        'v2.2 守卫: confirm:false → BAD_REQUEST',
+        capability.response.ok === false && capability.response.code === 'BAD_REQUEST',
+        `code=${capability.response.code ?? '-'}，message=${capability.response.message || '-'}`,
+      )
+      check(
+        'v2.2 守卫: confirm:false 的 message 指向 confirm',
+        /confirm/i.test(capability.response.message || ''),
+        `message=${JSON.stringify(capability.response.message || '')}`,
+      )
+      const noConfirm = await publishProbe({ repo: guardRef.repo, number: guardRef.number }, 'missing-confirm')
+      check(
+        'v2.2 守卫: 缺 confirm → BAD_REQUEST',
+        noConfirm.response?.ok === false && noConfirm.response?.code === 'BAD_REQUEST',
+        `code=${noConfirm.response?.code ?? '-'}，message=${noConfirm.response?.message || '-'}`,
+      )
+
+      // --- pick a target whose current head has no done review (rule 2) ----
+      let listItems = []
+      try {
+        const listResponse = await client.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+        listItems = Array.isArray(listResponse.json?.value?.items) ? listResponse.json.value.items : []
+      } catch (error) {
+        v22.listError = error.message
+      }
+      v22.openPrCount = listItems.length
+      const ordered = []
+      const preferred = listItems.find((item) => item?.repo === options.pr.repo && item?.number === options.pr.number)
+      if (preferred) ordered.push(preferred)
+      for (const item of listItems) {
+        if (item && isNonEmptyString(item.repo) && isPositiveInt(item.number) && !ordered.includes(item)) ordered.push(item)
+      }
+      for (const item of ordered.slice(0, 10)) {
+        let detail
+        try {
+          detail = await readReviewState(item.repo, item.number)
+        } catch (error) {
+          v22.candidates.push({ repo: item.repo, number: item.number, state: null, error: error.message })
+          continue
+        }
+        const record = {
+          repo: item.repo,
+          number: item.number,
+          title: typeof item.title === 'string' ? item.title.slice(0, 80) : '',
+          state: detail.state,
+          headSha: detail.headSha,
+          findings: detail.findings,
+        }
+        v22.candidates.push(record)
+        if (v22.target === null && detail.envelope.ok && typeof detail.state === 'string' && detail.state !== 'done') {
+          v22.target = { ...record, comments: detail.comments }
+        }
+      }
+      if (v22.candidates.length === 0) {
+        checkPending('v2.2 候选: 逐个读取候选 PR 的 review.state', '当前没有 open PR（/prs 为空），无法挑选 REVIEW_NOT_READY 目标')
+      } else {
+        const readable = v22.candidates.filter((entry) => typeof entry.state === 'string')
+        check(
+          'v2.2 候选: 逐个读取候选 PR 的 review.state',
+          readable.length > 0,
+          `${v22.candidates.length} 个候选：${v22.candidates.map((entry) => `#${entry.number}:${entry.state ?? '?'}`).join('，')}${v22.target ? `；目标 #${v22.target.number}（state=${v22.target.state}）` : '；全部已有 done 审查'}`,
+        )
+      }
+
+      // Rule 2 reference for the confirm:true validation guards: the picked
+      // non-done target when available, otherwise the default PR (the gate will
+      // refuse it and the corresponding assertions become pending).
+      const confirmRef = v22.target
+        ? { repo: v22.target.repo, number: v22.target.number }
+        : { repo: options.pr.repo, number: options.pr.number }
+
+      // --- confirm:true validation guards -----------------------------------
+      // These bodies are rejected during request validation, so they never read
+      // or write GitHub. They are still gated by rule 2.
+      const badMode = await publishProbe({ repo: confirmRef.repo, number: confirmRef.number, confirm: true, mode: 'nope' }, 'invalid-mode')
+      if (badMode.skipped) checkPending('v2.2 守卫: 非法 mode → BAD_REQUEST', badMode.skipReason)
+      else {
+        check(
+          'v2.2 守卫: 非法 mode → BAD_REQUEST',
+          badMode.response.ok === false && badMode.response.code === 'BAD_REQUEST',
+          `code=${badMode.response.code ?? '-'}，message=${badMode.response.message || '-'}`,
+        )
+      }
+      const badSeverity = await publishProbe({ repo: confirmRef.repo, number: confirmRef.number, confirm: true, minSeverity: 'P5' }, 'invalid-min-severity')
+      if (badSeverity.skipped) checkPending('v2.2 守卫: 非法 minSeverity → BAD_REQUEST', badSeverity.skipReason)
+      else {
+        check(
+          'v2.2 守卫: 非法 minSeverity → BAD_REQUEST',
+          badSeverity.response.ok === false && badSeverity.response.code === 'BAD_REQUEST',
+          `code=${badSeverity.response.code ?? '-'}，message=${badSeverity.response.message || '-'}`,
+        )
+      }
+      const longBody = 'x'.repeat(PUBLISH_SUMMARY_MAX_CHARS + 1)
+      const badBody = await publishProbe({ repo: confirmRef.repo, number: confirmRef.number, confirm: true, mode: 'summary', body: longBody }, 'body-too-long')
+      if (badBody.skipped) checkPending('v2.2 守卫: body 超 4000 → BAD_REQUEST', badBody.skipReason)
+      else {
+        check(
+          'v2.2 守卫: body 超 4000 → BAD_REQUEST',
+          badBody.response.ok === false && badBody.response.code === 'BAD_REQUEST',
+          `bodyLength=${longBody.length}，code=${badBody.response.code ?? '-'}，message=${badBody.response.message || '-'}`,
+        )
+      }
+
+      // --- REVIEW_NOT_READY branch ------------------------------------------
+      // `summary` mode + no done review for the current head: the publisher
+      // throws before it reads comments or creates a review.
+      if (!v22.target) {
+        checkPending(
+          'v2.2 REVIEW_NOT_READY: 当前 head 无 done 审查 → REVIEW_NOT_READY',
+          v22.candidates.length === 0
+            ? '没有候选 PR，无法找到「当前 head 无 done 审查」的目标'
+            : '所有候选 PR 的当前 head 都已有 done 审查；按安全红线不发送 confirm:true',
+        )
+      } else {
+        const target = v22.target
+        const before = { state: target.state, headSha: target.headSha, comments: target.comments }
+        v22.safety.before = { repo: target.repo, number: target.number, ...before }
+        const notReady = await publishProbe({ repo: target.repo, number: target.number, confirm: true, mode: 'summary' }, 'review-not-ready')
+        v22.reviewNotReady = notReady.response ?? null
+        if (notReady.skipped) {
+          checkPending('v2.2 REVIEW_NOT_READY: 当前 head 无 done 审查 → REVIEW_NOT_READY', notReady.skipReason)
+        } else {
+          check(
+            'v2.2 REVIEW_NOT_READY: 当前 head 无 done 审查 → REVIEW_NOT_READY',
+            notReady.response.ok === false && notReady.response.code === 'REVIEW_NOT_READY',
+            `code=${notReady.response.code ?? '-'}，message=${notReady.response.message || '-'}`,
+          )
+          const after = await readReviewState(target.repo, target.number)
+          v22.safety.after = { repo: target.repo, number: target.number, state: after.state, headSha: after.headSha, comments: after.comments }
+          const commentsKnown = Boolean(before.comments && after.comments)
+          if (!commentsKnown) {
+            checkPending('v2.2 安全: REVIEW_NOT_READY 分支未改变 PR 评论数（未创建 review）', 'PrDetail 未返回 comments，本条记 pending')
+          } else {
+            check(
+              'v2.2 安全: REVIEW_NOT_READY 分支未改变 PR 评论数（未创建 review）',
+              before.comments.total === after.comments.total && before.comments.inline === after.comments.inline,
+              `total ${before.comments.total} → ${after.comments.total}，inline ${before.comments.inline} → ${after.comments.inline}`,
+            )
+          }
+        }
+      }
+
+      // --- safety counters ---------------------------------------------------
+      const sentConfirm = publishRequests.filter((entry) => entry.sent && entry.request.confirm === true)
+      const unsafe = sentConfirm.filter((entry) => entry.reviewStateBefore === 'done')
+      const ungated = sentConfirm.filter((entry) => entry.reviewStateBefore === null)
+      const published = publishRequests.filter((entry) => entry.response?.published === true)
+      v22.safety.summary = {
+        requests: publishRequests.length,
+        sent: publishRequests.filter((entry) => entry.sent).length,
+        skipped: publishRequests.filter((entry) => entry.skipped).length,
+        sentConfirm: sentConfirm.length,
+        unsafe: unsafe.length,
+        ungated: ungated.length,
+        published: published.length,
+      }
+      check(
+        'v2.2 安全: 未发出任何「confirm:true + 已有 done 审查」的发布请求',
+        unsafe.length === 0,
+        `confirm:true 请求 ${sentConfirm.length} 个，其中命中 done 审查 ${unsafe.length} 个；跳过 ${v22.safety.summary.skipped} 个`,
+      )
+      if (sentConfirm.length === 0) {
+        checkPending('v2.2 安全: 每个 confirm:true 请求前都先 POST /pr 确认 state !== done', '本次没有发送任何 confirm:true 请求（目标均被安全红线拦下）')
+      } else {
+        check(
+          'v2.2 安全: 每个 confirm:true 请求前都先 POST /pr 确认 state !== done',
+          ungated.length === 0 && sentConfirm.every((entry) => entry.reviewStateBefore !== 'done'),
+          `${sentConfirm.length} 个 confirm:true 请求，${ungated.length} 个缺少 gate：${sentConfirm.map((entry) => `${entry.label}=${String(entry.reviewStateBefore)}`).join('，')}`,
+        )
+      }
+      check(
+        'v2.2 安全: 未观察到 published:true（未在 GitHub 创建 review）',
+        published.length === 0,
+        published.length === 0 ? '所有发布请求均被守卫拒绝' : JSON.stringify(published.map((entry) => ({ label: entry.label, code: entry.response?.code }))),
+      )
+    }
+  } catch (error) {
+    check('v2.2 发布守卫流程执行', false, error instanceof Error ? error.message : String(error))
+    v22.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  }
+  v22.checks = checks.slice(v22Start)
+  v22.pendingCount = v22.checks.filter((entry) => entry.pending === true).length
+  v22.failedCount = v22.checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
 // trust fence probes (local-only loopback server must reject these)
 // ---------------------------------------------------------------------------
 if (!options.skipSecurity) {
@@ -1344,6 +2078,18 @@ const summary = {
   v2Failed: report.v2?.failedCount ?? 0,
   chatDeltas: report.v2?.chat?.real?.deltaCount ?? null,
   chatTextLength: report.v2?.chat?.real?.text?.length ?? null,
+  v21Active: report.v21?.active ?? null,
+  v21Pending: report.v21?.pendingCount ?? 0,
+  v21Failed: report.v21?.failedCount ?? 0,
+  autoReviewRecent: report.v21?.status?.afterForce?.recent?.length ?? null,
+  autoReviewFinalEnabled: report.v21?.finalStatus?.config?.enabled ?? null,
+  v22Active: report.v22?.active ?? null,
+  v22Pending: report.v22?.pendingCount ?? 0,
+  v22Failed: report.v22?.failedCount ?? 0,
+  v22Target: report.v22?.target ? `${report.v22.target.repo}#${report.v22.target.number}` : null,
+  v22Requests: report.v22?.safety?.summary?.requests ?? null,
+  v22SentConfirm: report.v22?.safety?.summary?.sentConfirm ?? null,
+  v22Published: report.v22?.safety?.summary?.published ?? null,
 }
 if (options.jsonOnly) console.log(JSON.stringify(summary))
 else {

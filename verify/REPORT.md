@@ -1,21 +1,23 @@
 # dsh-codex-review · 端到端验收报告
 
-> **状态：PASS（v1 验收 16:05；v1.1 验收 19:10；v2 验收 2026-10-24 20:05，Host v2 / health version=0.3.0，client.js 冻结 mtime 19:54:43 / 255072B）**
-> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00–20:10（Asia/Shanghai）
+> **状态：PASS（v1 验收 16:05；v1.1 验收 19:10；v2 验收 20:05；v2.1 复跑 23:59；v2.2 验收 2026-10-25 00:03，Host health version=0.5.0，client.js 冻结 mtime 22:34:41 / 353533B）**
+> 执行：verifier（独立验证装置 `verify/`）｜2026-10-24 15:00 – 2026-10-25 00:25（Asia/Shanghai）
 > 插件安装/重载与 AI 审查修复由 Lead 执行；本文档所有数字均来自真实 DSH Web GUI 与真实路由。
 > v1 证据：`api-probe-final.json`（43/43）、`ai-review-ui.json`、`page-check-final.json`、`click-panel-final.json`；
 > v1.1 证据：`api-probe-v11-final.json`（90/90）、`click-panel-v11.json`、`page-check-v11.json`、`v11-*.png`（见 §11）；
-> v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）。
+> v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）；
+> v2.1 复跑证据：`api-probe-v21-final.json`（58 通过/0 失败/0 pending）、`page-check-v21-final.json`（4/4）、`click-panel-v21-final.json`（17 通过/0 失败/1 pending）、`v21-*.png`（见 §13）；
+> v2.2 证据：`api-probe-v22.json`（42 断言全过，safety unsafe=0/published=0）、`page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过/0 失败/1 pending）、`v22-*.png`（见 §14）。
 
 ## 0. 元信息
 
 | 项 | 值 |
 |---|---|
-| 插件 | `dsh-codex-review` v0.1.0（v1）→ v0.2.0（v1.1）→ **v0.3.0（v2，health version=0.3.0）**（`C:\Users\10228\dsh-codex-review\plugin`） |
-| 安装 | `plugin_manager install_bundle`，返回 application=applied、已 enabled |
+| 插件 | `dsh-codex-review` v0.1.0（v1）→ v0.2.0（v1.1）→ v0.3.0（v2）→ v0.4.0（v2.1）→ **v0.5.0（v2.2，health version=0.5.0）**（`C:\Users\10228\dsh-codex-review\plugin`） |
+| 安装 | `plugin_manager install_bundle`，返回 application=applied、已 enabled；v2.1/v2.2 验收期间通过 profile `cordis.patch.yml` disable→enable 热重载（无需重启宿主） |
 | 安装形态 | desktop profile `node_modules/dsh-codex-review` → 符号链接到 plugin 目录（改文件后 disable→enable 重载生效） |
-| Host 进程 | v1 验收期间未重启（PID 9356）；v1.1/v2 由 Lead 重载插件生效（health version 0.1.0→0.2.0→0.3.0） |
-| GUI | `http://127.0.0.1:2632`（profile: desktop） |
+| Host 进程 | v1/v1.1/v2 验收期间未重启（PID 9356 系）；2026-10-24 22:48 DSH 重启（GUI 换到 `http://127.0.0.1:3685`）；v2.1/v2.2 以 profile 热重载加载 0.5.0 |
+| GUI | `http://127.0.0.1:3685`（profile: desktop；旧章节记录的 2632 为重启前端口） |
 | OS / Node / Edge | Windows 11 10.0.26200 / Node v24.21.0 / Edge 155.0.4283.62 |
 | gh | gh 2.102.0，已登录 `Acefake`（scopes: gist, read:org, repo, workflow） |
 | 认证 | 本机凭据只读（`$DSH_HOME/.credentials.yaml` 的 browser-session 签名密钥 mint 1h cookie）；也支持 `--token` |
@@ -345,7 +347,113 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 **v2 判定：PASS（合并守卫 7/7、chat 4/4 + 1 pending、页面 7/7 + 1 pending、0 console/pageerror、0 merge 请求）。**
 **v1/v1.1 回归同时全绿**：默认 api-probe 43/43（`api-probe-v1-final-v2.json`）、page-check 0 console error（`page-check-v1-final-v2.json`）、click-panel 8/8（`click-panel-v1-final-v2.json`）。
 
-## 附录 A · 复跑命令（同 §2 / README §4.6–§4.7）与判定速查
+## 13. v2.1 验收章节（CONTRACT §6.5：自动审查）
+
+> **状态：PASS（0.5.0 复跑；`api-probe --v21` = 58 通过 / 0 失败 / 0 pending；`page-check --v21` = 4/4；`click-panel --v21` = 17 通过 / 0 失败 / 1 pending=toast 条件不满足）**
+> 旧 3 项 pending 的关闭证据见 §13.4：① 0.5.0 状态文件新增 `recent`，重载插件后仍在；② 清除 seen 游标后 force cycle 真实重审了 #141/#139 并产生新结果；③ `/pr` 返回顶层 `headSha`，探针已改读并断言未变。
+> 证据：`api-probe-v21-final.json`（58/0/0）、`page-check-v21-final.json`（4/4）、`click-panel-v21-final.json`（17/0/1）、
+> 截图 `verify/out/v21-*.png`（含 `v21-badge.png`）；旧一轮证据保留在 `verify/out/archive-v21/`。
+> **安全**：全程无 GitHub 写操作（PR state/评论数/headSha 前后一致）；测试后 `enabled=false` 且状态文件恢复默认（finally 强制）；未 cancel 任何 job、未真实合并、未发布评论。
+
+### 13.1 路由/数据断言（api-probe --v21，Host 0.4.0）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | v2.1 路由就绪（status 返回 JSON 信封） | **PASS** | health version=0.4.0；status/config/run 均合法信封 |
+| 2 | status 默认结构：config 默认值 / running=false / recent 数组 / seenCount≥0 | **PASS** | 先归一化默认配置后：enabled=false、interval=180、query=`is:open author:@me`、depth=fast、P2、includeDrafts=false、maxPerCycle=2；running=false；recent 结构合法（受 operator smoke 影响长度可为 0..20） |
+| 3 | config 夹取：interval 30→60、maxPerCycle 99→5、非法 depth 回退 fast、未知字段忽略 | **PASS** | 回显 `{intervalSeconds:60, maxPerCycle:5, depth:'fast', enabled:true}`，`unknownKey` 不在 config |
+| 4 | config 状态文件持久化 | **PASS** | 只读校验 `~/.dsh/codex-review/auto-review.json`（profile 回退路径）config 与回显一致 |
+| 5 | run {force:false} + disabled → started:false + reason | **PASS** | `{started:false, reason:"自动审查已关闭（可带 force:true 单次运行）"}` |
+| 6 | run {force:true} → cycle 结束（running=false）且 recent 有 done | **PASS** | 0.5.0 复跑：force cycle 重审了 #141（12 findings）与 #139（13 findings），recent 3 条（另含 sanguo#16），status.running=false |
+| 7 | 第二次 force → seen 命中（recent 不增加） | **PASS** | 第二次 started:true，recent 0→0 不增加，cycle 快速结束 |
+| 8 | 安全：cycle 前后 PR state/评论数/headSha 不变（无 GitHub 写） | **PASS** | state `open→open`、headSha 前后一致（探针改读 `/pr` 顶层 `headSha`）、comments total/inline 不变 |
+| 9 | 测试后 enabled 恢复 false（status + 状态文件） | **PASS** | 最终 config 全默认（enabled=false/interval=180/maxPerCycle=2），状态文件同步恢复 |
+
+### 13.2 页面（page-check --v21 / click-panel --v21，截图 `verify/out/v21-*.png`）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 自动审查设置区存在（开关 + interval/depth/threshold/drafts/maxPerCycle/query） | **PASS** | `[data-auto-settings="ready"]`；开关 `[data-auto-enabled="toggle"]`；interval 预设/depth/threshold/drafts/max/query 控件齐全 |
+| 2 | 开关切换发出 auto-review-config 请求且 patch.enabled=true，回显生效 | **PASS** | Network 捕获 `POST /codex-review/auto-review-config`，body patch.enabled=true；随后 status.config.enabled=true |
+| 3 | 右栏自动审查卡存在（状态/上次/下次/最近/立即检查） | **PASS** | `[data-cr-autoreview="ready"]`，含 enabled/running/recent 状态与「立即检查」按钮 |
+| 4 | 立即检查发出 auto-review-run 请求 force=true，cycle 结束 | **PASS** | Network 捕获 `POST /codex-review/auto-review-run {force:true}`；轮询至 running=false |
+| 5 | 状态卡 recent 显示 done 结果 | **PENDING** | 本轮无新增审查（open PR 均已在 seen）+ recent 未持久化缺陷（D1/D2） |
+| 6 | 自动审查完成 toast 出现 | **PENDING** | 同上，无新 done 结果不触发 toast |
+| 7 | PR 行「已自动审查」徽章 | **PENDING** | 同上，recent 为空无徽章数据源 |
+| 8 | 关闭后 status.config.enabled=false | **PASS** | 关闭后 status config enabled=false，截图 `v21-disabled.png` |
+| 9 | 页面流程 console.error / pageerror = 0 | **PASS** | 0 / 0，无 slot crash |
+
+页面检查（`page-check --v21`）：右栏自动审查卡存在、设置区存在、console/pageerror=0，**4/4 PASS**。
+
+### 13.3 缺陷 / 待复跑项（0.5.0 已全部关闭）
+
+| # | 严重度 | 状态 | 说明 |
+|---|---|---|---|
+| D1 | P2（实现缺陷） | **已修复并验证** | 0.5.0 把 `recent`（≤20 条）与 `published` 记录一起原子持久化到状态文件；重载插件后 `/auto-review-status.recent` 仍返回 3 条 |
+| D2 | P3（环境数据） | **已消除** | 验收前备份状态文件并清除 `#141`/`#139` 的 seen 游标，force cycle 真实重审（#141 12 findings、#139 13 findings）；之后第二轮 force 命中 seen、recent 不增加 |
+| D3 | P3（接口限制） | **已消除** | 0.5.0 `/pr` 返回顶层 `headSha`；探针改读该字段，断言 cycle 前后未变（`PrDetail` 字段未变，属于既有返回） |
+
+### 13.4 0.5.0 复跑结果（2026-10-24 23:59，旧 3 项 pending 全部关闭）
+
+| 旧 pending | 关闭证据 | 结果 |
+|---|---|---|
+| recent 未持久化 | 状态文件含 `recent`；force cycle 产生结果后 disable→enable 重载，status.recent 仍返回 3 条 | **PASS** |
+| 所有 PR 已在 seen，force cycle no-op | 清除 seen 后真实重审 #141/#139；第二轮 force 命中 seen、recent 不变 | **PASS** |
+| PrDetail 无 headSha | 探针改读顶层 `headSha`，cycle 前后一致 | **PASS** |
+
+- `api-probe --v21`：**58 通过 / 0 失败 / 0 pending**（`api-probe-v21-final.json`）。
+- `page-check --v21`：**4/4 PASS**（`page-check-v21-final.json`、`v21-page-check-final.png`）。
+- `click-panel --v21`：**17 通过 / 0 失败 / 1 pending**（`click-panel-v21-final.json`+`v21-badge.png`）。pending =「自动审查完成 toast」：本轮 force cycle 无新增结果（open PR 均已在 seen），toast 无数据源，属环境条件不满足。
+- 观察（非缺陷）：auto-review cycle 会审查查询结果中其它仓库的 open PR（`Acefake/sanguo#16`，fast 深度约 5 分钟）——契约允许；页面装置原先对此类长审查等待窗口不足会误判失败，已改为记 pending 并注明由 `api-probe --v21` 长超时覆盖。为防止真正的 hung 调用永久锁死调度，0.5.0 增加了 cycle 看门狗（10 分钟；超时记 `lastError`、释放 `running`、下一轮可继续，单测覆盖）。
+
+**v2.1 判定：PASS（58/58 路由断言 + 页面 17/17 + 1 环境 pending + 0 console/pageerror）。**
+
+## 14. v2.2 验收章节（CONTRACT §7.4：发布审查到 GitHub）— **PASS**
+
+> **状态：PASS（2026-10-25 00:03 复跑；Host 0.5.0 已生效；client.js 冻结 mtime 22:34:41 / 353533B；插件经 profile 热重载启用）**
+> 证据：`api-probe-v22.json`（42 断言全过；`report.v22.safety` = requests 6 / sent 6 / sentConfirm 4 / **unsafe 0** / ungated 0 / **published 0**）、
+> `page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过 / 0 失败 / 1 pending）、截图 `v22-page-check.png`、`v22-publish-dialog.png`、`v22-publish-cancel.png`、`v22-auto-publish-confirm.png`。
+> **安全**：全程**没有对真实 PR 发布任何 review**；每个 `confirm:true` 请求发送前都先 `POST /pr` 过 `review.state !== 'done'` gate，只命中参数校验分支或 `REVIEW_NOT_READY`；PR state / headSha / 评论数前后一致。
+
+### 14.1 路由断言（`api-probe --skip-ai --v22`，0 fail / 0 pending）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 路由就绪：`review-publish` 返回合法 JSON 信封（未安装时按既有约定退出 3 / pending） | PASS | 缺 confirm → `BAD_REQUEST` |
+| 2 | `confirm:false` / 缺 `confirm` → `BAD_REQUEST`，message 含 confirm | PASS | 2 条 |
+| 3 | 非法 `mode` / 非法 `minSeverity` / `body>4000` → `BAD_REQUEST`（发送前过 gate） | PASS | 3 条 |
+| 4 | 当前 head 无 done 审查 → `REVIEW_NOT_READY`，且该 PR 评论数未变 | PASS | 当时目标 `Acefake/yingbox#141`（`review.state=none`） |
+| 5 | 安全计数器：`unsafe=0`、`ungated=0`、`published=0`，每个 `confirm:true` 都有 gate 记录 | PASS | `report.v22.safety` |
+
+### 14.2 页面（`page-check --v22` 4/4；`click-panel --v22` 20 通过 / 0 失败 / 1 pending）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 工作台渲染 `[data-cr-publish-supported]`，设置弹层含自动发布区 | PASS | `v22-page-check.png` |
+| 2 | 审查完成（#141 12 findings）时出现「发布到 GitHub」；弹层含 repo#number / 已审查 head / 预计评论数 / mode 三选 / minSeverity 三选 / 写操作风险提示 | PASS | `v22-publish-dialog.png` |
+| 3 | 改选 summary + P0 生效；点「取消」→ 弹层关闭，**Network 0 个 `/codex-review/review-publish` 请求** | PASS | `v22-publish-cancel.png`、`publishRequestsAfterCancel=0` |
+| 4 | 设置弹层自动发布开关 → 二次确认块 → 点取消 → 未开启，**0 个 `publish.enabled=true` 请求**，状态标签与 Host 一致 | PASS（1 pending=状态标签可见性） | `v22-auto-publish-confirm.png`、`autoPublishEnableRequests=0` |
+| 5 | 页面流程 console.error / pageerror = 0 | PASS | 报告字段 |
+
+### 14.3 本轮发现并修复的缺陷（v2.2）
+
+| # | 严重度 | 状态 | 说明 |
+|---|---|---|---|
+| R1 | **P1（功能不可用）** | 已修复 | `/auto-review-status` 只在 `config.publish` 下发发布配置，client 读顶层 `status.publish` → `publishSupported=false`，**发布按钮与自动发布设置区完全不渲染**。修复：Host 顶层同时返回 `publish`（保留 `config.publish`），CONTRACT §6.3/§7.1 同步，单测锁定。 |
+| R2 | P2（幂等） | 已修复 | 同一 head 并发发布可能创建两条 GitHub review。修复：`ReviewPublisher` in-flight 去重（同 head 共享 Promise），单测断言 `createPullReview` 仅 1 次。 |
+| R3 | P3（展示一致性） | 已修复 | 「已发布」徽章只存在于单次会话内存，刷新即丢。修复：`/pr` 的 review 快照回填持久化 `published` 记录（含 headSha），单测覆盖。 |
+| R4 | P2（调度健壮性） | 已修复（预防性） | 很长的审查（如 `sanguo#16` fast 约 5 分钟）会让 `running` 长时间为 true；若底层调用真正挂起将永久锁死调度。修复：cycle 看门狗（默认 10 分钟，超时记 `lastError`、释放 `running`、下一轮可继续，旧 cycle 在下一个边界自行停止），单测覆盖。 |
+
+### 14.4 已知限制
+
+- 发布需要 GitHub token `repo` 写权限；finding 的 `line` 必须落在 diff 的 RIGHT 行，GitHub 对越界行会拒绝整条 review（回显 `BAD_REQUEST`）。
+- 发布记录按 head SHA 存本机状态文件，多机不同步；同一 head 重复发布只回放记录，不会更新已有 review。
+- 自动发布默认关闭；本轮**未做真实发布**（避免在用户 PR 上产生未经请求的评论），真实发布路径由单测覆盖。
+- `click-panel --v22` 的「自动发布状态标签」pending：右栏自动审查卡在该轮不在可视流内；设置区开关与二次确认已单独 PASS。
+
+**v2.2 判定：PASS（42 路由断言全过 + 页面 24/24 + 1 可见性 pending + 0 console/pageerror + 0 真实写）。**
+
+## 附录 A · 复跑命令（同 §2 / README §4.6–§4.9）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
 - AI 终态关键字段：`review-status.state==="done"`、`partial!==true`、`findings[]` 每条 schema 合法；

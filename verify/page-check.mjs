@@ -17,6 +17,8 @@ import { launchBrowser, PageSession } from './lib/cdp.mjs'
 import { findSidebarTargets, interactiveSnapshot, pageState } from './lib/dom.mjs'
 import { v11Surface } from './lib/v11-dom.mjs'
 import { v2Surface } from './lib/v2-dom.mjs'
+import { v21Surface, autoCardProbe, autoSettingsProbe } from './lib/v21-dom.mjs'
+import { autoPublishProbe, v22Surface } from './lib/v22-dom.mjs'
 import {
   cookieForUrl,
   EXIT,
@@ -46,6 +48,8 @@ const USAGE = `用法: node verify/page-check.mjs [选项]
   --allow-console-errors  存在 console/page error 时仍以 0 退出（报告中仍记录）
   --v11                   启用 v1.1 页面断言：左栏「代码审查」入口、工作台「用 AI 审查」/设置按钮、截图 v11-page-check.png
   --v2                    启用 v2 页面断言：合并按钮可点、对话输入框 placeholder、截图 v2-page-check.png
+  --v21                   启用 v2.1 页面断言：自动审查卡/设置区存在、截图 v21-page-check.png
+  --v22                   启用 v2.2 页面断言：发布能力属性/自动发布设置区存在、截图 v22-page-check.png
   --json                  只输出 JSON 摘要
   -h, --help              显示本帮助`
 
@@ -69,6 +73,8 @@ function parseCli() {
         'allow-console-errors': { type: 'boolean', default: false },
         v11: { type: 'boolean', default: false },
         v2: { type: 'boolean', default: false },
+        v21: { type: 'boolean', default: false },
+        v22: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -106,6 +112,10 @@ function parseCli() {
     v11ShotPath: path.resolve(outDir, 'v11-page-check.png'),
     v2: values.v2,
     v2ShotPath: path.resolve(outDir, 'v2-page-check.png'),
+    v21: values.v21,
+    v21ShotPath: path.resolve(outDir, 'v21-page-check.png'),
+    v22: values.v22,
+    v22ShotPath: path.resolve(outDir, 'v22-page-check.png'),
     jsonOnly: values.json,
   }
 }
@@ -303,6 +313,142 @@ try {
     report.verdict.v2Pending = v2.pendingCount
   }
 
+  // -------------------------------------------------------------------------
+  // v2.1 page assertions (CONTRACT §6.4/§6.5): auto-review card / settings section.
+  // -------------------------------------------------------------------------
+  if (options.v21) {
+    const v21Checks = []
+    const v21 = { enabled: true, checks: v21Checks, screenshots: {} }
+    report.v21 = v21
+    const v21Check = (name, pass, detail = '') => v21Checks.push({ name, pass: Boolean(pass), detail })
+    try {
+      const rootReady = await page.evaluate(`Boolean(document.querySelector('[data-cr-root]'))`)
+      if (!rootReady) {
+        const entryLookup = await page.evaluate(findSidebarTargets(['代码审查', 'Code Review']))
+        const entry = entryLookup.targets?.[0]
+        if (entry) {
+          await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
+          await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 700 }).catch(() => false)
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+        }
+      }
+      // The auto-review card lives in the right panel, which only renders once a
+      // PR detail has loaded; wait for it before probing.
+      await page.waitFor('document.querySelector("[data-cr-detail=\\"ready\\"]") !== null', { timeoutMs: 25_000, label: 'PR 详情加载' }).catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+      const surface = await page.evaluate(v21Surface())
+      v21.surface = surface
+      const card = await page.evaluate(autoCardProbe())
+      v21.card = card
+      v21Check(
+        'v2.1 右栏自动审查卡存在',
+        Boolean(card.open) || Boolean(surface.card),
+        JSON.stringify({ card: Boolean(card.open), surfaceCard: Boolean(surface.card), root: surface.root }).slice(0, 400),
+      )
+      // The settings section lives inside the review-settings dialog.
+      const settingsSurface = await page.evaluate(v11Surface())
+      const gear = settingsSurface.settingsButtons?.[0]
+      if (gear) {
+        await page.click(gear.rect.x + gear.rect.width / 2, gear.rect.y + gear.rect.height / 2)
+        await page.waitFor('document.querySelector("[role=\\"dialog\\"][aria-modal=\\"true\\"]") !== null', { timeoutMs: 8000, label: '设置弹层' }).catch(() => {})
+        await new Promise((resolve) => setTimeout(resolve, 800))
+      }
+      const autoSettings = await page.evaluate(autoSettingsProbe())
+      v21.autoSettings = autoSettings
+      v21Check('v2.1 自动审查设置区存在', Boolean(autoSettings.open), JSON.stringify({ open: autoSettings.open, state: autoSettings.state, toggle: Boolean(autoSettings.toggle) }).slice(0, 300))
+      await page.screenshot(options.v21ShotPath)
+      v21.screenshots.page = options.v21ShotPath
+      const finalErrors = page.consoleMessages.filter((message) => message.type === 'error')
+      const finalPageErrors = page.pageErrors
+      report.consoleMessages = page.consoleMessages
+      report.consoleErrors = finalErrors
+      report.pageErrors = finalPageErrors
+      v21Check('v2.1 页面流程期间无 console.error', finalErrors.length === 0, `${finalErrors.length} 条`)
+      v21Check('v2.1 页面流程期间无 pageerror', finalPageErrors.length === 0, `${finalPageErrors.length} 条`)
+    } catch (error) {
+      v21Check('v2.1 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    }
+    v21.pendingCount = v21Checks.filter((check) => check.pending === true).length
+    v21.failedCount = v21Checks.filter((check) => check.pending !== true && check.pass === false).length
+    ok = ok && v21.failedCount === 0
+    report.verdict.ok = ok
+    report.verdict.v21Failed = v21.failedCount
+    report.verdict.v21Pending = v21.pendingCount
+  }
+
+  // -------------------------------------------------------------------------
+  // v2.2 page assertions (CONTRACT §7.3/§7.4): publish capability flag on the
+  // workbench root + the auto-publish section inside the review-settings dialog.
+  // -------------------------------------------------------------------------
+  if (options.v22) {
+    const v22Checks = []
+    const v22 = { enabled: true, checks: v22Checks, screenshots: {} }
+    report.v22 = v22
+    const v22Check = (name, pass, detail = '') => v22Checks.push({ name, pass: Boolean(pass), detail })
+    try {
+      const rootReady = await page.evaluate(`Boolean(document.querySelector('[data-cr-root]'))`)
+      if (!rootReady) {
+        const entryLookup = await page.evaluate(findSidebarTargets(['代码审查', 'Code Review']))
+        const entry = entryLookup.targets?.[0]
+        if (entry) {
+          await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
+          await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 700 }).catch(() => false)
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+        }
+      }
+      // The flag only turns true once /auto-review-status delivered the publish
+      // config (the same status feeds the settings section); wait for it, but a
+      // false value is still recorded rather than treated as a harness failure.
+      await page.waitFor('document.querySelector("[data-cr-detail=\\"ready\\"]") !== null', { timeoutMs: 25_000, label: 'PR 详情加载' }).catch(() => {})
+      await page.waitFor(
+        '(() => { const root = document.querySelector("[data-cr-root]"); return Boolean(root) && root.getAttribute("data-cr-publish-supported") === "true"; })()',
+        { timeoutMs: 25_000, label: '发布能力就绪' },
+      ).catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+      const surface = await page.evaluate(v22Surface())
+      v22.surface = surface
+      v22Check(
+        'v2.2 工作台暴露 [data-cr-publish-supported]（true/false 均记录）',
+        surface.rootReady && (surface.supported === 'true' || surface.supported === 'false'),
+        JSON.stringify({ rootReady: surface.rootReady, supported: surface.supported, dialog: surface.dialog, publishButton: Boolean(surface.publishButton), published: surface.publishedFlag }).slice(0, 300),
+      )
+      // The auto-publish section lives inside the review-settings dialog.
+      const settingsSurface = await page.evaluate(v11Surface())
+      const gear = settingsSurface.settingsButtons?.[0]
+      if (!gear) {
+        v22Check('v2.2 设置弹层含自动发布区（data-auto-publish-section=ready）', false, '未找到审查设置按钮')
+      } else {
+        await page.click(gear.rect.x + gear.rect.width / 2, gear.rect.y + gear.rect.height / 2)
+        await page.waitFor('document.querySelector("[role=\\"dialog\\"][aria-modal=\\"true\\"]") !== null', { timeoutMs: 8000, label: '设置弹层' }).catch(() => {})
+        await new Promise((resolve) => setTimeout(resolve, 900))
+        const autoPublish = await page.evaluate(autoPublishProbe())
+        v22.autoPublish = autoPublish
+        v22Check(
+          'v2.2 设置弹层含自动发布区（data-auto-publish-section=ready）',
+          Boolean(autoPublish.open),
+          `${JSON.stringify({ open: autoPublish.open, dialogOpen: autoPublish.dialogOpen, toggle: Boolean(autoPublish.toggle), supported: surface.supported, text: String(autoPublish.text || '').slice(0, 160) })}${autoPublish.open ? '' : '；提示：客户端要求 /auto-review-status 的顶层 publish，Host 只返回 config.publish 时该区不会渲染'}`,
+        )
+      }
+      await page.screenshot(options.v22ShotPath)
+      v22.screenshots.page = options.v22ShotPath
+      const finalErrors = page.consoleMessages.filter((message) => message.type === 'error')
+      const finalPageErrors = page.pageErrors
+      report.consoleMessages = page.consoleMessages
+      report.consoleErrors = finalErrors
+      report.pageErrors = finalPageErrors
+      v22Check('v2.2 页面流程期间无 console.error', finalErrors.length === 0, `${finalErrors.length} 条`)
+      v22Check('v2.2 页面流程期间无 pageerror', finalPageErrors.length === 0, `${finalPageErrors.length} 条`)
+    } catch (error) {
+      v22Check('v2.2 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    }
+    v22.pendingCount = v22Checks.filter((check) => check.pending === true).length
+    v22.failedCount = v22Checks.filter((check) => check.pending !== true && check.pass === false).length
+    ok = ok && v22.failedCount === 0
+    report.verdict.ok = ok
+    report.verdict.v22Failed = v22.failedCount
+    report.verdict.v22Pending = v22.pendingCount
+  }
+
   report.screenshotBytes = statSync(options.shotPath).size
   writeJson(options.reportPath, report)
   await page.close()
@@ -333,6 +479,24 @@ try {
           pendingCount: report.v2?.pendingCount ?? 0,
           screenshot: report.v2?.screenshots?.page ?? null,
           checks: (report.v2?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass })),
+        }
+      : null,
+    v21: options.v21
+      ? {
+          failedCount: report.v21?.failedCount ?? 0,
+          pendingCount: report.v21?.pendingCount ?? 0,
+          screenshot: report.v21?.screenshots?.page ?? null,
+          checks: (report.v21?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass })),
+        }
+      : null,
+    v22: options.v22
+      ? {
+          failedCount: report.v22?.failedCount ?? 0,
+          pendingCount: report.v22?.pendingCount ?? 0,
+          screenshot: report.v22?.screenshots?.page ?? null,
+          publishSupported: report.v22?.surface?.supported ?? null,
+          autoPublishSection: Boolean(report.v22?.autoPublish?.open),
+          checks: (report.v22?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass })),
         }
       : null,
   }

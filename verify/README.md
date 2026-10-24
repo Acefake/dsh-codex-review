@@ -238,6 +238,74 @@ BAD_REQUEST 分支（messages 空 / 最后一条非 user / 单条 >4000 字 / �
 合并按钮可点 → 弹层含方式三选/删除分支 checkbox/风险提示/repo#number/head→base/headSha/取消与确认 → 点取消 → 弹层关闭 + 无 merge 请求 + PR 未变；
 对话：输入「总结这个 PR 的改动」→ user 气泡 + 流式 assistant 气泡最终非空 + 流式期间停止按钮 → 无 error 气泡 → `Esc` 关闭 → localStorage 按 PR 持久化/切换隔离；全程 console/pageerror=0。
 
+### 4.8 v2.1 验收扩展（CONTRACT §6.5：自动审查）
+
+```powershell
+# A) 自动审查路由：status 默认/config 夹取/run 守卫/真实 force cycle/seen 去重/无 GitHub 写
+node $V\api-probe.mjs --skip-ai --v21 --out-dir $V\out --report api-probe-v21.json
+# B) 只测 status/config/run 守卫（跳过真实 cycle）
+node $V\api-probe.mjs --skip-ai --v21 --v21-skip-force --out-dir $V\out --report api-probe-v21-guards.json
+# C) 页面：自动审查设置区/状态卡存在（v21-page-check.png）
+node $V\page-check.mjs --v21 --out-dir $V\out --report page-check-v21.json
+# D) 页面端到端：设置区开关→config 请求、立即检查→run 请求、状态卡/recent、徽章、toast（v21-*.png）
+node $V\click-panel.mjs --target 代码审查 --v21 --out-dir $V\out --report click-panel-v21.json
+```
+
+**断言（`api-probe --v21`）**：
+- `auto-review-status` 默认结构：`config` 默认（enabled=false、interval=180、query=`is:open author:@me`、depth=fast、threshold=P2、includeDrafts=false、maxPerCycle=2）、`running=false`、`recent=[]`、`seenCount≥0`；
+- `auto-review-config` 夹取：`{enabled:true, intervalSeconds:30, maxPerCycle:99, depth:'nope', unknownKey:1}` → 回显 interval=60、maxPerCycle=5、depth 回退 fast、未知字段忽略；随后恢复默认并断言 `enabled=false`；
+- `auto-review-run {force:false}`（disabled）→ `{started:false, reason}`；`{force:true}` → `{started:true}` 并等待 `running=false`，断言 `recent` 出现 done 且 findings/verdict 合法；第二次 force 断言 seen 命中（recent 不增加）；
+- **安全**：cycle 前后 PR `state`/`headSha`/评论数不变（自动审查无 GitHub 写）；测试结束（finally）**一定恢复 `enabled=false`** 并断言状态文件已恢复，避免留下后台周期审查。
+- 若当前没有 open PR：`run` 返回 started:true 但 recent 不变，相关断言记 pending（契约允许）。
+
+**页面断言（`click-panel --v21`，截图 `verify/out/v21-*.png`）**：设置弹层含「自动审查」区与开关（interval/depth/threshold/drafts/maxPerCycle/query 控件齐全）；开关切换发出 `auto-review-config` 请求且 `patch.enabled=true`；右栏自动审查卡显示状态/上次/下次/最近并含「立即检查」；点击后发出 `auto-review-run` 请求 `force=true`，等待 cycle 结束、recent 出现 done；完成 toast 与 PR 行「已自动审查」徽章；关闭后 `status.config.enabled=false`；全程 console/pageerror=0。
+**副作用**：`--v21` 会真实触发一次自动审查 cycle（depth=fast，可能 1–3 分钟、消耗模型 token）；装置在 finally 中恢复 `enabled=false`，绝不发评论/合并。
+
+### 4.9 v2.2 验收扩展（CONTRACT §7.4：把审查发布到 GitHub）
+
+v1/v1.1/v2/v2.1 命令保持不变（默认不加 `--v22` 即不跑新断言）。v2.2 断言通过显式开关启用：
+
+```powershell
+# A) 路由就绪 + 守卫 + REVIEW_NOT_READY（绝不真实发布）
+node $V\api-probe.mjs --skip-ai --v22 --out-dir $V\out --report api-probe-v22.json
+# B) 页面：发布能力属性 + 自动发布设置区存在（v22-page-check.png）
+node $V\page-check.mjs --v22 --out-dir $V\out --report page-check-v22.json
+# C) 页面端到端：发布弹层字段/取消（0 发布请求）、自动发布二次确认/取消（v22-*.png）
+node $V\click-panel.mjs --target 代码审查 --v22 --out-dir $V\out --report click-panel-v22.json
+```
+
+**发布安全红线（装置内硬约束，与 §4.7 合并红线同等）**：
+
+- 装置**绝不**发送「`confirm:true` + 当前 head 已有 `done` 审查」的 `review-publish` 请求——那会真的在用户的 PR 上创建 review 评论。守卫只允许：`confirm` 缺失/false、非法 `mode`/`minSeverity`、`body` 超长，以及（确有）当前 head 没有 done 审查的 PR（预期 `REVIEW_NOT_READY`）。
+- 发送任何 `confirm:true` 之前，`publishProbe()` 必先 `POST /codex-review/pr` 确认 `review.state !== 'done'` 且状态可读；若为 done 或不可读 → 记 `pending`（写明原因）并**不发送**。`mode`/`minSeverity`/`body` 守卫之所以能用 `confirm:true`，只是因为 Host 在触达 GitHub 之前就拒绝它们（`index.js` 的 `reviewPublish`），且同样受这条 gate 约束。
+- 页面只打开弹层、切换 mode/minSeverity（本地状态）、点「取消」；**绝不点「确认发布」**，并用 Network 断言整个流程 `POST /codex-review/review-publish` 请求数为 **0**。
+- 自动发布开关只允许「打开二次确认 → 点取消」；断言没有发出 `publish.enabled=true` 的 `auto-review-config` 请求，且 `data-auto-publish-status` 保持不变。开关当前已是开启状态时按红线直接跳过（不碰写配置）。
+
+**断言（`api-probe --v22`）**：
+
+- 路由就绪：`POST /codex-review/review-publish` 返回合法 `{ok:...}` 信封；`confirm:false` → `BAD_REQUEST`（旧 Host 没有该路由时 HTTP 404 → 全部记 pending，不误报失败；200 但不是信封 → 路由断言失败）。
+- 守卫：缺 `confirm`、`confirm:false`、`mode:'nope'`、`minSeverity:'P5'`、`body` 4001 字 → 全部 `BAD_REQUEST`；后三者带 `confirm:true`，发送前逐个过 `/pr` gate。
+- `REVIEW_NOT_READY`：从 `/prs` 取候选 PR，逐个 `/pr` 找 `review.state !== 'done'` 的目标 → 发 `{confirm:true, mode:'summary'}` → `REVIEW_NOT_READY`，并断言该 PR 的评论数（total/inline）前后未变；找不到候选 → pending。
+- 安全计数（`report.v22.safety.summary`）：请求数 / 实际发出的 `confirm:true` 数 / 被红线跳过数 / 命中 done 审查数 / `published:true` 数；断言「命中 done = 0」「每个 `confirm:true` 都有 gate」「从未出现 `published:true`」。
+
+**页面断言（`page-check --v22`，截图 `v22-page-check.png`）**：工作台根节点暴露 `[data-cr-publish-supported]`（true/false 均记录，值写进报告）；审查设置弹层内存在 `[data-auto-publish-section="ready"]`；console/pageerror=0。
+
+**页面断言（`click-panel --v22`，截图 `v22-publish-dialog.png` / `v22-publish-cancel.png` / `v22-auto-publish-confirm.png`）**：
+
+- 选中一个「done 审查 + findings>0」的 PR，点「发布到 GitHub」→ 弹层字段：`repo#number`、已审查 head（`review.headSha` 前 7 位）、预计评论数 `[data-publish-expected]`、发布方式三选、最低严重度三选、写操作风险提示、取消/确认按钮、`data-publish-phase=idle`；
+- 改选 `summary` 与最低严重度 `P0`（`data-publish-mode` 与 checked 生效）→ 点取消 → `data-cr-publish-dialog=closed`，且 0 个 `review-publish` 请求；
+- 设置弹层里打开自动发布开关 → `[data-auto-publish-confirm="ready"]` 出现（含写操作警告）→ 点取消 → 确认块消失、开关未开启、0 个 `publish.enabled=true` 请求、`data-auto-publish-status` 未变；
+- 全程 console/pageerror=0。
+
+**依赖运行环境的断言**（对应项记 `pending` 是正常结果，不是失败）：
+
+| 依赖 | 缺失时的影响 |
+|---|---|
+| 至少一个 open PR（`/prs`） | 「候选扫描」与 `REVIEW_NOT_READY` 分支记 pending |
+| 一个当前 head **没有** done 审查的 PR | `mode`/`minSeverity`/`body` 三个 `confirm:true` 守卫与 `REVIEW_NOT_READY` 全部 pending（红线不发送） |
+| 一个 **done 审查且 findings>0** 的 PR | 发布按钮不出现 → 弹层字段/切换/取消三项 pending（自动发布区断言仍执行） |
+| `/auto-review-status` 返回**顶层** `publish`（客户端读它；只放在 `config.publish` 时 `publishConfig=null`） | 发布按钮与自动发布区都不渲染 → 「按钮」与「设置区」两条断言失败，细节里会打印 `publishTopLevel` / `publishInConfig` |
+
 ---
 
 ## 5. 退出码约定
@@ -307,6 +375,8 @@ verify/
 │  ├─ dom.mjs           # 页面内 DOM 探针表达式（侧栏/模态框/布局/工作台）
 │  ├─ v11-dom.mjs       # v1.1 页面探针（data-cr-* / finding 圆点 / 设置弹层 / 键盘 / 行内评论）
 │  ├─ v2-dom.mjs        # v2 页面探针（合并弹层 / 对话面板 / chat localStorage）
+│  ├─ v21-dom.mjs       # v2.1 页面探针（自动审查设置区/状态卡/徽章/toast）
+│  ├─ v22-dom.mjs       # v2.2 页面探针（发布弹层 / 自动发布二次确认）
 │  └─ util.mjs          # CLI 公共设施（退出码、目录、JSON 输出）
 ├─ baseline/            # 装置自证基线（插件安装前）
 │  ├─ baseline-gui.png

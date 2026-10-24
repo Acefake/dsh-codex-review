@@ -55,6 +55,25 @@ import {
   v2Surface,
 } from './lib/v2-dom.mjs'
 import {
+  autoCardProbe,
+  autoSettingsProbe,
+  autoToggleTarget,
+  prBadgeProbe,
+  toastProbe,
+  v21Surface,
+} from './lib/v21-dom.mjs'
+import {
+  autoPublishProbe,
+  autoPublishStatusProbe,
+  autoPublishToggleTarget,
+  publishCancelTarget,
+  publishDialogProbe,
+  publishMinTarget,
+  publishModeTarget,
+  publishTriggerTarget,
+  v22Surface,
+} from './lib/v22-dom.mjs'
+import {
   cookieForUrl,
   EXIT,
   fail,
@@ -88,6 +107,8 @@ const USAGE = `用法: node verify/click-panel.mjs [选项]
   --v11-skip-review-key   v1.1 跳过键盘 r 的真实 review-start（避免与 Lead 冒烟抢 job）
   --v2                    启用 v2 页面断言：合并弹层字段/取消不写入、PR 对话流式面板、历史隔离、v2-*.png
   --v2-select <text>      v2 断言使用的 PR 列表标题关键字（默认用当前自动选中的 open PR）
+  --v21                   启用 v2.1 页面断言：自动审查设置区/开关 config 请求/立即检查/状态卡/徽章/toast、v21-*.png
+  --v22                   启用 v2.2 页面断言：发布弹层字段/取消（0 发布请求）、自动发布二次确认/取消、v22-*.png
   --token <token>         DSH 启动 URL 里的 token（不传则用本机凭据自动认证）
   --no-auth               不注入 DSH 浏览器会话 cookie
   --headful               有窗口模式启动 Edge
@@ -120,6 +141,8 @@ function parseCli() {
         'v11-skip-review-key': { type: 'boolean', default: false },
         v2: { type: 'boolean', default: false },
         'v2-select': { type: 'string', default: '' },
+        v21: { type: 'boolean', default: false },
+        v22: { type: 'boolean', default: false },
         token: { type: 'string' },
         'no-auth': { type: 'boolean', default: false },
         headful: { type: 'boolean', default: false },
@@ -167,6 +190,20 @@ function parseCli() {
     v11SkipReviewKey: values['v11-skip-review-key'],
     v2: values.v2,
     v2Select: String(values['v2-select'] ?? '').trim(),
+    v21: values.v21,
+    v21Paths: {
+      settings: path.resolve(outDir, 'v21-settings.png'),
+      autoReview: path.resolve(outDir, 'v21-auto-review.png'),
+      toast: path.resolve(outDir, 'v21-toast.png'),
+      badge: path.resolve(outDir, 'v21-badge.png'),
+      disabled: path.resolve(outDir, 'v21-disabled.png'),
+    },
+    v22: values.v22,
+    v22Paths: {
+      dialog: path.resolve(outDir, 'v22-publish-dialog.png'),
+      cancel: path.resolve(outDir, 'v22-publish-cancel.png'),
+      autoPublish: path.resolve(outDir, 'v22-auto-publish-confirm.png'),
+    },
     v2Paths: {
       mergeDialog: path.resolve(outDir, 'v2-merge-dialog.png'),
       mergeCancel: path.resolve(outDir, 'v2-merge-cancel.png'),
@@ -789,6 +826,560 @@ async function runV2Checks() {
   v2.failedCount = v2Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
 }
 
+// ---------------------------------------------------------------------------
+// v2.1 page checks (CONTRACT §6.4/§6.5): auto-review settings section, toggle
+// config request, immediate check, status card, badge, toast. Auto-review is
+// always turned back off in a finally block.
+// ---------------------------------------------------------------------------
+const v21Checks = []
+function v21Check(name, pass, detail = '') {
+  v21Checks.push({ name, pass: Boolean(pass), detail })
+}
+function v21Pending(name, detail) {
+  v21Checks.push({ name, pass: null, pending: true, detail })
+}
+
+async function runV21Checks() {
+  const v21 = { enabled: true, checks: v21Checks, screenshots: {}, network: {} }
+  report.v21 = v21
+  const apiClient = new GuiClient(options.url, { token: options.token })
+  const getStatus = async () => {
+    const response = await apiClient.post('codex-review/auto-review-status', {}, { timeoutMs: 20_000 })
+    return response.json?.value ?? null
+  }
+  let hostReady = false
+  try {
+    const probe = await apiClient.post('codex-review/auto-review-status', {}, { timeoutMs: 20_000 })
+    hostReady = probe.status !== 404 && probe.status !== 405 && probe.json?.ok === true
+    v21.capability = { status: probe.status, envelope: probe.json?.ok ?? null }
+  } catch (error) {
+    v21.capability = { error: error.message }
+  }
+  v21Check('v2.1: Host 已部署自动审查路由（status 返回 JSON 信封）', hostReady, JSON.stringify(v21.capability))
+  try {
+    if (!hostReady) {
+      v21Pending('v2.1 自动审查设置区/开关/立即检查/状态卡/徽章/toast', 'v2.1 Host 尚未生效')
+    } else {
+    let surface = await page.evaluate(v21Surface())
+    v21.surface = surface
+    const uiReady = Boolean(surface.settingsSection || surface.card)
+    v21Check(
+      'v2.1 自动审查 UI 存在（设置区/状态卡）',
+      uiReady,
+      JSON.stringify({ settingsSection: Boolean(surface.settingsSection), card: Boolean(surface.card) }),
+    )
+    if (!uiReady) {
+      v21Pending('v2.1 自动审查设置/开关/立即检查/状态卡/徽章/toast', 'v2.1 UI 未就绪')
+    } else {
+      // --- settings dialog: auto-review section + toggle -> config request ----
+      const settingsSurface = await page.evaluate(v11Surface())
+      const gear = settingsSurface.settingsButtons?.[0]
+      if (!gear) {
+        v21Check('v2.1 打开审查设置弹层', false, '设置按钮未找到')
+      } else {
+        await clickRect(page, gear.rect)
+        await page.waitFor('document.querySelector("[role=\\"dialog\\"][aria-modal=\\"true\\"]") !== null', { timeoutMs: 8000, label: '设置弹层' }).catch(() => {})
+        await delay(800)
+        const settings = await page.evaluate(autoSettingsProbe())
+        v21.settings = settings
+        v21Check('v2.1 设置弹层含「自动审查」区', settings.open, String(settings.text ?? '').slice(0, 200))
+        v21Check('v2.1 自动审查区含开关', Boolean(settings.toggle), JSON.stringify(settings.toggle))
+        v21Check(
+          'v2.1 自动审查区含 interval/depth/threshold/drafts/maxPerCycle/query 控件',
+          settings.hasInterval && settings.hasDepth && settings.hasThreshold && settings.hasDrafts && settings.hasMaxPerCycle && settings.hasQuery,
+          JSON.stringify({ interval: settings.hasInterval, depth: settings.hasDepth, threshold: settings.hasThreshold, drafts: settings.hasDrafts, maxPerCycle: settings.hasMaxPerCycle, query: settings.hasQuery }),
+        )
+        const toggleTarget = await page.evaluate(autoToggleTarget())
+        v21.toggleTarget = toggleTarget
+        const netBefore = page.networkRequests.length
+        if (toggleTarget.found) {
+          await clickRect(page, toggleTarget.rect)
+          await delay(500)
+        }
+        const configRequest = await waitForRequest(page, netBefore, (request) => request.url.includes('/codex-review/auto-review-config'), { timeoutMs: 12_000 })
+        let configPatch = null
+        if (configRequest?.postData) {
+          try {
+            configPatch = JSON.parse(configRequest.postData).patch ?? null
+          } catch {
+            configPatch = null
+          }
+        }
+        v21.network.toggleConfigPatch = configPatch
+        v21Check('v2.1 开关切换发出 auto-review-config 请求', Boolean(configRequest), configRequest ? configRequest.url : '未观察到请求')
+        v21Check('v2.1 开关请求体 patch.enabled=true', Boolean(configPatch && configPatch.enabled === true), JSON.stringify(configPatch))
+        await delay(800)
+        const statusAfterToggle = await getStatus()
+        v21.statusAfterToggle = statusAfterToggle
+        v21Check('v2.1 开关开启后 status.config.enabled=true', statusAfterToggle?.config?.enabled === true, JSON.stringify(statusAfterToggle?.config))
+        await page.screenshot(options.v21Paths.settings)
+        v21.screenshots.settings = options.v21Paths.settings
+        await page.evaluate(`(() => { const dialog = document.querySelector('[role="dialog"][aria-modal="true"]'); if (dialog) dialog.focus(); return true; })()`)
+        await page.pressKey('Escape', { code: 'Escape', windowsVirtualKeyCode: 27 })
+        await delay(700)
+
+        // --- auto-review card + immediate check ------------------------------
+        const card = await page.evaluate(autoCardProbe())
+        v21.card = card
+        v21Check(
+          'v2.1 右栏自动审查卡存在（状态/上次/下次/最近/立即检查）',
+          card.open && card.hasLastCycle && card.hasNextCycle && card.hasRecent && Boolean(card.immediate),
+          JSON.stringify({ open: card.open, last: card.hasLastCycle, next: card.hasNextCycle, recent: card.hasRecent, immediate: Boolean(card.immediate) }),
+        )
+        // Data-aware baseline: an operator smoke may have already reviewed every
+        // open PR, in which case a force cycle correctly produces no new result.
+        const statusBeforeRun = await getStatus()
+        const recentBeforeRun = Array.isArray(statusBeforeRun?.recent) ? statusBeforeRun.recent.length : 0
+        let openCount = null
+        try {
+          const openList = await apiClient.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+          openCount = openList.json?.value?.items?.length ?? null
+        } catch {
+          openCount = null
+        }
+        v21.openPrCount = openCount
+        const runNetBefore = page.networkRequests.length
+        if (card.immediate) {
+          await clickRect(page, card.immediate.rect)
+          await delay(500)
+        }
+        const runRequest = await waitForRequest(page, runNetBefore, (request) => request.url.includes('/codex-review/auto-review-run'), { timeoutMs: 15_000 })
+        let runBody = null
+        if (runRequest?.postData) {
+          try {
+            runBody = JSON.parse(runRequest.postData)
+          } catch {
+            runBody = null
+          }
+        }
+        v21.network.immediateRunBody = runBody
+        v21Check('v2.1 立即检查发出 auto-review-run 请求', Boolean(runRequest), runRequest ? runRequest.url : '未观察到请求')
+        v21Check('v2.1 立即检查请求体 force=true', Boolean(runBody && runBody.force === true), JSON.stringify(runBody))
+
+        const deadline = Date.now() + options.timeoutMs
+        let lastStatus = null
+        while (Date.now() < deadline) {
+          lastStatus = await getStatus()
+          if (lastStatus && lastStatus.running === false) break
+          await delay(1500)
+        }
+        v21.statusAfterRun = lastStatus
+        if (Boolean(lastStatus) && lastStatus.running === false) {
+          v21Check('v2.1 立即检查后 cycle 结束（running=false）', true, 'running=false')
+        } else {
+          // A force cycle may legitimately be reviewing a PR that takes longer
+          // than this page's wait window; api-probe --v21 awaits the terminal
+          // state with a long timeout, so the page run records it as pending.
+          v21Pending(
+            'v2.1 立即检查后 cycle 结束（running=false）',
+            `页面等待窗口（${options.timeoutMs}ms）内 cycle 仍在运行（可能在审查新出现的 PR）；cycle 终态由 api-probe --v21 长超时断言`,
+          )
+        }
+        const recent = Array.isArray(lastStatus?.recent) ? lastStatus.recent : []
+        const doneEntry = recent.find((entry) => entry?.state === 'done')
+        const newEntries = recent.length - recentBeforeRun
+        v21.runStats = { recentBeforeRun, recentAfter: recent.length, newEntries, openCount }
+        if (doneEntry) {
+          v21Check('v2.1 状态卡数据：recent 含 done 结果', true, JSON.stringify(recent.slice(0, 3)).slice(0, 400))
+        } else if (newEntries === 0) {
+          v21Pending(
+            'v2.1 状态卡数据：recent 含 done 结果',
+            `本轮无新增审查（open PR ${openCount ?? '?'} 个均已在 seen 中，契约允许 cycle no-op）`,
+          )
+        } else {
+          v21Check('v2.1 状态卡数据：recent 含 done 结果', false, JSON.stringify(recent.slice(0, 3)).slice(0, 400))
+        }
+        await page.screenshot(options.v21Paths.autoReview)
+        v21.screenshots.autoReview = options.v21Paths.autoReview
+
+        // --- toast + PR row badge -------------------------------------------
+        let toast = null
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          toast = await page.evaluate(toastProbe())
+          if ((toast.texts ?? []).some((text) => /自动审查完成|auto[- ]?review/i.test(text))) break
+          await delay(800)
+        }
+        v21.toast = toast
+        const toastSeen = Boolean(toast && (toast.texts ?? []).some((text) => /自动审查完成|auto[- ]?review/i.test(text)))
+        if (newEntries > 0) {
+          v21Check('v2.1 自动审查完成 toast 出现', toastSeen, JSON.stringify(toast?.texts))
+        } else {
+          v21Pending('v2.1 自动审查完成 toast 出现', '本轮 force cycle 无新增结果（open PR 均已在 seen），toast 无数据源；recent 持久化由 REPORT §13.4 单独验证')
+        }
+        if (toast && (toast.texts ?? []).length > 0) {
+          await page.screenshot(options.v21Paths.toast)
+          v21.screenshots.toast = options.v21Paths.toast
+        }
+        const badge = await page.evaluate(prBadgeProbe())
+        v21.badge = badge
+        if (newEntries > 0 || badge.count >= 1) {
+          v21Check('v2.1 PR 行显示「已自动审查」徽章', badge.count >= 1, JSON.stringify(badge).slice(0, 300))
+        } else {
+          v21Pending('v2.1 PR 行显示「已自动审查」徽章', '本轮无新增审查结果（recent 为空），徽章无数据来源；待 0.5.0 recent 持久化后复跑')
+        }
+        if (badge.count >= 1) {
+          await page.screenshot(options.v21Paths.badge)
+          v21.screenshots.badge = options.v21Paths.badge
+        }
+
+        // --- turn auto-review off again and verify --------------------------
+        await apiClient.post('codex-review/auto-review-config', { patch: { enabled: false } }, { timeoutMs: 15_000 })
+        await delay(600)
+        const offStatus = await getStatus()
+        v21.statusAfterDisable = offStatus
+        v21Check('v2.1 关闭自动审查后 status.config.enabled=false', offStatus?.config?.enabled === false, JSON.stringify(offStatus?.config))
+        await page.screenshot(options.v21Paths.disabled)
+        v21.screenshots.disabled = options.v21Paths.disabled
+
+        const errors = page.consoleMessages.filter((message) => message.type === 'error')
+        const pageErrors = page.pageErrors
+        report.consoleMessages = page.consoleMessages
+        report.consoleErrors = errors
+        report.pageErrors = pageErrors
+        v21Check('v2.1 页面流程期间无 console.error', errors.length === 0, `${errors.length} 条`)
+        v21Check('v2.1 页面流程期间无 pageerror', pageErrors.length === 0, `${pageErrors.length} 条`)
+      }
+    }
+    }
+  } catch (error) {
+    v21Check('v2.1 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    v21.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  } finally {
+    // Safety: never leave periodic auto-review enabled after the probe.
+    if (hostReady) {
+      try {
+        await apiClient.post('codex-review/auto-review-config', { patch: { enabled: false } }, { timeoutMs: 15_000 })
+      } catch {
+        /* best effort: restore is asserted by the API probe */
+      }
+    }
+  }
+  v21.pendingCount = v21Checks.filter((entry) => entry.pending === true).length
+  v21.failedCount = v21Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
+// v2.2 page checks (CONTRACT §7.3/§7.4): the publish confirmation dialog
+// (inspect + CANCEL only, never confirm) and the auto-publish switch (second
+// confirmation + CANCEL only).
+//
+// SAFETY: this section never sends /codex-review/review-publish and never
+// enables `publish.enabled`; both are asserted from the Network log.
+// ---------------------------------------------------------------------------
+const v22Checks = []
+function v22Check(name, pass, detail = '') {
+  v22Checks.push({ name, pass: Boolean(pass), detail })
+}
+function v22Pending(name, detail) {
+  v22Checks.push({ name, pass: null, pending: true, detail })
+}
+
+/**
+ * Find an open PR whose current head has a `done` review with findings — only
+ * those expose the review-card 「发布到 GitHub」 button (CONTRACT §7.3).
+ * @param {GuiClient} apiClient
+ * @returns {Promise<{pick: any | null, scan: Array<Record<string, unknown>>}>}
+ */
+async function findPublishablePr(apiClient) {
+  const scan = []
+  const listResponse = await apiClient.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+  const items = Array.isArray(listResponse.json?.value?.items) ? listResponse.json.value.items : []
+  for (const item of items.slice(0, 10)) {
+    const detail = await apiClient.post('codex-review/pr', { repo: item.repo, number: item.number }, { timeoutMs: 30_000 })
+    const value = detail.json?.value
+    const review = value?.review
+    const findings = Array.isArray(review?.findings) ? review.findings.length : null
+    scan.push({ repo: item.repo, number: item.number, state: review?.state ?? null, findings })
+    if (review?.state === 'done' && findings > 0) {
+      return {
+        pick: {
+          repo: item.repo,
+          number: item.number,
+          title: String(item.title ?? ''),
+          headSha: typeof review.headSha === 'string' ? review.headSha : null,
+          findings,
+        },
+        scan,
+      }
+    }
+  }
+  return { pick: null, scan }
+}
+
+async function runV22Checks() {
+  const v22 = { enabled: true, checks: v22Checks, screenshots: {}, network: {}, api: {}, publishDialog: null, autoPublish: null }
+  report.v22 = v22
+  const apiClient = new GuiClient(options.url, { token: options.token })
+  try {
+    // --- Host-side publish config: what the page state must mirror ----------
+    try {
+      const status = await apiClient.post('codex-review/auto-review-status', {}, { timeoutMs: 20_000 })
+      const value = status.json?.value
+      v22.api.statusHttp = status.status
+      v22.api.publish = value?.publish ?? null
+      // v2.2 client reads `status.publish`; a Host that only ships
+      // `config.publish` leaves publishConfig null and degrades the whole UI.
+      v22.api.configPublish = value?.config?.publish ?? null
+    } catch (error) {
+      v22.api.error = error.message
+    }
+
+    // --- 1) pick a publishable PR and select it in the list ----------------
+    const { pick, scan } = await findPublishablePr(apiClient)
+    v22.scan = scan
+    v22.publishable = pick
+    if (!pick) {
+      v22Pending('v2.2 发布弹层字段（repo#number/已审查 head/预计评论数/mode/minSeverity/风险提示）', `当前 open PR 中找不到「done 审查 + findings>0」的目标（扫描 ${scan.length} 个：${scan.map((entry) => `#${entry.number}:${entry.state}/${entry.findings}`).join('，') || '无 open PR'}）`)
+      v22Pending('v2.2 切换 mode=summary / minSeverity=P0（本地状态）', '没有可发布的 PR，发布按钮不会出现')
+      v22Pending('v2.2 取消后弹层关闭 + 0 个 review-publish 请求', '没有可发布的 PR，发布按钮不会出现')
+    } else {
+      const row = await page.evaluate(findPrRow(String(pick.title).slice(0, 12)))
+      v22.row = row
+      if (row.found) {
+        await clickRect(page, row.rect)
+        await page.waitForNetworkIdle({ timeoutMs: 15_000, idleMs: 600 }).catch(() => false)
+        await delay(800)
+      }
+      await page.waitFor(
+        `(() => { const root = document.querySelector('[data-cr-root]'); return Boolean(root) && root.getAttribute('data-cr-review-state') === 'done'; })()`,
+        { timeoutMs: 20_000, label: `PR #${pick.number} 的 done 审查` },
+      ).catch(() => {})
+      await page.waitFor(
+        `(() => { const root = document.querySelector('[data-cr-root]'); const button = document.querySelector('[data-action="review-publish"]'); return Boolean(root) && root.getAttribute('data-cr-publish-supported') === 'true' && Boolean(button); })()`,
+        { timeoutMs: 20_000, label: '「发布到 GitHub」按钮' },
+      ).catch(() => {})
+      await delay(600)
+      const surface = await page.evaluate(v22Surface())
+      v22.surface = surface
+      v22Check(
+        'v2.2 审查卡出现「发布到 GitHub」按钮（done + findings>0 + supported）',
+        Boolean(surface.publishButton && !surface.publishButton.disabled),
+        JSON.stringify({ rowFound: row.found, supported: surface.supported, reviewState: surface.reviewState, button: surface.publishButton ?? null, publishTopLevel: Boolean(v22.api.publish), publishInConfig: Boolean(v22.api.configPublish) }).slice(0, 400),
+      )
+
+      if (!surface.publishButton) {
+        const detail = `发布按钮未出现（supported=${String(surface.supported)}；/auto-review-status 顶层 publish=${Boolean(v22.api.publish)}，config.publish=${Boolean(v22.api.configPublish)}）`
+        v22Pending('v2.2 发布弹层字段（repo#number/已审查 head/预计评论数/mode/minSeverity/风险提示）', detail)
+        v22Pending('v2.2 切换 mode=summary / minSeverity=P0（本地状态）', detail)
+        v22Pending('v2.2 取消后弹层关闭 + 0 个 review-publish 请求', detail)
+      } else {
+        // --- 2) open the dialog and inspect every field -------------------
+        const trigger = await page.evaluate(publishTriggerTarget())
+        v22.trigger = trigger
+        const netBefore = page.networkRequests.length
+        await clickRect(page, trigger.found ? trigger.rect : surface.publishButton.rect)
+        await page.waitFor('document.querySelector("[data-cr-publish-dialog=\\"ready\\"]") !== null', { timeoutMs: 8000, label: '发布弹层' }).catch(() => {})
+        await delay(700)
+        const dialog = await page.evaluate(publishDialogProbe())
+        v22.publishDialog = dialog
+        v22Check(
+          'v2.2 点击「发布到 GitHub」打开发布弹层',
+          dialog.open,
+          JSON.stringify({ open: dialog.open, rootState: dialog.rootState, phase: dialog.phase, mode: dialog.mode, error: dialog.error }).slice(0, 400),
+        )
+        if (!dialog.open) {
+          v22Pending('v2.2 发布弹层字段（repo#number/已审查 head/预计评论数/mode/minSeverity/风险提示）', '发布弹层未打开')
+          v22Pending('v2.2 切换 mode=summary / minSeverity=P0（本地状态）', '发布弹层未打开')
+          v22Pending('v2.2 取消后弹层关闭 + 0 个 review-publish 请求', '发布弹层未打开')
+        } else {
+          v22Check(
+            'v2.2 弹层展示 repo#number',
+            dialog.repo.includes(pick.repo) && dialog.repo.includes(`#${pick.number}`),
+            `repo=${JSON.stringify(dialog.repo)}，期望含 ${pick.repo} 与 #${pick.number}`,
+          )
+          const expectedHead = String(pick.headSha ?? '').toLowerCase()
+          const shownHead = String(dialog.headSha ?? '').toLowerCase()
+          v22Check(
+            'v2.2 弹层展示「已审查的提交」(review.headSha 前 7 位)',
+            shownHead !== '' && (expectedHead === '' || expectedHead.startsWith(shownHead)),
+            `dialog=${shownHead || '-'}，review.headSha=${expectedHead ? `${expectedHead.slice(0, 12)}…` : '-'}`,
+          )
+          v22Check(
+            'v2.2 弹层展示预计评论数（data-publish-expected，整数 ≥0）',
+            Number.isInteger(dialog.expected) && dialog.expected >= 0 && dialog.hasExpectedLabel,
+            `expected=${String(dialog.expected)}，text=${JSON.stringify(dialog.expectedText)}`,
+          )
+          v22Check(
+            'v2.2 发布方式三选（inline/summary/both）',
+            ['inline', 'summary', 'both'].every((value) => dialog.modeValues.includes(value)),
+            JSON.stringify(dialog.modeValues),
+          )
+          v22Check(
+            'v2.2 最低严重度三选（P0/P1/P2）',
+            ['P0', 'P1', 'P2'].every((value) => dialog.minValues.includes(value)),
+            JSON.stringify(dialog.minValues),
+          )
+          v22Check('v2.2 弹层含写操作风险提示', dialog.hasRiskWarning, String(dialog.dialogText ?? '').slice(0, 220))
+          v22Check(
+            'v2.2 弹层含取消与确认按钮且处于 idle（只点取消）',
+            Boolean(dialog.cancel) && Boolean(dialog.confirm) && dialog.phase === 'idle',
+            JSON.stringify({ cancel: Boolean(dialog.cancel), confirm: Boolean(dialog.confirm), phase: dialog.phase }),
+          )
+          await page.screenshot(options.v22Paths.dialog)
+          v22.screenshots.dialog = options.v22Paths.dialog
+
+          // --- 3) switch mode/minSeverity locally (no network) -----------
+          const modeTarget = await page.evaluate(publishModeTarget('summary'))
+          if (modeTarget.found) {
+            await clickRect(page, modeTarget.rect)
+            await delay(450)
+          }
+          const minTarget = await page.evaluate(publishMinTarget('P0'))
+          if (minTarget.found) {
+            await clickRect(page, minTarget.rect)
+            await delay(450)
+          }
+          const changed = await page.evaluate(publishDialogProbe())
+          v22.publishDialogChanged = changed
+          const summaryChecked = (changed.modes ?? []).some((entry) => entry.value === 'summary' && entry.checked === true)
+          const p0Checked = (changed.mins ?? []).some((entry) => entry.value === 'P0' && entry.checked === true)
+          v22Check(
+            'v2.2 切换发布方式为 summary（本地状态生效）',
+            changed.mode === 'summary' && summaryChecked,
+            JSON.stringify({ mode: changed.mode, summaryChecked, targetFound: modeTarget.found }).slice(0, 300),
+          )
+          v22Check(
+            'v2.2 切换最低严重度为 P0（本地状态生效）',
+            p0Checked,
+            JSON.stringify({ min: changed.minValues, p0Checked, targetFound: minTarget.found }).slice(0, 300),
+          )
+
+          // --- 4) cancel: closes and never posts review-publish ----------
+          const cancelTarget = await page.evaluate(publishCancelTarget())
+          const cancelButton = cancelTarget.found ? cancelTarget : (changed.cancel ?? dialog.cancel)
+          if (cancelButton) {
+            await clickRect(page, cancelButton.rect)
+            await delay(900)
+          }
+          const closed = await page.evaluate(publishDialogProbe())
+          const rootState = await page.evaluate(`(() => { const root = document.querySelector('[data-cr-root]'); return root ? root.getAttribute('data-cr-publish-dialog') : null; })()`)
+          v22Check(
+            'v2.2 点击取消后弹层关闭（data-cr-publish-dialog=closed）',
+            !closed.open && rootState === 'closed',
+            JSON.stringify({ open: closed.open, rootState }),
+          )
+          const publishRequests = page.networkRequests.slice(netBefore).filter((request) => request.url.includes('/codex-review/review-publish'))
+          v22.network.publishRequestsAfterCancel = publishRequests.length
+          v22.network.publishRequests = publishRequests.map((request) => ({ url: request.url, method: request.method, postData: request.postData ?? null }))
+          v22Check(
+            'v2.2 发布弹层全程 0 个 review-publish 网络请求（无写操作）',
+            publishRequests.length === 0,
+            JSON.stringify(publishRequests.map((request) => request.url)),
+          )
+          await page.screenshot(options.v22Paths.cancel)
+          v22.screenshots.cancel = options.v22Paths.cancel
+        }
+      }
+    }
+
+    // --- 5) auto-publish switch: open the second confirmation, then cancel --
+    const settingsSurface = await page.evaluate(v11Surface())
+    const gear = settingsSurface.settingsButtons?.[0]
+    if (!gear) {
+      v22Pending('v2.2 自动发布开关的二次确认', '未找到审查设置按钮')
+      v22Pending('v2.2 自动发布开关流程不发 publish.enabled=true 请求', '未找到审查设置按钮')
+    } else {
+      await clickRect(page, gear.rect)
+      await page.waitFor('document.querySelector("[role=\\"dialog\\"][aria-modal=\\"true\\"]") !== null', { timeoutMs: 8000, label: '设置弹层' }).catch(() => {})
+      await delay(900)
+      const section = await page.evaluate(autoPublishProbe())
+      v22.autoPublish = section
+      v22Check(
+        'v2.2 设置弹层含「发布审查到 GitHub」自动发布区',
+        Boolean(section.open && section.toggle),
+        JSON.stringify({ open: section.open, dialogOpen: section.dialogOpen, toggle: section.toggle, text: String(section.text ?? '').slice(0, 200) }).slice(0, 420),
+      )
+      if (!section.open || !section.toggle) {
+        v22Pending('v2.2 打开自动发布开关出现二次确认（data-auto-publish-confirm=ready）', '自动发布设置区/开关不存在')
+        v22Pending('v2.2 二次确认取消后不发 publish.enabled=true 请求', '自动发布设置区/开关不存在')
+      } else if (section.toggle.checked) {
+        v22Pending('v2.2 打开自动发布开关出现二次确认（data-auto-publish-confirm=ready）', '自动发布当前已开启（操作者配置），按安全红线不改动写配置')
+        v22Pending('v2.2 二次确认取消后不发 publish.enabled=true 请求', '自动发布当前已开启，未触发开关')
+      } else {
+        const statusBefore = await page.evaluate(autoPublishStatusProbe())
+        v22.autoPublishStatusBefore = statusBefore
+        const netBeforeToggle = page.networkRequests.length
+        const toggleTarget = await page.evaluate(autoPublishToggleTarget())
+        if (toggleTarget.found) {
+          await clickRect(page, toggleTarget.rect)
+          await delay(650)
+        }
+        const confirming = await page.evaluate(autoPublishProbe())
+        v22.autoPublishConfirming = confirming
+        v22Check(
+          'v2.2 打开自动发布开关出现二次确认（data-auto-publish-confirm=ready）',
+          Boolean(confirming.confirmOpen),
+          JSON.stringify({ toggleFound: toggleTarget.found, toggleChecked: confirming.toggle?.checked ?? null, confirmOpen: confirming.confirmOpen }).slice(0, 300),
+        )
+        v22Check(
+          'v2.2 二次确认含写操作警告文案',
+          /写操作|write operation/i.test(String(confirming.confirm?.text ?? '')),
+          String(confirming.confirm?.text ?? '').slice(0, 200),
+        )
+        await page.screenshot(options.v22Paths.autoPublish)
+        v22.screenshots.autoPublish = options.v22Paths.autoPublish
+        const confirmCancel = confirming.confirm?.cancelButton
+        if (confirmCancel) {
+          await clickRect(page, confirmCancel.rect)
+          await delay(700)
+        }
+        const afterCancel = await page.evaluate(autoPublishProbe())
+        v22.autoPublishAfterCancel = afterCancel
+        v22Check(
+          'v2.2 取消二次确认后确认块消失且开关未开启',
+          !afterCancel.confirmOpen && afterCancel.toggle?.checked === false,
+          JSON.stringify({ confirmOpen: afterCancel.confirmOpen, checked: afterCancel.toggle?.checked ?? null }),
+        )
+        const configRequests = page.networkRequests.slice(netBeforeToggle).filter((request) => request.url.includes('/codex-review/auto-review-config'))
+        const enabling = configRequests.filter((request) => {
+          try {
+            return JSON.parse(request.postData ?? '{}')?.patch?.publish?.enabled === true
+          } catch {
+            return false
+          }
+        })
+        v22.network.autoPublishConfigRequests = configRequests.map((request) => request.postData ?? '')
+        v22.network.autoPublishEnableRequests = enabling.length
+        v22Check(
+          'v2.2 自动发布开关流程未发出 publish.enabled=true 的 auto-review-config 请求',
+          enabling.length === 0,
+          JSON.stringify(enabling.map((request) => request.postData ?? '')),
+        )
+        const statusAfter = await page.evaluate(autoPublishStatusProbe())
+        v22.autoPublishStatusAfter = statusAfter
+        if (!statusBefore.present || !statusAfter.present) {
+          v22Pending('v2.2 自动发布状态未改变（data-auto-publish-status）', '页面未渲染自动发布状态（自动审查卡不可见）')
+        } else if (v22.api.publish) {
+          v22Check(
+            'v2.2 自动审查卡发布状态与 Host 配置一致且未被本次流程改变',
+            statusBefore.enabled === Boolean(v22.api.publish.enabled) && statusAfter.enabled === statusBefore.enabled,
+            `before=${statusBefore.value}，after=${statusAfter.value}，Host=${String(v22.api.publish.enabled)}`,
+          )
+        } else {
+          v22Check('v2.2 自动发布状态未被本次流程改变', statusAfter.enabled === statusBefore.enabled, `before=${statusBefore.value}，after=${statusAfter.value}`)
+        }
+      }
+      // Close the settings dialog so the page is left in the pre-probe state.
+      await page.evaluate(`(() => { const dialog = document.querySelector('[role="dialog"][aria-modal="true"]'); if (dialog) dialog.focus(); return true; })()`)
+      await page.pressKey('Escape', { code: 'Escape', windowsVirtualKeyCode: 27 })
+      await delay(700)
+    }
+
+    const errors = page.consoleMessages.filter((message) => message.type === 'error')
+    const pageErrors = page.pageErrors
+    report.consoleMessages = page.consoleMessages
+    report.consoleErrors = errors
+    report.pageErrors = pageErrors
+    v22Check('v2.2 页面流程期间无 console.error', errors.length === 0, `${errors.length} 条`)
+    v22Check('v2.2 页面流程期间无 pageerror', pageErrors.length === 0, `${pageErrors.length} 条`)
+  } catch (error) {
+    v22Check('v2.2 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    v22.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  }
+  v22.pendingCount = v22Checks.filter((entry) => entry.pending === true).length
+  v22.failedCount = v22Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
 const options = parseCli()
 const startedAt = Date.now()
 const report = {
@@ -929,6 +1520,10 @@ try {
   if (options.v11) await runV11Checks()
   // v2 page checks (opt-in): merge dialog (cancel only) + PR chat panel.
   if (options.v2) await runV2Checks()
+  // v2.1 page checks (opt-in): auto-review settings/toggle/immediate check/badge/toast.
+  if (options.v21) await runV21Checks()
+  // v2.2 page checks (opt-in): publish dialog (cancel only) + auto-publish confirmation.
+  if (options.v22) await runV22Checks()
   const finalConsoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
   const finalConsoleWarnings = page.consoleMessages.filter((message) => message.type === 'warning')
   const finalPageErrors = page.pageErrors
@@ -958,6 +1553,8 @@ try {
     { name: '无 slot entry crashed', pass: !slotCrashed, detail: String(slotCrashed) },
     ...v11Checks,
     ...v2Checks,
+    ...v21Checks,
+    ...v22Checks,
   ]
   const decisive = checks.filter((check) => check.pending !== true)
   const ok = decisive.every((check) => check.pass)
@@ -1004,6 +1601,27 @@ try {
           screenshots: report.v2?.screenshots ?? {},
           mergeRequestsAfterCancel: report.v2?.network?.mergeRequestsAfterCancel ?? null,
           chatAssistantLength: String(report.v2?.chat?.assistantText ?? '').trim().length,
+        }
+      : null,
+    v21: options.v21
+      ? {
+          enabled: true,
+          failedCount: report.v21?.failedCount ?? 0,
+          pendingCount: report.v21?.pendingCount ?? 0,
+          screenshots: report.v21?.screenshots ?? {},
+          configEnabledAfter: report.v21?.statusAfterDisable?.config?.enabled ?? null,
+          recentCount: Array.isArray(report.v21?.statusAfterRun?.recent) ? report.v21.statusAfterRun.recent.length : null,
+        }
+      : null,
+    v22: options.v22
+      ? {
+          enabled: true,
+          failedCount: report.v22?.failedCount ?? 0,
+          pendingCount: report.v22?.pendingCount ?? 0,
+          screenshots: report.v22?.screenshots ?? {},
+          publishable: report.v22?.publishable ? `${report.v22.publishable.repo}#${report.v22.publishable.number}` : null,
+          publishRequestsAfterCancel: report.v22?.network?.publishRequestsAfterCancel ?? null,
+          autoPublishEnableRequests: report.v22?.network?.autoPublishEnableRequests ?? null,
         }
       : null,
   }
