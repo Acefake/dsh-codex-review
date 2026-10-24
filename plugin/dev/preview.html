@@ -379,7 +379,7 @@
                   return waitFor(function () { return document.querySelectorAll('.cr-file--open .cr-diff').length >= 2 })
                 })
               }
-              if (scene === 'review' || scene === 'running' || scene === 'error' || scene === 'empty-review') {
+              if (scene === 'review' || scene === 'running' || scene === 'error' || scene === 'partial' || scene === 'empty-review') {
                 click('[data-action="review"]')
                 var wanted = scene === 'running' ? 'running' : scene === 'error' ? 'error' : 'done'
                 return waitFor(function () {

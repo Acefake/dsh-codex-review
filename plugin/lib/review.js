@@ -37,8 +37,8 @@ const PROMPT_BODY_CHARS = 4_000
 /** Title cap for one finding. */
 const FINDING_TITLE_CHARS = 80
 
-/** Per-call model deadline (two minutes, CONTRACT §1.5). */
-const CALL_TIMEOUT_MS = 120_000
+/** Per-call model deadline (three minutes, CONTRACT §1.5). */
+const CALL_TIMEOUT_MS = 180_000
 
 /** Pause between two chunk calls so the host event loop can breathe. */
 const CHUNK_GAP_MS = 200
@@ -618,41 +618,74 @@ export class ReviewEngine {
     try {
       const reviewable = selectReviewableFiles(input.files)
       const plan = chunkFiles(reviewable, {
-        chunkChars: this.config.reviewChunkChars ?? 18_000,
-        maxChunks: this.config.maxChunks ?? 6,
+        chunkChars: this.config.reviewChunkChars ?? 9_000,
+        maxChunks: this.config.maxChunks ?? 9,
       })
       job.skippedFiles = plan.skippedFiles
       job.filesTotal = plan.chunks.reduce((sum, chunk) => sum + chunk.files.length, 0)
       job.phase = job.filesTotal === 0 ? 'merging' : 'reviewing'
+      /** @type {Array<{ ok: boolean, findings?: any[], reason?: string } | undefined>} */
+      const results = new Array(plan.chunks.length)
+      const concurrency = Math.max(1, Math.min(plan.chunks.length, this.config.reviewConcurrency ?? 3))
+      let nextIndex = 0
+      /**
+       * Pull the next unclaimed chunk until the plan is exhausted. Chunks run
+       * concurrently because each auxiliary call is dominated by model
+       * reasoning latency, not by host work.
+       * @returns {Promise<void>} resolves when no chunk is left.
+       */
+      const worker = async () => {
+        for (;;) {
+          if (job.cancelled === true) throw new AppError('INTERNAL', '审查任务被取消')
+          const index = nextIndex
+          nextIndex += 1
+          if (index >= plan.chunks.length) return
+          const chunk = plan.chunks[index]
+          const prompt = buildUserPrompt({
+            pr: {
+              repo: input.repo,
+              number: input.number,
+              title: input.title,
+              body: input.body,
+              baseRefName: input.baseRefName,
+              headRefName: input.headRefName,
+            },
+            chunk,
+            chunkIndex: index,
+            chunkCount: plan.chunks.length,
+          })
+          const allowedFiles = new Set(chunk.files.map((file) => file.path))
+          try {
+            results[index] = await this.reviewChunk(job, prompt, allowedFiles, index)
+          } catch (error) {
+            // A single chunk failing (timeout, provider hiccup) must not discard
+            // the chunks that did finish: record it as a partial reason.
+            if (job.cancelled === true) throw error
+            results[index] = { ok: false, hard: true, reason: publicReviewError(error).message }
+          }
+          job.filesDone += chunk.files.length
+        }
+      }
+      await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()))
+      if (job.cancelled === true) throw new AppError('INTERNAL', '审查任务被取消')
       /** @type {Array<Array<any>>} */
       const groups = []
-      for (let index = 0; index < plan.chunks.length; index += 1) {
-        if (job.cancelled === true) throw new AppError('INTERNAL', '审查任务被取消')
-        const chunk = plan.chunks[index]
-        const prompt = buildUserPrompt({
-          pr: {
-            repo: input.repo,
-            number: input.number,
-            title: input.title,
-            body: input.body,
-            baseRefName: input.baseRefName,
-            headRefName: input.headRefName,
-          },
-          chunk,
-          chunkIndex: index,
-          chunkCount: plan.chunks.length,
-        })
-        const allowedFiles = new Set(chunk.files.map((file) => file.path))
-        const result = await this.reviewChunk(job, prompt, allowedFiles, index)
-        if (result.ok) groups.push(result.findings)
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index]
+        if (result === undefined) continue
+        if (result.ok === true) groups.push(result.findings ?? [])
         else {
           job.partial = true
-          job.partialReasons.push(`${chunk.files.length} 个文件未完成：${result.reason}`)
+          job.partialReasons.push(`${plan.chunks[index].files.length} 个文件未完成：${result.reason ?? 'unknown'}`)
         }
-        job.filesDone += chunk.files.length
-        if (index < plan.chunks.length - 1) await this.sleep()
       }
-      if (job.cancelled === true) throw new AppError('INTERNAL', '审查任务被取消')
+      if (groups.length === 0 && plan.chunks.length > 0) {
+        const allHard = results.every((result) => result !== undefined && result.ok !== true && result.hard === true)
+        // Every chunk failed at the transport level (auth, provider, timeout):
+        // an error is more honest than a "partial" success with no data. Pure
+        // parse failures keep `done + partial` so the user sees the diagnostic.
+        if (allHard) throw new AppError('LLM_ERROR', `${USER_MESSAGES.LLM_ERROR}：${job.partialReasons[0] ?? '全部分块失败'}`)
+      }
       job.phase = 'merging'
       const merged = mergeFindings(groups)
       job.findings = merged.findings
@@ -686,23 +719,30 @@ export class ReviewEngine {
    */
   async reviewChunk(job, prompt, allowedFiles, chunkIndex) {
     const first = await this.complete(job, prompt)
-    const parsed = parseFindingsText(first, { allowedFiles })
+    const parsed = parseFindingsText(first.text, { allowedFiles })
     if (parsed.ok) return parsed
     this.logger?.warn?.(`dsh-codex-review: chunk ${chunkIndex + 1} returned unparsable JSON, retrying once`)
     const second = await this.complete(job, prompt + RETRY_SUFFIX)
-    const retried = parseFindingsText(second, { allowedFiles })
+    const retried = parseFindingsText(second.text, { allowedFiles })
     if (retried.ok) return retried
     // A clean chunk sometimes comes back as one prose sentence instead of the
     // requested JSON; score it as reviewed-and-clean instead of partial.
-    if (looksLikeNoFindings(first) || looksLikeNoFindings(second)) return { ok: true, findings: [] }
-    return { ok: false, reason: retried.reason }
+    if (looksLikeNoFindings(first.text) || looksLikeNoFindings(second.text)) return { ok: true, findings: [] }
+    // Diagnose the common truncation case: the model spent the output budget
+    // on hidden reasoning without emitting JSON, which a bare
+    // "no-json-object" hides from the user.
+    const last = second.finish
+    const diagnostics = last.kind !== 'stop' || last.textChars === 0
+      ? `（模型返回 ${last.kind}，可见输出 ${last.textChars} 字，推理 ${last.reasoningChars} 字${last.usage === undefined ? '' : `，tokens ${JSON.stringify(last.usage)}`}）`
+      : ''
+    return { ok: false, reason: `${retried.reason}${diagnostics}` }
   }
 
   /**
    * Perform one model call and join its text deltas.
    * @param {any} job - owning job.
    * @param {string} prompt - user prompt.
-   * @returns {Promise<string>} accumulated answer text.
+   * @returns {Promise<{ text: string, finish: { kind: string, textChars: number, reasoningChars: number, usage?: any } }>} accumulated answer text plus finish diagnostics.
    */
   async complete(job, prompt) {
     if (!this.available()) throw new AppError('LLM_UNAVAILABLE')
@@ -725,7 +765,7 @@ export class ReviewEngine {
           model: model.model,
           system: REVIEW_SYSTEM_PROMPT,
           messages: [{ role: REVIEW_REQUEST_ROLE, content: [{ type: 'text', text: prompt }] }],
-          maxTokens: this.config.maxOutputTokens ?? 4096,
+          maxTokens: this.config.maxOutputTokens > 0 ? this.config.maxOutputTokens : undefined,
           // The active provider routes an auxiliary request by session: the
           // `opencode-go` route rejects a request without `x-opencode-session`
           // (Missing SessionID). One stable synthetic id per review job keeps
@@ -740,11 +780,16 @@ export class ReviewEngine {
         throw mapLlmFailure(error)
       }
       let text = ''
+      let reasoningChars = 0
+      /** @type {any} */
+      let usage
       /** @type {any} */
       let reason
       try {
         for await (const chunk of stream) {
           if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+          else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') reasoningChars += chunk.text.length
+          else if (chunk?.type === 'usage') usage = chunk.usage ?? chunk
           else if (chunk?.type === 'finish') reason = chunk.reason
         }
       } catch (error) {
@@ -753,13 +798,15 @@ export class ReviewEngine {
         throw mapLlmFailure(error)
       }
       if (timedOut === true) throw new AppError('REVIEW_TIMEOUT')
+      const finish = { kind: reason?.kind ?? 'stop', textChars: text.length, reasoningChars, usage }
+      job.lastFinish = finish
       if (reason?.kind === 'error') throw mapLlmFailure(reason.failure)
       if (reason?.kind === 'max-tokens') job.maxTokenCalls += 1
       if (reason?.kind === 'aborted') {
         if (job.cancelled === true) throw new AppError('INTERNAL', '审查任务被取消')
         throw new AppError('LLM_ERROR', `${USER_MESSAGES.LLM_ERROR}：模型请求被中止`)
       }
-      return text
+      return { text, finish }
     } finally {
       clearTimeout(timer)
       job.controller.signal.removeEventListener('abort', abortFromJob)

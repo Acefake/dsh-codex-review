@@ -13,6 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,7 +26,7 @@ const EDGE_CANDIDATES = [
   '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ]
 const DEBUG_PORT = 9333
-const SCENES = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['default', 'changes', 'review']
+const SCENES = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['default', 'changes', 'review', 'partial']
 
 function findEdge() {
   for (const candidate of EDGE_CANDIDATES) {
@@ -123,6 +124,16 @@ const LAYOUT_EXPRESSION = `(() => {
     rows: document.querySelectorAll('[data-pr-number]').length,
     diffRows: document.querySelectorAll('.cr-diff-row').length,
     files: document.querySelectorAll('[data-file-path]').length,
+    partial: Boolean(document.querySelector('[data-review-partial]')),
+    reviewLabel: ((document.querySelector('[data-action="review"]') || {}).textContent || '').trim(),
+    reviewAria: (document.querySelector('[data-action="review"]') || {}).getAttribute
+      ? document.querySelector('[data-action="review"]').getAttribute('aria-label')
+      : '',
+    gearAria: (() => {
+      const node = document.querySelector('[data-action="review-settings"]')
+      return node ? node.getAttribute('aria-label') : ''
+    })(),
+    iconArias: [...document.querySelectorAll('.cr-iconbtn')].map((node) => node.getAttribute('aria-label')),
     reviewState: (document.querySelector('[data-cr-root]') || {}).getAttribute
       ? document.querySelector('[data-cr-root]').getAttribute('data-cr-review-state')
       : '',
@@ -182,18 +193,25 @@ function assertScene(scene, layout, errors) {
   if (!(layout.doc && layout.doc.width >= 500)) problems.push(`doc width ${layout.doc && layout.doc.width}`)
   if (!layout.tabs.includes('Summary') || !layout.tabs.includes('Changes')) problems.push('tab labels missing')
   if (layout.rows < 5) problems.push(`list rows ${layout.rows}`)
+  if (!layout.reviewLabel.includes('用 AI 审查')) problems.push(`review button label "${layout.reviewLabel}"`)
+  if (layout.reviewAria !== '用 AI 审查') problems.push(`review button aria-label "${layout.reviewAria}"`)
+  if (!layout.gearAria) problems.push('gear button without aria-label')
+  for (const aria of layout.iconArias) {
+    if (!aria || !aria.trim()) problems.push('icon button without aria-label')
+  }
   if (layout.overflowX) problems.push('page has horizontal overflow')
   if (scene === 'changes') {
     if (layout.diffRows < 10) problems.push(`diff rows ${layout.diffRows}`)
     if (layout.files < 10) problems.push(`file cards ${layout.files}`)
   }
-  if (scene === 'review' && layout.reviewState !== 'done') problems.push(`review state ${layout.reviewState}`)
+  if ((scene === 'review' || scene === 'partial') && layout.reviewState !== 'done') problems.push(`review state ${layout.reviewState}`)
+  if (scene === 'partial' && !layout.partial) problems.push('partial banner missing')
   return problems
 }
 
 async function main() {
   const edgePath = findEdge()
-  const profile = path.join(here, '..', '..', '.tmp', 'edge-cdp-profile')
+  const profile = path.join(os.tmpdir(), 'dsh-codex-review-cdp-profile')
   fs.mkdirSync(profile, { recursive: true })
   const edge = spawn(
     edgePath,

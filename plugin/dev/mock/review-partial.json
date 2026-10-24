@@ -1,0 +1,44 @@
+{
+  "jobId": "mock-job-1",
+  "headSha": "f31cec5c712d88c5f26bb0e6fcbf2e09e3954585",
+  "model": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro"
+  },
+  "findings": [
+    {
+      "id": "src/main/intro-detect/match.ts:92:9wigx7",
+      "severity": "P1",
+      "file": "src/main/intro-detect/match.ts",
+      "line": 92,
+      "title": "倒排索引候选为空时会退化成全量扫描，长季会卡住主进程",
+      "why": "当改动让两集没有任何 32 位指纹完全相同的点时，`findCandidates` 返回空数组，`matchEpisodes` 随即进入分批全量扫描；一季 12 集 × 每集 5 分钟指纹 = 每批约 24 亿次汉明比较，批间只让出一次事件循环，播放器主线程会长时间不可用。",
+      "fix": "给全量扫描加一个「最大比较次数」预算（例如 2e8），超出就直接返回 `null` 并把结果标为 `no-match`；或在扫描前用 `POINT_SECONDS` 做一次粗粒度抽样筛候选。",
+      "category": "performance"
+    },
+    {
+      "id": "src/main/intro-detect/queue.ts:41:9lyzeb",
+      "severity": "P1",
+      "file": "src/main/intro-detect/queue.ts",
+      "line": 41,
+      "title": "取消后队列没有出队，同一季会永久卡在「检测中」",
+      "why": "`cancel()` 只 abort 当前 ffmpeg 并清空 `current`，但没有把该季从 `pending` 里移除，也没重置 `running`；下一次队列 tick 看到 `running === false` 但 `pending` 里仍有同一季，会静默跳过，UI 永远拿不到「已取消」的终态。",
+      "fix": "在 `cancel()` 里同时 `pending.delete(key)`、`running = false`，并给等待中的 Promise 一个 `{ cancelled: true }` 的 resolve/reject，让调用方一定能收到终态。",
+      "category": "concurrency"
+    }
+  ],
+  "overview": "部分内容未能完成审查（1 个文件块失败）",
+  "partial": true,
+  "state": "done",
+  "progress": {
+    "phase": "done",
+    "filesDone": 24,
+    "filesTotal": 24,
+    "startedAt": 1792825340929,
+    "elapsedMs": 38000
+  },
+  "partialReasons": [
+    "src/main/intro-detect/queue.ts：模型输出不是合法 JSON，已跳过该分块"
+  ],
+  "truncatedCalls": 1
+}

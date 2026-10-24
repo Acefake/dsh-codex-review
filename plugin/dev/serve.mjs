@@ -124,7 +124,17 @@ function prDetail(payload) {
 }
 
 function statusFor(job) {
-  const base = readMock(job.mode === 'empty' ? 'review-empty.json' : job.mode === 'error' ? 'review-error.json' : job.mode === 'running' ? 'review-running.json' : 'review-done.json')
+  const base = readMock(
+    job.mode === 'empty'
+      ? 'review-empty.json'
+      : job.mode === 'error'
+        ? 'review-error.json'
+        : job.mode === 'running'
+          ? 'review-running.json'
+          : job.mode === 'partial'
+            ? 'review-partial.json'
+            : 'review-done.json',
+  )
   job.calls += 1
   if (job.mode === 'running') return base
   if (job.calls <= 1) {

@@ -30,6 +30,7 @@ export { Config }
 /** Route paths owned by this plugin. */
 const PATHS = Object.freeze({
   health: `${ROUTE_PREFIX}/health`,
+  llmInfo: `${ROUTE_PREFIX}/llm-info`,
   prs: `${ROUTE_PREFIX}/prs`,
   pr: `${ROUTE_PREFIX}/pr`,
   reviewStart: `${ROUTE_PREFIX}/review-start`,
@@ -57,7 +58,9 @@ export function apply(ctx, config) {
 export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const config = resolveConfig(rawConfig)
   const logger = ctx.logger
-  /** @type {{ stream: (request: any) => AsyncIterable<any>, selection: () => any } | undefined} */
+  /** Diagnostic snapshot of the last prepared auxiliary call (model info + chosen controls). */
+  let llmDiagnostics
+  /** @type {{ stream: (request: any) => Promise<AsyncIterable<any>>, selection: () => any, info: () => Promise<any> } | undefined} */
   let llmFace
 
   // Optional services: the callback runs only while both are registered, and
@@ -65,9 +68,96 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   // LLM_UNAVAILABLE instead of calling a stale service.
   if (typeof ctx.inject === 'function') {
     ctx.inject(['llm', 'agentDefaultModel'], (scope) => {
+      /**
+       * Pick the least-expensive reasoning effort the model advertises.
+       * `LlmModelReasoningInfo.efforts` order is not contractual, so rank by
+       * id instead of trusting the array index.
+       * @param {any} info - resolved model info from the prepare callback.
+       * @returns {string | undefined} an effort id the model accepts.
+       */
+      const pickEffort = (info) => {
+        const efforts = Array.isArray(info?.reasoning?.efforts) ? info.reasoning.efforts : []
+        const ids = efforts.map((entry) => (typeof entry?.id === 'string' ? entry.id : '')).filter((id) => id !== '')
+        if (ids.length === 0) return undefined
+        const ranked = ['none', 'off', 'disabled', 'minimal', 'low', 'medium', 'high', 'max', 'xhigh']
+        for (const candidate of ranked) if (ids.includes(candidate)) return candidate
+        return ids[ids.length - 1]
+      }
+      const canPrepare = typeof scope.llm.prepareCall === 'function'
+      /**
+       * Prepare one auxiliary call, capturing the model metadata used to pick
+       * controls. The output cap is passed only when the caller set one; an
+       * absent cap lets the adapter materialize the model's own default, which
+       * is what a reasoning model needs to finish thinking AND answer.
+       * @param {any} request - stream request.
+       * @param {boolean} withCap - whether the caller's output cap is passed.
+       * @returns {Promise<any>} prepared call.
+       */
+      const prepare = async (request, withCap) => {
+        const { provider, model, maxTokens, signal } = request
+        /** @type {any} */
+        let captured
+        const call = await scope.llm.prepareCall(
+          withCap ? { provider, model, maxTokens } : { provider, model },
+          signal,
+          (controls, info) => {
+            captured = info
+            const effort = pickEffort(info)
+            return effort === undefined ? controls : { ...controls, reasoningEffort: effort }
+          },
+        )
+        llmDiagnostics = {
+          selection: { provider, model },
+          maxTokens: call.config?.maxTokens,
+          reasoningEffort: call.config?.reasoningEffort,
+          efforts: Array.isArray(captured?.reasoning?.efforts)
+            ? captured.reasoning.efforts.map((entry) => entry?.id)
+            : [],
+          contextWindow: captured?.contextWindow,
+          defaultMaxTokens: captured?.defaultMaxTokens ?? captured?.maxOutputTokens,
+        }
+        return call
+      }
       llmFace = {
-        stream: (request) => scope.llm.stream(request),
+        /**
+         * Stream one auxiliary review call through the prepared-call seam so
+         * adapter defaults apply and the model's least supported reasoning
+         * effort is requested. Without that a reasoning model spends the whole
+         * output budget on hidden reasoning and never reaches the JSON answer.
+         * @param {any} request - `{ provider, model, system, messages, maxTokens, sessionId, signal }`.
+         * @returns {Promise<AsyncIterable<any>>} the stream.
+         */
+        stream: async (request) => {
+          const { system, messages, sessionId, signal } = request
+          if (!canPrepare) return scope.llm.stream(request)
+          let call
+          try {
+            call = await prepare(request, request.maxTokens !== undefined)
+          } catch (capError) {
+            if (request.maxTokens === undefined) throw capError
+            call = await prepare(request, false)
+          }
+          return call.stream({ ...call.config, system, messages, sessionId, signal })
+        },
         selection: () => scope.agentDefaultModel.currentSelection(),
+        info: async () => {
+          const selection = scope.agentDefaultModel.currentSelection()
+          if (!canPrepare) return { ...selection, transport: 'raw' }
+          await prepare({ provider: selection.provider, model: selection.model }, false)
+          let models
+          try {
+            models = typeof scope.llm.listModels === 'function'
+              ? (await scope.llm.listModels(selection.provider)).map((entry) => ({
+                id: entry?.id,
+                name: entry?.name,
+                reasoning: entry?.reasoning?.efforts?.map((effort) => effort?.id) ?? [],
+              }))
+              : undefined
+          } catch {
+            models = undefined
+          }
+          return { ...llmDiagnostics, transport: 'prepared', ...(models === undefined ? {} : { models }) }
+        },
       }
       scope.effect(() => () => {
         llmFace = undefined
@@ -83,6 +173,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     if (llmFace === undefined) throw new AppError('LLM_UNAVAILABLE')
     return llmFace.selection()
   }
+  const llmInfo = async () => {
+    if (llmFace === undefined) throw new AppError('LLM_UNAVAILABLE')
+    return llmFace.info()
+  }
 
   const github = deps.github ?? new GitHubClient({ config, logger })
   const engine = deps.engine ?? new ReviewEngine({ streamLlm, resolveSelection, config, logger })
@@ -91,6 +185,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     github,
     engine,
     llmAvailable: () => llmFace !== undefined,
+    llmInfo,
     version: VERSION,
   })
   const handler = createJsonRouteHandler({
@@ -114,7 +209,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, github, engine, llmAvailable, version = VERSION } = wiring
+  const { config, github, engine, llmAvailable, llmInfo, version = VERSION } = wiring
 
   /**
    * Read one required non-empty string field.
@@ -167,6 +262,21 @@ export function createRoutes(wiring) {
         gh = 'not-logged-in'
       }
       return { gh, llm: llmAvailable() ? 'ok' : 'unavailable', version }
+    },
+
+    [PATHS.llmInfo]: async () => {
+      if (typeof llmInfo !== 'function') throw new AppError('LLM_UNAVAILABLE')
+      const info = await llmInfo()
+      return {
+        ...info,
+        pluginConfig: {
+          provider: config.provider,
+          model: config.model,
+          maxOutputTokens: config.maxOutputTokens,
+          reviewChunkChars: config.reviewChunkChars,
+          maxChunks: config.maxChunks,
+        },
+      }
     },
 
     [PATHS.prs]: async (payload) => {

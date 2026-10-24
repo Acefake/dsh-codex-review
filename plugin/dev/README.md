@@ -33,6 +33,7 @@ node plugin/dev/check-preview.mjs        # 无头校验（另开一个终端）
 | `/?scene=default` | PR #129 选中 + Summary（对应 Codex 参考截图） |
 | `/?scene=changes` | Changes：展开两个文件，展示统一 diff |
 | `/?scene=review` | AI 审查 done：verdict / P0-P2 计数 / 三段式 findings |
+| `/?scene=partial` | 部分完成的审查：partial 徽章 + partialReasons + 截断次数 |
 | `/?scene=running` | 审查中：阶段 + 已分析 n/m + 计时 + 取消 |
 | `/?scene=error` | 审查失败：错误码 + 人话 + 重试 |
 | `/?scene=empty` | 搜索无结果的空列表态 |

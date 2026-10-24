@@ -47,8 +47,12 @@ window.__ModuleLoader__.load({
       expandAll: 'Expand all',
       collapseAll: 'Collapse all',
       expandDiff: 'Show all {n} lines',
-      reviewWithCodex: 'Review with Codex',
+      reviewWithCodex: 'Review with AI',
       reviewShort: 'Review',
+      reviewSettings: 'Review settings',
+      reviewSettingsHint: 'v1 uses the host default model; review settings are fixed.',
+      reviewersDisabled: 'Read-only v1: assigning reviewers is not available',
+      readOnly: 'Read-only',
       preparing: 'Preparing…',
       reviewing: 'Reviewing…',
       phasePreparing: 'Collecting diff',
@@ -64,6 +68,8 @@ window.__ModuleLoader__.load({
       reviewCleanHint: 'This diff has no P0/P1 issues worth blocking on.',
       reviewFailed: 'Review failed',
       reviewPartial: 'Partial result',
+      reviewPartialHint: 'Part of the review did not finish',
+      truncatedCalls: '{n} model responses were truncated',
       findingsCount: '{n} findings',
       verdictApprove: 'Looks good: no P0/P1 findings',
       verdictRequestChanges: 'Changes requested before merge',
@@ -140,8 +146,12 @@ window.__ModuleLoader__.load({
       expandAll: '全部展开',
       collapseAll: '全部折叠',
       expandDiff: '展开全部 {n} 行',
-      reviewWithCodex: 'Review with Codex',
+      reviewWithCodex: '用 AI 审查',
       reviewShort: 'AI 审查',
+      reviewSettings: '审查设置',
+      reviewSettingsHint: 'v1 使用宿主默认模型，审查设置暂不可改',
+      reviewersDisabled: 'v1 只读，暂不支持指派 reviewer',
+      readOnly: '只读',
       preparing: '准备中…',
       reviewing: '审查中…',
       phasePreparing: '收集 diff',
@@ -157,6 +167,8 @@ window.__ModuleLoader__.load({
       reviewCleanHint: '这次 diff 没有发现需要阻断的问题。',
       reviewFailed: '审查失败',
       reviewPartial: '部分结果',
+      reviewPartialHint: '部分内容未能完成审查',
+      truncatedCalls: '{n} 次模型输出被截断',
       findingsCount: '{n} 条发现',
       verdictApprove: '建议合并：没有 P0/P1 问题',
       verdictRequestChanges: '建议修改后再合并',
@@ -628,6 +640,9 @@ window.__ModuleLoader__.load({
           headSha: typeof review.headSha === 'string' ? review.headSha : '',
           findings: asArray(review.findings),
           overview: typeof review.overview === 'string' ? review.overview : '',
+          partial: Boolean(review.partial),
+          partialReasons: asArray(review.partialReasons),
+          truncatedCalls: Number(review.truncatedCalls) || 0,
         },
       })
     }
@@ -775,10 +790,14 @@ window.__ModuleLoader__.load({
 .cr-iconbtn{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--cr-text-2);cursor:pointer;text-decoration:none}
 .cr-iconbtn:hover{background:var(--cr-hover);color:var(--cr-text)}
 .cr-iconbtn[aria-pressed="true"]{color:var(--cr-text);background:var(--cr-hover)}
+.cr-iconbtn:disabled{opacity:.35;cursor:not-allowed}
+.cr-iconbtn:disabled:hover{background:transparent;color:var(--cr-text-2)}
 .cr-review{display:inline-flex;align-items:stretch;height:32px;border-radius:16px;background:var(--cr-card);overflow:hidden;flex:none}
 .cr-review-main{display:inline-flex;align-items:center;gap:8px;padding:0 14px;border:0;background:transparent;color:var(--cr-text);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap}
 .cr-review-main:hover{background:var(--cr-raised)}
 .cr-review-main:disabled{cursor:default;opacity:.75}
+.cr-review-label{display:inline}
+.cr-review-short{display:none}
 .cr-review-gear{display:grid;place-items:center;width:32px;padding:0;border:0;border-left:1px solid var(--cr-border-strong);background:transparent;color:var(--cr-text);cursor:pointer}
 .cr-review-gear:hover{background:var(--cr-raised)}
 .cr-btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border:0;border-radius:16px;background:var(--cr-card);color:var(--cr-text);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap}
@@ -985,6 +1004,10 @@ window.__ModuleLoader__.load({
   .cr-toolbar{height:46px;padding:0 12px}
   .cr-pr-title{font-size:23px}
 }
+@container (max-width: 860px){
+  .cr-review-label{display:none}
+  .cr-review-short{display:inline}
+}
 @media (max-width: 1180px){
   .cr-details{display:none}
   .cr-cluster{max-width:800px}
@@ -995,6 +1018,10 @@ window.__ModuleLoader__.load({
   .cr-cluster{padding:0 16px}
   .cr-toolbar{height:46px;padding:0 12px}
   .cr-pr-title{font-size:23px}
+}
+@media (max-width: 860px){
+  .cr-review-label{display:none}
+  .cr-review-short{display:inline}
 }
 @media (prefers-reduced-motion: reduce){
   .cr-root *,.cr-root *::before,.cr-root *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
@@ -1363,7 +1390,8 @@ window.__ModuleLoader__.load({
         {
           className: 'cr-badge cr-badge--' + key,
           'data-pr-state': key,
-          title: key === 'closed' ? tx(t, 'closed') : undefined,
+          title: tx(t, 'readOnly'),
+          'aria-readonly': 'true',
         },
         Icon(key === 'open' ? 'merge' : key === 'closed' ? 'close' : key === 'merged' ? 'merge' : 'square', 13),
         h('span', null, label),
@@ -1414,8 +1442,14 @@ window.__ModuleLoader__.load({
       const review = props.review || { state: 'none' }
       const busy = review.state === 'preparing' || review.state === 'running'
       let reviewLabel = tx(t, 'reviewWithCodex')
-      if (review.state === 'preparing') reviewLabel = tx(t, 'preparing')
-      else if (review.state === 'running') reviewLabel = tx(t, 'reviewing')
+      let reviewShortLabel = tx(t, 'reviewShort')
+      if (review.state === 'preparing') {
+        reviewLabel = tx(t, 'preparing')
+        reviewShortLabel = reviewLabel
+      } else if (review.state === 'running') {
+        reviewLabel = tx(t, 'reviewing')
+        reviewShortLabel = reviewLabel
+      }
       return h(
         'div',
         { className: 'cr-toolbar' },
@@ -1438,6 +1472,7 @@ window.__ModuleLoader__.load({
               'aria-pressed': props.pinned ? 'true' : 'false',
               'aria-label': props.pinned ? tx(t, 'pinned') : tx(t, 'pin'),
               title: props.pinned ? tx(t, 'pinned') : tx(t, 'pin'),
+              disabled: !props.url,
               onClick: props.onPin,
             },
             Icon('pin', 15),
@@ -1449,6 +1484,7 @@ window.__ModuleLoader__.load({
               className: 'cr-iconbtn',
               'aria-label': tx(t, 'copyLink'),
               title: tx(t, 'copyLink'),
+              disabled: !props.url,
               onClick: props.onCopy,
             },
             Icon('link', 15),
@@ -1482,11 +1518,13 @@ window.__ModuleLoader__.load({
               className: 'cr-review-main',
               'data-action': 'review',
               disabled: busy || !props.canReview,
-              title: tx(t, 'reviewWithCodex'),
+              'aria-label': reviewLabel,
+              title: reviewLabel,
               onClick: props.onReview,
             },
             busy ? h('span', { className: 'cr-spinner' }) : Icon('brain', 15),
-            h('span', null, reviewLabel),
+            h('span', { className: 'cr-review-label' }, reviewLabel),
+            h('span', { className: 'cr-review-short' }, reviewShortLabel),
           ),
           h(
             'button',
@@ -1494,8 +1532,8 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'cr-review-gear',
               'data-action': 'review-settings',
-              'aria-label': tx(t, 'reviewShort'),
-              title: tx(t, 'reviewShort'),
+              'aria-label': tx(t, 'reviewSettings'),
+              title: tx(t, 'reviewSettings'),
               onClick: props.onGear,
             },
             Icon('gear', 14),
@@ -1541,7 +1579,7 @@ window.__ModuleLoader__.load({
           'h1',
           { className: 'cr-pr-title' },
           h('span', { className: 'cr-pr-title-text' }, summary.title || '(untitled)'),
-          h('span', { className: 'cr-pr-edit', title: '只读', 'aria-hidden': 'true' }, Icon('pencil', 13)),
+          h('span', { className: 'cr-pr-edit', title: tx(t, 'readOnly'), 'aria-hidden': 'true' }, Icon('pencil', 13)),
         ),
         h(
           'div',
@@ -1797,6 +1835,11 @@ window.__ModuleLoader__.load({
       const model = review.model && review.model.model ? String(review.model.model) : ''
       const elapsed = formatElapsed(review)
       const verdict = deriveVerdict(findings)
+      // Host may report an incomplete review (some chunks failed / model output
+      // truncated). Surface it instead of pretending the diff is clean.
+      const partialReasons = Array.isArray(review.partialReasons) ? review.partialReasons : []
+      const truncatedCalls = Number(review.truncatedCalls) || 0
+      const partial = Boolean(review.partial) || partialReasons.length > 0 || truncatedCalls > 0
       return h(
         'section',
         { className: 'cr-review-card', 'data-review-state': state, 'aria-busy': running ? 'true' : 'false' },
@@ -1822,7 +1865,7 @@ window.__ModuleLoader__.load({
                   ? h('span', null, '· ' + tx(t, 'fileCount', { n: String(filesTotal) }))
                   : null,
                 model ? h('span', null, '· ' + model) : null,
-                review.partial ? h('span', { className: 'cr-file-badge' }, tx(t, 'reviewPartial')) : null,
+                partial ? h('span', { className: 'cr-file-badge' }, tx(t, 'reviewPartial')) : null,
               )
             : null,
           state === 'error'
@@ -1895,17 +1938,40 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'cr-review-verdict' },
-                verdict === 'approve' ? tx(t, 'verdictApprove') : tx(t, 'verdictRequestChanges'),
+                partial
+                  ? tx(t, 'reviewPartialHint')
+                  : verdict === 'approve'
+                    ? tx(t, 'verdictApprove')
+                    : tx(t, 'verdictRequestChanges'),
               ),
               h(SeverityCounts, { counts }),
               review.overview ? h('div', { className: 'cr-review-verdict' }, String(review.overview)) : null,
-              findings.length === 0
+              partial
                 ? h(
                     'div',
-                    { className: 'cr-review-progress' },
-                    h('span', null, tx(t, 'reviewClean')),
-                    h('span', { style: { color: 'var(--cr-text-3)' } }, tx(t, 'reviewCleanHint')),
+                    { className: 'cr-review-error', 'data-review-partial': 'true' },
+                    h('b', null, tx(t, 'reviewPartial') + ' '),
+                    h(
+                      'span',
+                      null,
+                      partialReasons.length > 0
+                        ? partialReasons.slice(0, 3).join('；')
+                        : tx(t, 'reviewPartialHint'),
+                    ),
+                    truncatedCalls > 0
+                      ? h('div', null, tx(t, 'truncatedCalls', { n: truncatedCalls }))
+                      : null,
                   )
+                : null,
+              findings.length === 0
+                ? partial
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'cr-review-progress' },
+                      h('span', null, tx(t, 'reviewClean')),
+                      h('span', { style: { color: 'var(--cr-text-3)' } }, tx(t, 'reviewCleanHint')),
+                    )
                 : findings.map((finding) =>
                     h(FindingItem, {
                       key: finding.id || finding.file + ':' + finding.line,
@@ -2329,7 +2395,8 @@ window.__ModuleLoader__.load({
           className: 'cr-btn cr-btn--ghost',
           disabled: true,
           'aria-disabled': 'true',
-          title: tx(t, 'mergeDisabled'),
+          'aria-label': tx(t, 'reviewersDisabled'),
+          title: tx(t, 'reviewersDisabled'),
           style: { height: 20, padding: 0, width: 20, justifyContent: 'center' },
         },
         Icon('plus', 13),
@@ -2387,6 +2454,10 @@ window.__ModuleLoader__.load({
       const running = review.state === 'preparing' || review.state === 'running'
       const progress = review.progress || {}
       const elapsed = formatElapsed(review)
+      const partial =
+        Boolean(review.partial) ||
+        (Array.isArray(review.partialReasons) && review.partialReasons.length > 0) ||
+        Number(review.truncatedCalls) > 0
       return h(
         Section,
         { title: tx(t, 'reviewResultTitle') },
@@ -2421,9 +2492,11 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'cr-empty-line', style: { marginBottom: 6 } },
-                deriveVerdict(findings) === 'approve'
-                  ? tx(t, 'verdictApprove')
-                  : tx(t, 'verdictRequestChanges'),
+                partial
+                  ? tx(t, 'reviewPartialHint')
+                  : deriveVerdict(findings) === 'approve'
+                    ? tx(t, 'verdictApprove')
+                    : tx(t, 'verdictRequestChanges'),
               ),
               h(SeverityCounts, { counts }),
               h(
@@ -2671,6 +2744,8 @@ window.__ModuleLoader__.load({
               model: status.model,
               overview: status.overview,
               partial: Boolean(status.partial),
+              partialReasons: Array.isArray(status.partialReasons) ? status.partialReasons : [],
+              truncatedCalls: Number(status.truncatedCalls) || 0,
               progress: status.progress || {},
               findings: Array.isArray(status.findings) ? status.findings : [],
             })
@@ -2945,7 +3020,7 @@ window.__ModuleLoader__.load({
             onCopy: copyLink,
             onGithub: openGithub,
             onReview: startReview,
-            onGear: () => showToast(tx(t, 'askDisabled')),
+            onGear: () => showToast(tx(t, 'reviewSettingsHint')),
           }),
           h(
             'div',

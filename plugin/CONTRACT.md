@@ -40,6 +40,7 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 | pathname | 请求 | 响应 value |
 |---|---|---|
 | `/codex-review/health` | `{}` | `{ gh: "ok"\|"not-logged-in"\|"missing", llm: "ok"\|"unavailable", version: "0.1.0" }` |
+| `/codex-review/llm-info` | `{}` | `{ selection, reasoningEffort, efforts, transport, models?, pluginConfig }`（调试路由；LLM 不可用时报 `LLM_UNAVAILABLE`） |
 | `/codex-review/prs` | `{ query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
 | `/codex-review/pr` | `{ repo, number }` | `PrDetail` |
 | `/codex-review/review-start` | `{ repo, number }` | `{ jobId, headSha, cached }` |
@@ -155,9 +156,10 @@ export const Config = {
     limit:               { type: 'number', default: 30 },
     maxPatchChars:       { type: 'number', default: 24000 },
     maxBodyChars:        { type: 'number', default: 50000 },
-    reviewChunkChars:    { type: 'number', default: 18000 },
-    maxChunks:           { type: 'number', default: 6 },
-    maxOutputTokens:     { type: 'number', default: 4096 },
+    reviewChunkChars:    { type: 'number', default: 9000 },
+    maxChunks:           { type: 'number', default: 9 },
+    reviewConcurrency:   { type: 'number', default: 3 },
+    maxOutputTokens:     { type: 'number', default: 0 },  // 0 = 用适配器物化的模型默认上限
     provider:            { type: 'string' },
     model:               { type: 'string' },
     maxJobs:             { type: 'number', default: 20 },
