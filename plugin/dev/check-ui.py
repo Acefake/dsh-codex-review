@@ -164,4 +164,17 @@ with sync_playwright() as playwright:
     assert form.get_by_role('radiogroup', name='审查深度', exact=True).count() == 1
     print('PASS toolbar/native settings share one persisted parameter set')
     page.close()
+    for theme in ['dark', 'light']:
+        page = browser.new_page(viewport={'width': 1280, 'height': 1000})
+        page.goto(f'{BASE}/?scene=settings&theme={theme}')
+        form = page.locator('[data-cr-settings-page]')
+        form.wait_for()
+        assert form.evaluate('e => getComputedStyle(e).backgroundColor') == 'rgba(0, 0, 0, 0)'
+        assert form.evaluate('e => parseFloat(getComputedStyle(e).paddingLeft)') >= 24
+        assert form.evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+        # A host layer color must show through, rather than the workbench base.
+        page.locator('.pv-settings-host').evaluate("e => e.style.backgroundColor = 'rgb(43, 43, 46)'" if theme == 'dark' else "e => e.style.backgroundColor = 'rgb(246, 246, 248)'")
+        page.screenshot(path=str(OUTPUT / f'native-settings-{theme}.png'))
+        print(f'PASS native settings inherit {theme} host surface with inset content')
+        page.close()
     browser.close()
