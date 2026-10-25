@@ -1542,6 +1542,25 @@ async function runV23Checks() {
       'document.querySelector("[data-cr-detail=\\"ready\\"]") !== null',
       { timeoutMs: 20_000, label: `PR #${target.number} 详情` },
     ).catch(() => {})
+    // Inline comments render inside the Changes diff: switch to that tab and
+    // expand every file so the reply/resolve cards are actually mounted.
+    const changesTab = await page.evaluate(`(() => {
+      const node = Array.from(document.querySelectorAll('[role="tab"],[data-tab]')).find((element) => /changes|变更/i.test(element.textContent || ''))
+      if (!node) return null
+      const rect = node.getBoundingClientRect()
+      if (!(rect.width > 0) || !(rect.height > 0)) return null
+      return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
+    })()`)
+    if (changesTab) {
+      await clickRect(page, changesTab)
+      await page.waitForNetworkIdle({ timeoutMs: 10_000, idleMs: 600 }).catch(() => false)
+      await delay(700)
+    }
+    const expandAll = await page.evaluate(pressableByText('全部展开|Expand all|展开全部'))
+    if (expandAll.length > 0) {
+      await clickRect(page, expandAll[0].rect)
+      await delay(700)
+    }
   }
 
   /**
@@ -1590,13 +1609,6 @@ async function runV23Checks() {
       }
     } else {
       await selectWorkbenchPr(pick)
-      // GitHub inline comments render inside expanded file cards (v1.1
-      // behaviour): click "全部展开" so the reply/resolve cards are mounted.
-      const expandAll = await page.evaluate(pressableByText('全部展开|Expand all|展开全部'))
-      if (expandAll.length > 0) {
-        await clickRect(page, expandAll[0].rect)
-        await delay(700)
-      }
       await page.waitFor(
         'document.querySelectorAll("[data-inline-comment]").length > 0',
         { timeoutMs: 20_000, label: '行内评论卡' },
@@ -1609,7 +1621,7 @@ async function runV23Checks() {
       v23Check(
         'v2.3 行内评论卡含「回复」按钮',
         surface.replyButtons > 0,
-        JSON.stringify({ cards: surface.inlineCommentCards, visible: surface.visibleInlineCards, reply: surface.replyButtons, rowFound: row.found }).slice(0, 320),
+        JSON.stringify({ cards: surface.inlineCommentCards, visible: surface.visibleInlineCards, reply: surface.replyButtons, rowFound: Boolean(v23.row && v23.row.found) }).slice(0, 320),
       )
 
       // --- 2) inline reply: open the composer, then cancel -----------------

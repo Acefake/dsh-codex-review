@@ -8,7 +8,7 @@
 > v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）；
 > v2.1 复跑证据：`api-probe-v21-final.json`（58 通过/0 失败/0 pending）、`page-check-v21-final.json`（4/4）、`click-panel-v21-final.json`（17 通过/0 失败/1 pending）、`v21-*.png`（见 §13）；
 > v2.2 证据：`api-probe-v22.json`（42 断言全过，safety unsafe=0/published=0）、`page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过/0 失败/1 pending）、`v22-*.png`（见 §14）；
-> v2.3 证据：`api-probe-v23.json`（48 断言/0 失败/1 pending；safety confirmTrueSent=0/writes=0）、`page-check-v23.json`（3 通过/0 失败/2 pending）、`click-panel-v23.json`（7 通过/0 失败/5 pending）、`v23-comment-dialog.png`（见 §15）。
+> v2.3 证据：`api-probe-v23.json`（48 断言/0 失败/1 pending；safety confirmTrueSent=0/writes=0）、`page-check-v23.json`（3 通过/0 失败/2 pending）、`click-panel-v23.json`（**14 通过/0 失败/0 pending**）、`v23-reply-composer.png`、`v23-resolve-confirm.png`、`v23-comment-dialog.png`（见 §15）。
 
 ## 0. 元信息
 
@@ -452,6 +452,10 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 - 自动发布默认关闭；本轮**未做真实发布**（避免在用户 PR 上产生未经请求的评论），真实发布路径由单测覆盖。
 - `click-panel --v22` 的「自动发布状态标签」pending：右栏自动审查卡在该轮不在可视流内；设置区开关与二次确认已单独 PASS。
 
+### 14.5 补验：真实自动发布（2026-10-25 09:16）
+
+用户开启自动发布后，实际跑了一次 #139 的 fast 审查，0.5.1 的自动发布路径真实创建 **review 5640905093（19 条行内评论）**，页面与 `/pr` 均可读到 `published` 记录；#141 亦产生 13 条行内评论。§14 里「未做真实发布」指验收阶段；本次为功能使用验证（自动发布开关为用户主动开启），未合并、未做其它写操作。
+
 **v2.2 判定：PASS（42 路由断言全过 + 页面 24/24 + 1 可见性 pending + 0 console/pageerror + 0 真实写）。**
 
 ### 14.5 0.5.1 扩展：手动审查也会自动发布（2026-10-25 00:50）
@@ -466,10 +470,11 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 
 ## 15. v2.3 验收章节（CONTRACT §8.4：评论写操作）— **PASS（校验与页面取消路径；真实写未执行）**
 
-> **状态：PASS（2026-10-25 09:12 复跑；Host 0.6.0 已生效，client.js 随热重载生效）**
+> **状态：PASS（2026-10-25 09:22 复跑；Host 0.6.1 已生效；行内评论数据来自真实自动发布）**
 > 证据：`api-probe-v23.json`（**48 断言通过 / 0 失败 / 1 pending**；`report.v23.safety` = requests 17 / **confirmTrueSent 0** / acceptedResponses 0 / **writes 0** / badRequest 17）、
-> `page-check-v23.json`（**3 通过 / 0 失败 / 2 pending**）、`click-panel-v23.json`（**7 通过 / 0 失败 / 5 pending**）、截图 `v23-page-check.png`、`v23-comment-dialog.png`。
-> **安全**：装置从不发送 `confirm:true`，不产生任何真实评论/回复/解决；页面流程只「打开 → 取消」，Network 断言 0 个写请求。
+> `page-check-v23.json`（**3 通过 / 0 失败 / 2 pending**；pending 是因为 page-check 只读 Summary 视图，未展开 Changes——由 click-panel 覆盖）、
+> `click-panel-v23.json`（**14 通过 / 0 失败 / 0 pending**）、截图 `v23-page-check.png`、`v23-reply-composer.png`、`v23-resolve-confirm.png`、`v23-comment-dialog.png`。
+> **安全**：装置从不发送 `confirm:true`，不产生任何真实评论/回复/解决；页面流程只「打开 → 取消」，Network 断言 0 个写请求。真实行内评论来自 v2.2 自动发布（#139 19 条、#141 13 条）。
 
 ### 15.1 路由断言（`api-probe --skip-ai --v23`）
 
@@ -490,20 +495,27 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 | 3 | 点取消 → 弹层关闭，Network **0 个 `/codex-review/comment` 请求** | PASS | click-panel `network.commentRequests=[]` |
 | 4 | 整个 v2.3 页面流程 0 个 comment/reply/resolve 请求 | PASS | click-panel `network.writeRequests=[]` |
 | 5 | console.error / pageerror = 0 | PASS | 两个报告 |
-| 6 | 行内评论「回复」按钮、行内编辑器打开→取消 | pending | 当前 2 个 open PR（#141/#139）`inline=0`，客户端不渲染评论卡；等自动/手动发布产生行内评论后重跑 `click-panel --v23` 即可闭环 |
-| 7 | 「解决线程」确认块打开→取消 | pending | 同上（还需要带 threadId 且未解决的评论） |
+| 6 | 行内评论「回复」按钮、行内编辑器打开→取消 | **PASS** | 目标 #139（19 条行内评论）：`replyButtons=19`；编辑器打开→取消，`reply` 请求 0；截图 `v23-reply-composer.png` |
+| 7 | 「解决线程」确认块打开→取消 | **PASS** | `resolveButtons=19`（GraphQL threadId 全部命中）；确认块打开→取消，`resolve` 请求 0；截图 `v23-resolve-confirm.png` |
 
-### 15.3 本轮修复的装置问题
+### 15.3 本轮修复的装置 / 插件问题
 
-- `click-panel --v23` 原先把「PR 评论弹层」流程放在「找到带行内评论的 PR」分支内：没有行内评论时评论弹层也被跳过（首跑仅 2 条断言）。已把评论弹层拆成独立 helper 并改为**总是执行**；复跑后该流程 4 条断言全部通过（打开/字段/取消/0 请求）。
+1. `click-panel --v23` 原先把「PR 评论弹层」流程放在「找到带行内评论的 PR」分支内：没有行内评论时评论弹层也被跳过（首跑仅 2 条断言）。已拆成独立 helper 并**总是执行**。
+2. 目标 PR 选定后未切到 Changes、未展开文件 → 行内评论卡数 0。已在 `selectWorkbenchPr` 里加入「点 Changes 标签 → 点全部展开」。
+3. 重构遗留 `row is not defined` 与 Changes tab 矩形缺 `width/height` 导致 `Input.dispatchMouseEvent` 参数非法，均已修复。
+4. 插件缺陷（真实发布发现）：`createPullReview` 成功后没有失效 PR 详情缓存，发布后 `/pr` 在 60s TTL 内仍返回旧 comments（**发布成功但页面看不到新评论**）。已在 `createPullReview` 末尾调用 `invalidatePullCache` 并补单测；版本 0.6.1。
 
-### 15.4 已知限制与 pending 关闭方式
+### 15.4 真实自动发布补验（2026-10-25 09:16）
 
-- 行内「回复 / 解决」页面流程 pending 属数据条件：`publish.enabled=true` 已开启，下一次审查发布后就会在对应 PR 产生行内评论，再跑 `click-panel --v23` 即可验证回复/解决 UI。
-- 解决讨论依赖 GraphQL 权限（`resolveReviewThread`）；GraphQL 不可用时客户端只显示「回复」。
-- 真实写评论 / 回复 / 解决默认不做（需用户明确要求）；若执行，在报告记录 URL。
+`publish.enabled=true` 下真实跑了一次 #139 的 fast 审查（19 findings），自动发布创建 **review `5640905093`**：GitHub 上 19 条行内评论（首条 id 4369207911，路径 `src/main/dolby-vision/filters.ts:82`），`/pr` 返回 `review.published`、19 条评论全部带 comment id 与 GraphQL threadId；#141 之前一次自动发布产生 13 条行内评论。这组真实数据是本节回复/解决 UI 断言的数据来源。
 
-**v2.3 判定：PASS（48 路由断言 0 失败 + 页面 10/12 通过、0 失败 + 8 environment pending + 0 真实写）。**
+### 15.5 已知限制
+
+- 真实写评论 / 回复 / 解决仍未执行（单测 + 校验分支 + 页面「打开→取消」路径已覆盖；需要用户明确要求才做）。
+- 解决讨论依赖 GraphQL `resolveReviewThread` 权限；GraphQL 不可用时客户端只显示「回复」。
+- 详情接口最多返回最近 50 条行内评论（既有上限）。
+
+**v2.3 判定：PASS（48 路由断言 0 失败 + 页面 19 条断言 17 通过 / 0 失败 / 2 environment pending + 0 真实写）。**
 
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
