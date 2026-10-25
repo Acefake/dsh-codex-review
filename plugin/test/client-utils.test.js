@@ -1527,3 +1527,21 @@ test('a delayed refresh cannot replace the latest detail after review invalidati
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(harness.states[5].value.body, 'new')
 })
+
+test('selecting a freshly cached PR revalidates and restores reviews completed elsewhere', async () => {
+  const harness = componentHarness()
+  const summary = { repo: 'a/b', number: 2 }
+  let calls = 0
+  harness.bundle.sandbox.fetch = async () => {
+    calls += 1
+    return { async json() { return { ok: true, value: { summary, review: { state: 'done', jobId: 'automatic-result', findings: [{ file: 'a.js', line: 1, title: 'Bug', severity: 'P1' }] } } } } }
+  }
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  cache.set('a/b#2', { at: Date.now(), value: { summary, review: { state: 'none' } } })
+  harness.callbacks.find(fn => String(fn).includes('setSelected(summary)'))(summary)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 1)
+  assert.equal(harness.states[9].state, 'done')
+  assert.equal(harness.states[9].jobId, 'automatic-result')
+})

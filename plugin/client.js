@@ -8180,7 +8180,8 @@ const EMPTY_LIST = Object.freeze([])
             setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
             void pollReview(nextGeneration, seed.jobId, summary)
           }
-          if (Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
+          // Revalidate review state even while the cached PR body is fresh.
+          // Automatic reviews and other tabs can finish without updating this cache.
         } else {
           setDetail({ state: 'loading', value: null, error: null })
         }

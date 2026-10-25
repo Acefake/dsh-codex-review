@@ -3,7 +3,7 @@
  *
  * Pure pieces (file selection, chunking, prompt building, output parsing,
  * finding validation/merge, overview text) are exported for `node --test`;
- * {@link ReviewEngine} owns the in-memory job table and drives
+ * {@link ReviewEngine} owns the job table, persists terminal results when configured, and drives
  * `ctx.llm.stream` through an injected `streamLlm` function so the engine is
  * testable without a host context or a real model.
  *
@@ -15,6 +15,8 @@
  */
 
 import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { AppError, USER_MESSAGES } from './errors.js'
 import { LruCache, truncateText } from './github.js'
 
@@ -663,7 +665,7 @@ function defaultSleep() {
  */
 export class ReviewEngine {
   /**
-   * @param {{ streamLlm?: (request: any) => AsyncIterable<any>, resolveSelection?: () => { provider?: string, model?: string }, config?: any, logger?: any, now?: () => number, sleep?: () => Promise<void>, callTimeoutMs?: number, fileCacheMax?: number }} [options] - engine wiring.
+   * @param {{ streamLlm?: (request: any) => AsyncIterable<any>, resolveSelection?: () => { provider?: string, model?: string }, config?: any, logger?: any, now?: () => number, sleep?: () => Promise<void>, callTimeoutMs?: number, fileCacheMax?: number, statePath?: string }} [options] - engine wiring.
    */
   constructor(options = {}) {
     /** @type {((request: any) => AsyncIterable<any>) | undefined} */
@@ -692,6 +694,59 @@ export class ReviewEngine {
      */
     this.fileCacheMax = Number.isInteger(options.fileCacheMax) && options.fileCacheMax > 0 ? options.fileCacheMax : FILE_CACHE_MAX
     this.fileCache = new LruCache(this.fileCacheMax)
+    this.statePath = options.statePath
+    this.loadResults()
+  }
+
+  /** Restore terminal results only; interrupted jobs must never appear to be running. */
+  loadResults() {
+    if (!this.statePath || !existsSync(this.statePath)) return
+    try {
+      if (statSync(this.statePath).size > 20 * 1024 * 1024) throw new Error('review results exceed size limit')
+      const saved = JSON.parse(readFileSync(this.statePath, 'utf8'))
+      if (saved?.version !== 1 || !Array.isArray(saved.jobs)) throw new Error('unsupported review results')
+      for (const job of saved.jobs.slice(-this.maxJobs)) {
+        if (!job || !['done', 'error'].includes(job.state) || typeof job.id !== 'string' ||
+            typeof job.repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(job.repo) ||
+            !Number.isInteger(job.number) || job.number <= 0 || typeof job.headSha !== 'string' ||
+            job.headSha === '' || !Array.isArray(job.findings) || !job.options ||
+            !Number.isFinite(job.startedAt) || !Number.isFinite(job.endedAt)) continue
+        const restored = {
+          ...job,
+          key: buildReviewJobKey(job.repo, job.number, job.headSha, job.options),
+          controller: new AbortController(),
+          guidelineText: '',
+          skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
+          partialReasons: Array.isArray(job.partialReasons) ? job.partialReasons : [],
+        }
+        this.jobs.set(job.id, restored)
+        this.sequence += 1
+      }
+    } catch (error) {
+      this.logger?.warn?.(`dsh-codex-review: cannot restore review results: ${error?.message ?? error}`)
+    }
+  }
+
+  /** Atomically store bounded terminal results, without prompts, patches or controllers. */
+  persistResults() {
+    if (!this.statePath) return
+    try {
+      const jobs = [...this.jobs.values()]
+        .filter(job => job.state === 'done' || job.state === 'error')
+        .slice(-this.maxJobs)
+        .map(({ controller, done, guidelineText, ...record }) => record)
+      let payload = JSON.stringify({ version: 1, jobs })
+      while (Buffer.byteLength(payload) > 20 * 1024 * 1024 && jobs.length > 0) {
+        jobs.shift()
+        payload = JSON.stringify({ version: 1, jobs })
+      }
+      mkdirSync(dirname(this.statePath), { recursive: true })
+      const temporary = `${this.statePath}.tmp-${process.pid}`
+      writeFileSync(temporary, payload, { encoding: 'utf8', mode: 0o600 })
+      renameSync(temporary, this.statePath)
+    } catch (error) {
+      this.logger?.warn?.(`dsh-codex-review: cannot persist review results: ${error?.message ?? error}`)
+    }
   }
 
   /**
@@ -774,7 +829,7 @@ export class ReviewEngine {
     this.evictSettled()
     // The promise is retained for tests and for a future graceful-shutdown
     // await; the route never blocks on it.
-    job.done = this.run(job, input)
+    job.done = this.run(job, input).finally(() => this.persistResults())
     return { jobId: job.id, headSha: job.headSha, cached: false, options: job.options }
   }
 
@@ -945,6 +1000,7 @@ export class ReviewEngine {
     for (const key of [...this.fileCache.entries.keys()]) {
       if (key.startsWith(prefix)) this.fileCache.delete(key)
     }
+    this.persistResults()
     return removed
   }
 

@@ -19,7 +19,8 @@ import {
   REPO_RE,
 } from './lib/github.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
-import { AutoReviewer } from './lib/auto-review.js'
+import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
+import { dirname, join } from 'node:path'
 import {
   PUBLISH_DEFAULTS,
   PUBLISH_MODES,
@@ -81,7 +82,9 @@ const PATHS = Object.freeze({
  * @param {any} config - validated Config values (defaults applied by the schema).
  */
 export function apply(ctx, config) {
-  applyWithDeps(ctx, config)
+  applyWithDeps(ctx, config, {
+    reviewStatePath: join(dirname(resolveAutoReviewStatePath()), 'review-results.json'),
+  })
 }
 
 /**
@@ -90,7 +93,7 @@ export function apply(ctx, config) {
  * review engine so nothing touches the network.
  * @param {any} ctx - plugin context.
  * @param {any} rawConfig - validated or raw Config values.
- * @param {{ github?: any, engine?: any }} [deps] - test doubles.
+ * @param {{ github?: any, engine?: any, reviewStatePath?: string }} [deps] - test doubles.
  */
 export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const config = resolveConfig(rawConfig)
@@ -216,7 +219,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   }
 
   const github = deps.github ?? new GitHubClient({ config, logger })
-  const engine = deps.engine ?? new ReviewEngine({ streamLlm, resolveSelection, config, logger })
+  const engine = deps.engine ?? new ReviewEngine({
+    streamLlm, resolveSelection, config, logger,
+    statePath: deps.reviewStatePath,
+  })
   /** Concurrent chat streams allowed by CONTRACT §5.2. */
   const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
   /** Background automatic reviewer (CONTRACT §6); disabled by default. */

@@ -9,6 +9,12 @@
 
 > 本目录同时是 npm 包目录（`package.json` 双面声明：`dsh.bundle.patch` + `dsh.client`），可直接 `plugin_manager install_bundle` 安装。
 
+## 审查结果恢复
+
+切换 PR 会先显示缓存内容，再向宿主核对最新审查状态，因此后台或其他标签页完成的审查可以正常显示。刷新页面后由宿主返回该 PR 当前 head 的结果。
+
+新完成的审查结果（含失败信息）保存在当前 profile 的 `.codex-review/review-results.json`；没有 profile 配置时使用 `~/.dsh/codex-review/review-results.json`。保留范围受 `maxJobs` 限制，默认最近 20 个任务，文件上限 20 MiB；不保存完整 diff、提示词或未完成任务。插件重载后仍可恢复结果，PR head 改变后不会沿用旧结果。旧版宿主重载前未落盘且已经丢失的结果，需要重新审查；已发布到 GitHub 的评论仍可在 PR 中查看。
+
 ## 已安装状态
 
 已安装进 `desktop` profile（`plugin_manager` 返回 `application: applied`），Host 代码已生效；**新打开的 Web 页面**会加载其 client bundle。安装形态是符号链接：`~/.dsh/profiles/desktop/node_modules/dsh-codex-review → 本目录`。

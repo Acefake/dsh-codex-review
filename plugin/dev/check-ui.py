@@ -5,6 +5,7 @@ Run: python plugin/dev/check-ui.py
 Screenshots: verify/out/ui-refactor/ (ignored by git).
 """
 import os
+import json
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -94,5 +95,33 @@ with sync_playwright() as playwright:
     )
     page.screenshot(path=str(OUTPUT / 'embedded-800.png'))
     print('PASS embedded 800px container in 1440px viewport')
+    page.close()
+    # Review completed in another tab/background after this tab cached "none".
+    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    completed = [False]
+    saved_review = json.loads((Path(__file__).parent / 'mock' / 'review-done.json').read_text())
+
+    def detail_response(route):
+        response = route.fetch()
+        envelope = response.json()
+        number = route.request.post_data_json.get('number')
+        if number == 129 and envelope.get('ok'):
+            envelope['value']['review'] = saved_review if completed[0] else {'state': 'none'}
+        route.fulfill(response=response, json=envelope)
+
+    page.route('**/codex-review/pr', detail_response)
+    page.goto(f'{BASE}/?scene=default')
+    page.locator('.cr-pr-title').wait_for()
+    assert page.locator('.cr-review-card').count() == 0
+    page.locator('.cr-row').nth(1).click()
+    page.wait_for_function('() => document.querySelector(".cr-pr-repo")?.textContent.includes("#132")')
+    completed[0] = True
+    page.locator('.cr-row').first.click()
+    page.locator('.cr-finding').first.wait_for()
+    assert page.locator('.cr-root').get_attribute('data-cr-review-state') == 'done'
+    page.reload()
+    page.locator('.cr-finding').first.wait_for()
+    page.screenshot(path=str(OUTPUT / 'restored-review.png'))
+    print('PASS background result restored after PR switch and page reload')
     page.close()
     browser.close()

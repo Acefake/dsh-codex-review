@@ -672,3 +672,9 @@ type PublishRequest = {
 
 
 
+
+## 审查结果恢复补充
+
+- PR 详情客户端缓存可以立即显示，但选择 PR 时仍须核对宿主最新 review；缓存中的 `none` 不代表后台尚未完成。
+- 生产 ReviewEngine 原子持久化最近 `maxJobs` 个已结束任务（默认 20），上限 20 MiB；通过当前 profile 目录隔离。恢复保持 jobId、PR/head、选项与 findings，支持 status 与发布守卫；不恢复运行中的任务，不保存完整 diff 或提示词。
+- 合并后的 engine.invalidate 同步删除磁盘记录；当前 head 不匹配时结果不展示。

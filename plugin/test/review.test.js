@@ -4,6 +4,9 @@
  */
 
 import test from 'node:test'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import {
   DEPTH_PRESETS,
@@ -895,4 +898,60 @@ test('invalidate drops the review jobs and file-cache entries of one merged PR',
   assert.equal(slow.invalidate('Acme/repo', 9), 1)
   await running.done
   assert.throws(() => slow.status(running.jobId), (error) => error.code === 'BAD_REQUEST')
+})
+
+function resultPath(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-review-results-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  return join(directory, 'results.json')
+}
+
+test('completed review survives engine reload and stays bound to its PR head', async t => {
+  const statePath = resultPath(t)
+  const { streamLlm } = fakeStream(FINDINGS_ANSWER)
+  const options = { statePath, streamLlm, resolveSelection: () => ({ provider: 'p', model: 'm' }), sleep: async () => {} }
+  const engine = new ReviewEngine(options)
+  const started = engine.start(PR_INPUT)
+  await engine.waitForCompletion(started.jobId)
+  const before = engine.status(started.jobId)
+  engine.dispose()
+  const restored = new ReviewEngine(options)
+  assert.deepEqual(restored.status(started.jobId), before)
+  assert.equal(restored.existing(PR_INPUT.repo, PR_INPUT.number, PR_INPUT.headSha).state, 'done')
+  assert.equal(restored.existing(PR_INPUT.repo, PR_INPUT.number, 'new-head').state, 'none')
+  assert.equal(restored.start(PR_INPUT).cached, true)
+  const saved = JSON.parse(readFileSync(statePath, 'utf8'))
+  assert.equal('controller' in saved.jobs[0], false)
+  assert.equal('done' in saved.jobs[0], false)
+  assert.equal('guidelineText' in saved.jobs[0], false)
+  restored.invalidate(PR_INPUT.repo, PR_INPUT.number)
+  assert.equal(new ReviewEngine(options).existing(PR_INPUT.repo, PR_INPUT.number, PR_INPUT.headSha).state, 'none')
+})
+
+test('failed reviews survive reload and malformed files do not prevent startup', async t => {
+  const statePath = resultPath(t)
+  const engine = new ReviewEngine({
+    statePath,
+    streamLlm: () => { throw new Error('model unavailable') },
+    resolveSelection: () => ({ provider: 'p', model: 'm' }),
+    sleep: async () => {},
+  })
+  const started = engine.start(PR_INPUT)
+  await engine.waitForCompletion(started.jobId)
+  assert.equal(new ReviewEngine({ statePath }).status(started.jobId).state, 'error')
+  writeFileSync(statePath, '{invalid json')
+  assert.equal(new ReviewEngine({ statePath }).jobs.size, 0)
+})
+
+test('restoration skips interrupted and invalid jobs and respects maxJobs', async t => {
+  const statePath = resultPath(t)
+  const record = { id: 'one', repo: 'a/b', number: 1, headSha: 'sha', state: 'done', findings: [], options: resolveReviewOptions(), startedAt: 1, endedAt: 2 }
+  writeFileSync(statePath, JSON.stringify({ version: 1, jobs: [
+    { ...record, id: 'running', state: 'running' },
+    { ...record, id: 'invalid', number: -1 },
+    { ...record, id: 'one' },
+    { ...record, id: 'two' },
+  ] }))
+  assert.deepEqual([...new ReviewEngine({ statePath }).jobs.keys()], ['one', 'two'])
+  assert.deepEqual([...new ReviewEngine({ statePath, config: { maxJobs: 1 } }).jobs.keys()], ['two'])
 })
