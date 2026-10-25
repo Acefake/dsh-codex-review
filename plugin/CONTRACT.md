@@ -269,6 +269,9 @@ ctx.slots.inject('main', () => ctx.slots.register(
 - 视觉（v1.0，按 `recon/ui-spec.md`）：三栏 238 / 760 / 300、列距 44、主区与详情列同底色无分隔线；三列独立滚动（列表 / 文档 / 详情），文档列 = `.cr-doc`（`docRef` 挂这里，文件跳转与 tab 滚动记忆都相对它）。
 - 配色（v1.0）：暗色实测 `#202020` 应用底 / `#1B1B1B` 左栏 / `#181818` 主区 / `#2D2D2D` 抬升 / `#383838` 选中；浅色用同构浅色值。比例字体做界面，等宽只用于代码/diff/路径/分支/SHA。
 - 顶部审查汇总（v1.0）：AI 审查结果卡（`ReviewCard`，`data-review-state`）渲染在 PR 头部与正文之间，Summary / Changes tab 都可见；idle（无审查结果）时不渲染，符合规格的 idle 语义。
+- Comments 渲染（v1.0.2）：行内评论按 `threadId`（缺省用根评论 id）归并为线程；线程行含严重度徽章（正文 `**[P1] 标题**` 前缀解析）、`avatarUrl` 头像、回复数、解决按钮（复用 `/resolve`，需 `threadId`）与已解决态；默认渲染 5 个线程，其余由「显示更多」展开；PR 会话评论单独成组并截断正文。
+- 头像（v1.0.2）：`/pr` 与 `/prs` 的摘要/评论/评审对象带 `avatarUrl`（`user.avatar_url`），前端 `Avatar` 优先渲染该图片，`no-referrer`、懒加载，失败回退首字母。
+- 冷路径（v1.0.2）：`/pr` 的 files/comments/reviews/inline/threads 与 `pull` 并发发起，checks/stack 依赖 head SHA/base 后并行；files 在无 SHA 时按 `repo#number@latest` 键缓存 60s。
 - 切换性能（客户端）：列表行 hover/focus 触发 `/pr` 预取（`prefetchDetail`，与点击共享在飞 promise）；详情按 `repo#number` 内存缓存 120s，命中即时渲染、过期先渲染再后台刷新；切换到不同 PR 时必须清空旧 `detail.value` 并渲染右栏骨架（`data-cr-details-loading`），不得继续显示上一个 PR 的右栏内容。
 - 设置页（v0.9.1）不回退：行式布局 + 分段控件 + 开关，颜色跟随宿主 `--dsw-alias-*` token，禁止退回弹窗 fieldset 形式。
 - 设置入口（v0.9）：注册 `settings.section`（id `codex-review`，order 60，label = 「代码审查」），内容含审查选项（localStorage `codex-review:settings`）、自动审查/发布（Host `auto-review-config`）与 health 状态；工作台齿轮弹层保留为快捷方式。修改审查选项时派发 `codex-review:settings-changed` 事件，工作台监听后重读 localStorage。

@@ -135,6 +135,10 @@ const EMPTY_LIST = Object.freeze([])
       fix: 'Fix',
       noFindings: 'Nothing to fix in this diff',
       comments: 'Comments',
+      resolve: 'Resolve',
+      resolved: 'Resolved',
+      commentsShowMore: 'Show more',
+      commentsShowLess: 'Show less',
       commentsCount: '{n} comments',
       noComments: 'No comments',
       reviewers: 'Reviewers',
@@ -473,6 +477,10 @@ const EMPTY_LIST = Object.freeze([])
       fix: '怎么改',
       noFindings: '这次的改动没有需要修复的问题',
       comments: '评论',
+      resolve: '解决',
+      resolved: '已解决',
+      commentsShowMore: '显示更多',
+      commentsShowLess: '收起',
       commentsCount: '{n} 条评论',
       noComments: 'No comments',
       reviewers: 'Reviewers',
@@ -1391,10 +1399,60 @@ const EMPTY_LIST = Object.freeze([])
           line: Number.isFinite(line) && line > 0 ? line : null,
           body: typeof entry.body === 'string' ? entry.body : '',
           author: typeof entry.author === 'string' && entry.author !== '' ? entry.author : 'unknown',
+          avatarUrl: typeof entry.avatarUrl === 'string' ? entry.avatarUrl : '',
           createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
         })
       }
       return list
+    }
+
+    /** Pull the severity prefix out of a published finding body: "**[P1] title**". */
+    function parseFindingLine(body) {
+      const value = String(body || '').trim()
+      const bold = value.match(/^\*\*\s*\[?(P[0-3])\]?\s*([^\n*]+?)\s*\*\*/)
+      if (bold) return { severity: bold[1], title: bold[2] }
+      const plain = value.match(/^\[?(P[0-3])\]?\s*[-—:]?\s*([^\n]+)/)
+      if (plain) return { severity: plain[1], title: plain[2].trim() }
+      const first = value.split('\n')[0].trim()
+      return { severity: '', title: first.length > 80 ? first.slice(0, 79) + '…' : first }
+    }
+
+    /** Group inline comments into threads: the root comment (no parent) plus replies. */
+    function groupCommentThreads(inlineComments) {
+      const threads = []
+      const byKey = Object.create(null)
+      for (const comment of asArray(inlineComments)) {
+        if (!comment || typeof comment !== 'object') continue
+        const key =
+          typeof comment.threadId === 'string' && comment.threadId !== ''
+            ? 't:' + comment.threadId
+            : Number.isInteger(comment.inReplyToId) && comment.inReplyToId > 0
+              ? 'r:' + comment.inReplyToId
+              : 'c:' + String(comment.id)
+        const existing = byKey[key]
+        if (existing) {
+          existing.replies += 1
+          existing.resolved = existing.resolved || comment.isResolved === true
+          continue
+        }
+        const thread = {
+          threadId: typeof comment.threadId === 'string' ? comment.threadId : '',
+          root: comment,
+          replies: 0,
+          resolved: comment.isResolved === true,
+          path: typeof comment.path === 'string' ? comment.path : '',
+          line: comment.line === null || comment.line === undefined ? null : Number(comment.line),
+          author: comment.author,
+          avatarUrl: comment.avatarUrl,
+          body: comment.body,
+        }
+        const parsed = parseFindingLine(comment.body)
+        thread.severity = parsed.severity
+        thread.title = parsed.title
+        byKey[key] = thread
+        threads.push(thread)
+      }
+      return threads
     }
 
     /** Inline comments bucketed per file: {line: [...]} plus line-less `general`. */
@@ -3152,6 +3210,37 @@ html[data-ds-theme-source="dark"] .cr-root{
 .cr-modal{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
 .cr-chat{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
 
+/* ---- real GitHub avatars ---- */
+.cr-avatar{position:relative;overflow:hidden}
+.cr-avatar-initial{line-height:1}
+.cr-avatar-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;background:var(--cr-raised)}
+.cr-avatar:has(.cr-avatar-img) .cr-avatar-initial{visibility:hidden}
+
+/* ---- comments: inline threads ---- */
+.cr-threads{display:flex;flex-direction:column;gap:1px;margin:6px -6px 0}
+.cr-thread{display:flex;align-items:center;gap:8px;min-height:34px;padding:5px 6px;border-radius:6px;cursor:pointer;color:var(--cr-text-2)}
+.cr-thread:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-thread:focus-visible{outline:2px solid rgba(64,201,119,.45);outline-offset:0}
+.cr-thread--resolved{color:var(--cr-text-3)}
+.cr-thread-state{flex:none;display:grid;place-items:center;width:16px;height:16px;border-radius:50%;color:var(--cr-green)}
+.cr-thread--resolved .cr-thread-state{color:var(--cr-green)}
+.cr-thread-dot{width:13px;height:13px;border:1.5px solid #4A4A4A;border-radius:50%}
+.cr-thread-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px}
+.cr-thread--resolved .cr-thread-title{text-decoration:line-through;text-decoration-color:rgba(174,174,174,.5)}
+.cr-thread-count{flex:none;font-size:11.5px;color:var(--cr-text-3)}
+.cr-thread-resolve{flex:none;height:22px;padding:0 8px;border:0;border-radius:6px;background:var(--cr-raised);color:var(--cr-text);font-size:11.5px;cursor:pointer;display:inline-flex;align-items:center}
+.cr-thread-resolve:hover{background:#3E3E3E}
+.cr-thread-resolve:disabled{opacity:.6;cursor:default}
+.cr-thread-resolved{flex:none;font-size:11.5px;color:var(--cr-text-3)}
+.cr-comment-issue-list{margin-top:8px;display:flex;flex-direction:column;gap:2px}
+.cr-comment-body{-webkit-line-clamp:3;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}
+.cr-comments-more{align-self:flex-start;margin-top:8px;height:24px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--cr-text-2);font-size:12px;cursor:pointer}
+.cr-comments-more:hover{background:var(--cr-hover);color:var(--cr-text)}
+.cr-changes-row{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px}
+.cr-changes-count{color:var(--cr-text);font-weight:500}
+.cr-stat--add{color:var(--cr-green)}
+.cr-stat--del{color:var(--cr-red)}
+
 /* ---- settings section (DSH panel) keeps host tokens ---- */
 .cr-panel-root{
   --cr-bg:var(--dsw-alias-bg-base);
@@ -3328,14 +3417,34 @@ html[data-ds-theme-source="dark"] .cr-root{
     function Avatar(props) {
       const name = String((props && props.name) || '?')
       const size = props && props.size === 22 ? 22 : 16
+      const src = typeof (props && props.src) === 'string' ? props.src : ''
+      const initial = h('span', { className: 'cr-avatar-initial' }, name.slice(0, 1).toUpperCase())
+      if (src === '') {
+        return h(
+          'span',
+          { className: 'cr-avatar cr-avatar--' + size, 'aria-hidden': 'true', title: name },
+          initial,
+        )
+      }
       return h(
         'span',
-        {
-          className: 'cr-avatar cr-avatar--' + size,
-          'aria-hidden': 'true',
-          title: name,
-        },
-        name.slice(0, 1).toUpperCase(),
+        { className: 'cr-avatar cr-avatar--' + size, 'aria-hidden': 'true', title: name },
+        initial,
+        h('img', {
+          className: 'cr-avatar-img',
+          src,
+          alt: '',
+          loading: 'lazy',
+          decoding: 'async',
+          referrerPolicy: 'no-referrer',
+          onError: (event) => {
+            const img = event && event.currentTarget
+            if (!img) return
+            img.style.display = 'none'
+            const fallback = img.parentNode && img.parentNode.querySelector('.cr-avatar-initial')
+            if (fallback) fallback.style.visibility = 'visible'
+          },
+        }),
       )
     }
 
@@ -3481,7 +3590,7 @@ html[data-ds-theme-source="dark"] .cr-root{
         h(
           'span',
           { className: 'cr-row-meta' },
-          h(Avatar, { name: pr.author, size: 16 }),
+          h(Avatar, { name: pr.author, size: 16, src: pr.authorAvatarUrl }),
           h('span', { className: 'cr-row-author' }, pr.author || 'unknown'),
           h('span', { className: 'cr-row-sep' }, '·'),
           h(RelativeTime, { iso: pr.updatedAt, t }),
@@ -3836,7 +3945,7 @@ html[data-ds-theme-source="dark"] .cr-root{
         h(
           'div',
           { className: 'cr-pr-meta' },
-          h(Avatar, { name: summary.author, size: 22 }),
+          h(Avatar, { name: summary.author, size: 22, src: summary.authorAvatarUrl }),
           h('span', { className: 'cr-pr-author' }, summary.author || 'unknown'),
           h(RelativeTime, { iso: summary.updatedAt, t }),
           headRef || baseRef ? h('span', { className: 'cr-pr-dot' }, '·') : null,
@@ -5349,51 +5458,128 @@ html[data-ds-theme-source="dark"] .cr-root{
       const t = props.t
       const comments = props.comments || {}
       const issue = Array.isArray(comments.issue) ? comments.issue : []
-      const inline = Array.isArray(comments.inline) ? comments.inline : []
+      const threads = groupCommentThreads(comments.inline)
       const total = Number.isFinite(Number(comments.total))
         ? Number(comments.total)
-        : issue.length + inline.length
-      if (issue.length === 0 && inline.length === 0) {
+        : issue.length + threads.length
+      const [expanded, setExpanded] = useState(false)
+      const [resolvedIds, setResolvedIds] = useState({})
+      const [busyId, setBusyId] = useState('')
+      if (issue.length === 0 && threads.length === 0) {
         return h(Section, { title: tx(t, 'noComments'), empty: true })
       }
+      const canResolve = typeof props.onResolve === 'function'
+      const canLocate = typeof props.onLocate === 'function'
+      const requestResolve = (thread) => {
+        if (!canResolve || !thread || busyId !== '') return
+        if (thread.resolved || resolvedIds[thread.threadId] === true) return
+        if (thread.threadId === '' || !thread.root) return
+        setBusyId(thread.threadId)
+        Promise.resolve(props.onResolve(thread.root)).then(
+          (ok) => {
+            setBusyId('')
+            if (ok === true) {
+              setResolvedIds((previous) => Object.assign({}, previous, { [thread.threadId]: true }))
+            }
+          },
+          () => setBusyId(''),
+        )
+      }
+      const locate = (thread) => {
+        if (!canLocate || !thread) return
+        props.onLocate({ file: thread.path, line: thread.line })
+      }
+      const visibleThreads = expanded ? threads : threads.slice(0, 5)
+      const visibleIssue = expanded ? issue : issue.slice(0, 3)
       return h(
         Section,
-        { title: tx(t, 'commentsCount', { n: total }) },
-        issue.slice(0, 3).map((comment, index) =>
-          h(
-            'div',
-            { key: 'i' + index, className: 'cr-comment' },
-            h(
+        { title: tx(t, 'comments') + (total > 0 ? ' · ' + total : '') },
+        threads.length > 0
+          ? h(
               'div',
-              { className: 'cr-comment-head' },
-              h(Avatar, { name: comment.author, size: 16 }),
-              h('span', { className: 'cr-comment-author' }, String(comment.author || 'unknown')),
-              h('span', null, '·'),
-              h(RelativeTime, { iso: comment.createdAt, t }),
-            ),
-            h('div', { className: 'cr-comment-body' }, String(comment.body || '')),
-          ),
-        ),
-        inline.slice(0, 3).map((comment, index) =>
-          h(
-            'div',
-            { key: 'l' + index, className: 'cr-comment' },
-            h(
+              { className: 'cr-threads', 'data-cr-threads': String(threads.length) },
+              visibleThreads.map((thread) => {
+                const resolved = thread.resolved || resolvedIds[thread.threadId] === true
+                return h(
+                  'div',
+                  {
+                    key: thread.threadId || 'c:' + String(thread.path) + ':' + String(thread.line) + ':' + String(thread.author),
+                    className: 'cr-thread' + (resolved ? ' cr-thread--resolved' : ''),
+                    role: 'button',
+                    tabIndex: 0,
+                    title: String(thread.path || '') + (thread.line === null ? '' : ':' + thread.line),
+                    'data-cr-thread': resolved ? 'resolved' : 'open',
+                    onClick: () => locate(thread),
+                    onKeyDown: (event) => {
+                      if (event && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault()
+                        locate(thread)
+                      }
+                    },
+                  },
+                  h('span', { className: 'cr-thread-state', 'aria-hidden': 'true' }, resolved ? Icon('check', 11, { strokeWidth: 2.4 }) : h('span', { className: 'cr-thread-dot' })),
+                  h(Avatar, { name: thread.author, size: 16, src: thread.avatarUrl }),
+                  thread.severity
+                    ? h('span', { className: 'cr-file-badge cr-file-badge--' + thread.severity }, thread.severity)
+                    : null,
+                  h('span', { className: 'cr-thread-title' }, String(thread.title || '')),
+                  thread.replies > 0 ? h('span', { className: 'cr-thread-count' }, '+' + thread.replies) : null,
+                  canResolve && !resolved
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'cr-thread-resolve',
+                          'data-action': 'thread-resolve',
+                          disabled: busyId === thread.threadId,
+                          'aria-label': tx(t, 'resolve') + ' ' + String(thread.title || ''),
+                          onClick: (event) => {
+                            if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+                            requestResolve(thread)
+                          },
+                        },
+                        busyId === thread.threadId ? h('span', { className: 'cr-spinner' }) : tx(t, 'resolve'),
+                      )
+                    : resolved
+                      ? h('span', { className: 'cr-thread-resolved' }, tx(t, 'resolved'))
+                      : null,
+                )
+              }),
+            )
+          : null,
+        visibleIssue.length > 0
+          ? h(
               'div',
-              { className: 'cr-comment-head' },
-              h(
-                'span',
-                { className: 'cr-finding-cat', title: String(comment.path || '') + ':' + comment.line },
-                truncateMiddle(String(comment.path || '') + ':' + (comment.line === null || comment.line === undefined ? '?' : comment.line), 34),
+              { className: 'cr-comment-issue-list' },
+              visibleIssue.map((comment, index) =>
+                h(
+                  'div',
+                  { key: 'i' + index, className: 'cr-comment' },
+                  h(
+                    'div',
+                    { className: 'cr-comment-head' },
+                    h(Avatar, { name: comment.author, size: 16, src: comment.avatarUrl }),
+                    h('span', { className: 'cr-comment-author' }, String(comment.author || 'unknown')),
+                    h('span', null, '·'),
+                    h(RelativeTime, { iso: comment.createdAt, t }),
+                  ),
+                  h('div', { className: 'cr-comment-body' }, truncateText(comment.body, 240).text),
+                ),
               ),
-              h(Avatar, { name: comment.author, size: 16 }),
-              h('span', { className: 'cr-comment-author' }, String(comment.author || 'unknown')),
-              h('span', null, '·'),
-              h(RelativeTime, { iso: comment.createdAt, t }),
-            ),
-            h('div', { className: 'cr-comment-body' }, String(comment.body || '')),
-          ),
-        ),
+            )
+          : null,
+        threads.length + issue.length > visibleThreads.length + visibleIssue.length
+          ? h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-comments-more',
+                'data-action': 'comments-more',
+                onClick: () => setExpanded((value) => !value),
+              },
+              expanded ? tx(t, 'commentsShowLess') : tx(t, 'commentsShowMore'),
+            )
+          : null,
       )
     }
 
@@ -5426,6 +5612,7 @@ html[data-ds-theme-source="dark"] .cr-root{
             'div',
             { key: index, className: 'cr-check' },
             h('span', { className: 'cr-check-dot' }),
+            h(Avatar, { name: review.author, size: 16, src: review.avatarUrl }),
             h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, String(review.author || '')),
             h('span', { style: { color: 'var(--cr-text-3)', marginLeft: 'auto' } }, String(review.state || '')),
           ),
@@ -7462,6 +7649,41 @@ html[data-ds-theme-source="dark"] .cr-root{
       )
     }
 
+    /** Right rail while the PR detail is in flight: real Changes counts, skeletons below. */
+    function RightRailPending(props) {
+      const t = props.t
+      const summary = props.summary || {}
+      const files = Number.isFinite(Number(summary.changedFiles)) ? Number(summary.changedFiles) : null
+      const additions = Number(summary.additions) || 0
+      const deletions = Number(summary.deletions) || 0
+      return h(
+        'aside',
+        {
+          className: 'cr-details',
+          'data-cr-details-pending': 'ready',
+          'aria-busy': 'true',
+          'aria-label': 'PR details',
+        },
+        h(
+          Section,
+          { title: tx(t, 'changes') },
+          files === null
+            ? h(Skeleton, { rows: 1, height: 20 })
+            : h(
+                'div',
+                { className: 'cr-changes-row', 'data-cr-pending-files': String(files) },
+                h('span', { className: 'cr-changes-count' }, tx(t, 'fileCount', { n: String(files) })),
+                h('span', { className: 'cr-stat cr-stat--add' }, '+' + additions),
+                h('span', { className: 'cr-stat cr-stat--del' }, '−' + deletions),
+              ),
+        ),
+        h('div', { style: { height: 14 } }),
+        h(Skeleton, { rows: 2, height: 30 }),
+        h('div', { style: { height: 14 } }),
+        h(Skeleton, { rows: 2, height: 52 }),
+      )
+    }
+
     function RightPanel(props) {
       const t = props.t
       const detail = props.detail || {}
@@ -7478,7 +7700,12 @@ html[data-ds-theme-source="dark"] .cr-root{
           onJumpFile: props.onJumpFile,
         }),
         h(StackCard, { stack: detail.stack, t }),
-        h(CommentsCard, { comments: detail.comments, t }),
+        h(CommentsCard, {
+          comments: detail.comments,
+          t,
+          onResolve: props.onResolve,
+          onLocate: props.onLocate,
+        }),
         h(ReviewersCard, {
           comments: detail.comments,
           reviewDecision: (detail.summary || {}).reviewDecision,
@@ -9408,8 +9635,12 @@ html[data-ds-theme-source="dark"] .cr-root{
                     onJumpFile: jumpToFile,
                     onStartReview: startReview,
                     onCancelReview: cancelReview,
+                    onResolve: writeActions.resolve,
+                    onLocate: locateFinding,
                   })
-                : detail.state === 'loading'
+                : selected
+                  ? h(RightRailPending, { summary: selected, t })
+                  : detail.state === 'loading'
                   ? h(
                       'aside',
                       {

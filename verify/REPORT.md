@@ -729,6 +729,39 @@ PASS  行内 marker 只认本人评论  (own=19 foreign=0 comments=38)
 - 或把 `pull` 与 `files` 并行化（当前 `pull` 串行在最前），并提高 Host detail 缓存 TTL；
 - 这些改动位于 `plugin/lib/github.js` / `plugin/index.js`，本次未触碰（正被另一会话修改）。
 
+## 21. Comments 不显示 + 真实头像 + 右栏冷路径优化 — **PASS**
+
+> **状态：PASS（2026-10-25 17:0x）**
+> 证据：实测脚本（CDP，真实 GUI，重载插件清空 Host 缓存）；`node --test` 267/267；dev 预览 11/11；插件 consoleErrors=0（宿主 `remote.session` pageerror 为既有噪音）。
+
+### 21.1 Comments 不显示：根因（不是后端）
+
+- 后端返回正确：`/pr` 对 #139 返回 `comments = { total: 40, issue: 2, reviews: 20, inline: 38 }`，与 GitHub REST 计数一致（inline 38 / issue 2 / reviews 23）。
+- **前端渲染条件与字段**：`CommentsCard` 只渲染 `issue.slice(0, 3)` 与 `inline.slice(0, 3)`，行内评论按**原始正文**平铺、不分组、不用 `threadId/isResolved/severity` 字段，也没有「显示更多」。所以 38 条行内评论实际只出现 3 条（且是一整段 markdown），视觉上等于「没展示评论」。
+- 修复：行内评论按 `threadId`（缺省 root id）归并为线程；线程行 = 状态圆点/勾选 + 真实头像 + 严重度徽章（解析 `**[P1] 标题**` 前缀）+ 标题 + 回复数 + 「解决」按钮；默认 5 条、其余「显示更多」；会话评论单独成组并截断正文；已解决线程加删除线。
+
+### 21.2 头像
+
+- Host：`normalizePullSummary` / `normalizeSearchItem` / `loadIssueComments` / `loadReviews` / `loadInlineComments` 增加 `avatarUrl`（来自 `user.avatar_url`）。
+- 前端：`Avatar` 支持 `src`，渲染 `img`（懒加载 + `no-referrer`），失败回退首字母；已接入列表行、PR 头部、Comments 线程/会话评论、Reviewers。
+
+### 21.3 性能（实测，冷缓存）
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| 冷 `/pr`（5 个 PR，重载后清缓存） | 1724 / 1598 / 1055 / 1030 / 1347 ms（均值 1351） | 1285 / 1048 / 912 / 1511 / 909 ms（均值 1133，−16%） |
+| 右栏首绘（冷 PR #142） | 等详情：≈ 1.0–1.7s | **20ms**（列表摘要占位） |
+| 右栏首绘（#139） | ≈ 1.0–1.7s | **12ms** |
+| 右栏完整（#139 34 files） | 1.6–2.7s | 1.6–2.7s（详情成本不变） |
+
+- Host：files/comments/reviews/inline/threads 与 `pull` 并发；只有 checks/stack 依赖 SHA/base。
+- 客户端：详情未到前用列表摘要渲染「Changes」占位 + 骨架（新增 `RightRailPending`），详情到达后填充；保留 120s 缓存、stale-while-revalidate 与悬停预取。
+
+### 21.4 验证
+
+- #139 右栏：19 个线程（38 条行内评论归并）、前 5 条 + 「显示更多」、P1/P2 徽章、`+1` 回复数、「解决」按钮、头像 URL 为 `avatars.githubusercontent.com`；会话评论 2 条截断展示。
+- `node --test` 267/267；dev 预览 11/11；真实 GUI 插件 console 0 error。
+
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。

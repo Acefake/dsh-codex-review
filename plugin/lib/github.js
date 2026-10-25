@@ -345,6 +345,7 @@ export function normalizeSearchItem(item) {
     number,
     title: typeof item.title === 'string' ? item.title : '',
     author: typeof item.user?.login === 'string' ? item.user.login : 'ghost',
+    authorAvatarUrl: typeof item.user?.avatar_url === 'string' ? item.user.avatar_url : '',
     isDraft: item.draft === true,
     state: item.state === 'closed' ? 'closed' : 'open',
     createdAt: typeof item.created_at === 'string' ? item.created_at : '',
@@ -369,6 +370,7 @@ export function normalizePullSummary(pull, repo, number) {
     number,
     title: typeof pull?.title === 'string' ? pull.title : '',
     author: typeof pull?.user?.login === 'string' ? pull.user.login : 'ghost',
+    authorAvatarUrl: typeof pull?.user?.avatar_url === 'string' ? pull.user.avatar_url : '',
     isDraft: pull?.draft === true,
     state: merged === true || pull?.state === 'closed' ? 'closed' : 'open',
     createdAt: typeof pull?.created_at === 'string' ? pull.created_at : '',
@@ -1519,18 +1521,27 @@ export class GitHubClient {
    */
   async loadPull(repo, number) {
     const [owner, name] = splitRepo(repo)
-    const { data: pull } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`)
+    // The pull body is the slowest single read, and only checks/stack need its
+    // head SHA / base ref: start every independent read right away so the cold
+    // path costs one round trip instead of two.
+    const pullPromise = this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`)
+    const filesPromise = this.loadFiles(owner, name, number, '')
+    const issueCommentsPromise = this.loadIssueComments(owner, name, number)
+    const reviewsPromise = this.loadReviews(owner, name, number)
+    const inlinePromise = this.loadInlineComments(owner, name, number)
+    const threadsPromise = this.loadReviewThreads(owner, name, number)
+    const { data: pull } = await pullPromise
     if (pull === null || typeof pull !== 'object') throw new AppError('GH_NOT_FOUND')
     const headSha = typeof pull?.head?.sha === 'string' ? pull.head.sha : ''
     const baseRefName = typeof pull?.base?.ref === 'string' ? pull.base.ref : ''
     const results = await Promise.allSettled([
-      this.loadFiles(owner, name, number, headSha),
-      this.loadIssueComments(owner, name, number),
-      this.loadReviews(owner, name, number),
-      this.loadInlineComments(owner, name, number),
+      filesPromise,
+      issueCommentsPromise,
+      reviewsPromise,
+      inlinePromise,
       this.loadChecks(owner, name, headSha),
       this.loadStack(owner, name, baseRefName, pull?.body),
-      this.loadReviewThreads(owner, name, number),
+      threadsPromise,
     ])
     const files = settled(results[0], { files: [], filesTruncated: false })
     const issueComments = settled(results[1], [])
@@ -1571,7 +1582,7 @@ export class GitHubClient {
    * @returns {Promise<{ files: any[], filesTruncated: boolean }>} bounded file list.
    */
   async loadFiles(owner, name, number, headSha) {
-    const key = `files:${owner}/${name}#${number}@${headSha}`
+    const key = `files:${owner}/${name}#${number}@${headSha || 'latest'}`
     const cached = this.cache.get(key, this.now())
     if (cached !== undefined) return cached
     return this.once(key, async () => {
@@ -1588,7 +1599,7 @@ export class GitHubClient {
       const bounded = applyPatchBudget(files.slice(0, MAX_FILES))
       const filesTruncated = bounded.filesTruncated || (pageWasFull && files.length >= MAX_FILES)
       const value = { files: bounded.files, filesTruncated }
-      this.cache.set(key, value, PATCH_TTL_MS, this.now())
+      this.cache.set(key, value, headSha === '' ? DETAIL_TTL_MS : PATCH_TTL_MS, this.now())
       return value
     })
   }
@@ -1602,6 +1613,7 @@ export class GitHubClient {
     const list = Array.isArray(data) ? data.slice(0, MAX_ISSUE_COMMENTS) : []
     return list.map((comment) => ({
       author: comment?.user?.login ?? 'ghost',
+      avatarUrl: typeof comment?.user?.avatar_url === 'string' ? comment.user.avatar_url : '',
       body: truncateText(comment?.body, MAX_COMMENT_BODY_CHARS).text,
       createdAt: typeof comment?.created_at === 'string' ? comment.created_at : '',
     }))
@@ -1616,6 +1628,7 @@ export class GitHubClient {
     const list = Array.isArray(data) ? data.slice(0, MAX_REVIEWS) : []
     return list.map((review) => ({
       author: review?.user?.login ?? 'ghost',
+      avatarUrl: typeof review?.user?.avatar_url === 'string' ? review.user.avatar_url : '',
       state: typeof review?.state === 'string' ? review.state : 'COMMENTED',
       body: truncateText(review?.body, MAX_COMMENT_BODY_CHARS).text,
     }))
@@ -1636,6 +1649,7 @@ export class GitHubClient {
       line: Number.isInteger(comment?.line) ? comment.line : null,
       body: truncateText(comment?.body, MAX_COMMENT_BODY_CHARS).text,
       author: comment?.user?.login ?? 'ghost',
+      avatarUrl: typeof comment?.user?.avatar_url === 'string' ? comment.user.avatar_url : '',
       createdAt: typeof comment?.created_at === 'string' ? comment.created_at : '',
     }))
   }
