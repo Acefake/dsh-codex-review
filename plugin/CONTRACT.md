@@ -582,5 +582,37 @@ type PublishRequest = {
 3. 若用户明确要求，可对某个 PR 发布一次并在报告记录 URL（默认不做）。
 4. 页面：发布按钮/弹层/取消、自动发布开关与二次确认、已发布徽章/链接、旧 Host 降级、console 0 error。
 
+## 8. v2.3 契约：评论写操作（2026-10-25 第六轮迭代，版本 0.6.0）
+
+目标：接上「回复已有行内评论 / 解决讨论线程 / 发表 PR 总评论」。三者都是写操作，必须显式确认；插件仍然**不修改代码、不推送提交、不合并**。
+
+### 8.1 路由
+
+| pathname | 请求 | 响应 value |
+|---|---|---|
+| `/codex-review/comment` | `{ repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
+| `/codex-review/reply` | `{ repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
+| `/codex-review/resolve` | `{ repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
+
+校验顺序：`repo/number` → `confirm===true` → 其余字段（`body` 1..4000、`commentId` 正整数、`threadId` 1..200）。错误码：`BAD_REQUEST`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`GH_TIMEOUT`、`INTERNAL`。
+
+### 8.2 数据层（`lib/github.js`）
+
+- `loadInlineComments` 补充 `id`、`inReplyToId`、`reviewId`；`loadPull` 并行调用 `loadReviewThreads`，把 GraphQL `reviewThreads` 的 comment `databaseId` → `{ threadId, isResolved }` 合并进 `PrDetail.comments.inline`。GraphQL 不可用时该查询失败只降级为「无 resolve 操作」，不影响详情加载。
+- `createIssueComment` / `replyToReviewComment` 走既有 token→fetch 主通道 + `gh api` 兜底，成功后 `invalidatePullCache(repo, number)`；`resolveReviewThread` 走 GraphQL（fetch `/graphql`，兜底 `gh api graphql`）。
+- 写请求永不缓存；`body` 在数据层再校验一次（边界纪律，不依赖路由层）。
+
+### 8.3 客户端
+
+- 行内评论卡：`[data-action="inline-reply"]` 打开 `[data-inline-reply-composer="ready"]`（发送 `[data-action="inline-reply-send"]`、取消 `[data-action="inline-reply-cancel"]`）；`[data-action="inline-resolve"]` 打开 `[data-inline-resolve-confirm="ready"]`（`[data-action="inline-resolve-confirm"]` / `inline-resolve-cancel`）。已解决显示「已解决」并隐藏操作；没有 commentId/threadId 时对应按钮不渲染（旧 Host 自动降级）。
+- PR 头 `[data-action="pr-comment"]` → 弹层 `[data-cr-comment-dialog="open|closed"]`、`[data-comment-phase="idle|submitting|error"]`，`[data-action="comment-send"]` / `comment-cancel`。
+- 取消/关闭一律不发请求；成功后 toast + 重新拉取 `/pr`（不重置审查卡）；失败回显错误码文案。
+
+### 8.4 验收
+
+1. 单测：行内评论 id/thread 映射、GraphQL 错误映射、三个写请求的方法/路径/body、缓存失效、参数校验；路由的 confirm 与字段校验及转发；客户端 normalize 新字段。
+2. 装置 `--v23`：只发会被校验拒绝的请求（缺/假 confirm、非法字段），安全计数 `confirmTrueSent=0`、`writes=0`；页面只打开编辑器/弹层后取消，Network 断言 0 个写请求。
+3. 真实回复/解决/发表评论默认不做（需用户明确要求）；若执行，在报告记录 URL。
+
 
 

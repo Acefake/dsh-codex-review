@@ -47,7 +47,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.5.1'
+export const VERSION = '0.6.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -69,6 +69,9 @@ const PATHS = Object.freeze({
   autoReviewConfig: `${ROUTE_PREFIX}/auto-review-config`,
   autoReviewRun: `${ROUTE_PREFIX}/auto-review-run`,
   reviewPublish: `${ROUTE_PREFIX}/review-publish`,
+  comment: `${ROUTE_PREFIX}/comment`,
+  reply: `${ROUTE_PREFIX}/reply`,
+  resolve: `${ROUTE_PREFIX}/resolve`,
 })
 
 /**
@@ -698,6 +701,29 @@ export function createRoutes(wiring) {
         maxComments: publishConfig.maxComments ?? PUBLISH_DEFAULTS.maxComments,
         body: customBody,
       })
+    },
+
+    [PATHS.comment]: async (payload) => {
+      const { repo, number } = requirePullRef(payload)
+      // Every comment write needs the explicit confirmation flag.
+      if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
+      return github.createIssueComment({ repo, number, body: payload.body })
+    },
+
+    [PATHS.reply]: async (payload) => {
+      const { repo, number } = requirePullRef(payload)
+      if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
+      const commentId = Number(payload.commentId)
+      if (!Number.isInteger(commentId) || commentId <= 0) throw badRequest('commentId 必须是正整数')
+      return github.replyToReviewComment({ repo, number, commentId, body: payload.body })
+    },
+
+    [PATHS.resolve]: async (payload) => {
+      const { repo, number } = requirePullRef(payload)
+      if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
+      const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
+      if (threadId === '' || threadId.length > 200) throw badRequest('threadId 不合法')
+      return github.resolveReviewThread({ repo, number, threadId })
     },
   }
 }

@@ -696,3 +696,97 @@ test('listPullReviewComments paginates and normalizes existing comments', async 
   })
 })
 
+// ---------------------------------------------------------------------------
+// v2.3: comment writes (CONTRACT §8)
+// ---------------------------------------------------------------------------
+
+test('inline comments carry ids and the GraphQL thread map is merged', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const fetchImpl = async (url) => {
+      if (url.includes('/pulls/1/comments?')) {
+        return responseOf([{ id: 11, in_reply_to_id: 10, pull_request_review_id: 7, path: 'a.ts', line: 3, body: 'hi', user: { login: 'x' }, created_at: 'c' }])
+      }
+      if (url.endsWith('/graphql')) {
+        return responseOf({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: 'THREAD_1', isResolved: false, comments: { nodes: [{ databaseId: 11 }] } }] } } } } })
+      }
+      return responseOf({})
+    }
+    const client = makeClient({}, fetchImpl)
+    const inline = await client.loadInlineComments('Acme', 'repo', 1)
+    assert.equal(inline[0].id, 11)
+    assert.equal(inline[0].inReplyToId, 10)
+    assert.equal(inline[0].reviewId, 7)
+    const threads = await client.loadReviewThreads('Acme', 'repo', 1)
+    assert.deepEqual(threads[11], { threadId: 'THREAD_1', isResolved: false })
+  })
+})
+
+test('comment writes post the body and invalidate the PR detail cache', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const calls = []
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init })
+      if (url.includes('/issues/1/comments')) {
+        return responseOf({ id: 5, html_url: 'https://github.com/Acme/repo/issues/1#issuecomment-5', created_at: '2026-10-25T00:00:00Z' })
+      }
+      if (url.includes('/pulls/1/comments/9/replies')) {
+        return responseOf({ id: 6, html_url: 'https://github.com/Acme/repo/pull/1#discussion_r6', created_at: '2026-10-25T00:00:00Z' })
+      }
+      return responseOf({})
+    }
+    const client = makeClient({}, fetchImpl)
+    const issue = await client.createIssueComment({ repo: 'Acme/repo', number: 1, body: 'hello' })
+    assert.deepEqual(issue, { id: 5, url: 'https://github.com/Acme/repo/issues/1#issuecomment-5', createdAt: '2026-10-25T00:00:00Z' })
+    const issueCall = calls.find((call) => call.url.includes('/issues/1/comments'))
+    assert.equal(issueCall.init.method, 'POST')
+    assert.deepEqual(JSON.parse(issueCall.init.body), { body: 'hello' })
+
+    const reply = await client.replyToReviewComment({ repo: 'Acme/repo', number: 1, commentId: 9, body: 'thanks' })
+    assert.equal(reply.id, 6)
+    const replyCall = calls.find((call) => call.url.includes('/pulls/1/comments/9/replies'))
+    assert.equal(replyCall.init.method, 'POST')
+    assert.deepEqual(JSON.parse(replyCall.init.body), { body: 'thanks' })
+  })
+})
+
+test('comment writes validate their payload before touching the network', async () => {
+  const client = makeClient({}, async () => {
+    throw new Error('network must not be used')
+  })
+  await assert.rejects(client.createIssueComment({ repo: 'Acme/repo', number: 1, body: '   ' }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.createIssueComment({ repo: 'Acme/repo', number: 1, body: 'x'.repeat(4001) }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.createIssueComment({ repo: 'not-a-repo', number: 1, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.replyToReviewComment({ repo: 'Acme/repo', number: 1, commentId: 0, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.replyToReviewComment({ repo: 'Acme/repo', number: 1, commentId: -2, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.resolveReviewThread({ repo: 'Acme/repo', number: 1, threadId: '' }), (error) => error.code === 'BAD_REQUEST')
+  await assert.rejects(client.resolveReviewThread({ repo: 'Acme/repo', number: 1, threadId: 'x'.repeat(201) }), (error) => error.code === 'BAD_REQUEST')
+})
+
+test('resolveReviewThread runs the GraphQL mutation and reports resolution', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    /** @type {any} */
+    let sent
+    const fetchImpl = async (url, init) => {
+      assert.ok(url.endsWith('/graphql'))
+      sent = JSON.parse(init.body)
+      return responseOf({ data: { resolveReviewThread: { thread: { id: 'THREAD_1', isResolved: true } } } })
+    }
+    const client = makeClient({}, fetchImpl)
+    const result = await client.resolveReviewThread({ repo: 'Acme/repo', number: 1, threadId: 'THREAD_1' })
+    assert.deepEqual(result, { resolved: true })
+    assert.ok(sent.query.includes('resolveReviewThread'))
+    assert.deepEqual(sent.variables, { threadId: 'THREAD_1' })
+  })
+})
+
+test('a GraphQL error array maps onto a stable code', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const fetchImpl = async () => responseOf({ errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by integration' }] })
+    const client = makeClient({}, fetchImpl)
+    await assert.rejects(client.resolveReviewThread({ repo: 'Acme/repo', number: 1, threadId: 'T' }), (error) => {
+      assert.equal(error.code, 'GH_FORBIDDEN')
+      return true
+    })
+  })
+})
+

@@ -201,6 +201,17 @@ v1/v1.1 按约定保持只读；用户确认要接上 Codex 窗口里的「合�
    - `/pr` 的 review 快照回填 `published` 记录，使「已发布」徽章跨页面刷新仍可见（此前只存在于单次会话内存）。
 4. **验证**：`node --test` **228/228**；`verify/api-probe --v22` 覆盖 confirm/mode/minSeverity/body/`REVIEW_NOT_READY` 守卫，并硬约束「绝不发送 `confirm:true` + 已完成审查」；页面 `page-check/click-panel --v22` 验证发布弹层打开→取消且 Network 0 个发布请求；真实发布默认不做（需用户明确要求）。
 
+## 18. v2.3 回填：评论写操作（2026-10-25 第六轮，版本 0.6.0）
+
+v2.2 之后剩下最大的缺口是「只能看评论、不能写」。v2.3 接上三条写路径，仍然不做 auto-fix：
+
+1. **回复行内评论**：`POST /codex-review/reply`（`commentId` + `confirm:true`）→ GitHub `pulls/{n}/comments/{id}/replies`。
+2. **解决讨论线程**：REST 没有 resolve 接口，改走 GraphQL `resolveReviewThread`；`loadPull` 用一次 GraphQL 查询把 comment `databaseId` 映射到 `threadId/isResolved` 合并进行内评论。GraphQL 不可用时 resolve 操作自动隐藏，回复不受影响。
+3. **PR 总评论**：`POST /codex-review/comment` → `issues/{n}/comments`。
+4. **实现约束**：三条路由都必须 `confirm:true`；body ≤4000；写后失效详情缓存；客户端取消/关闭不发请求；旧 Host 无对应方法时按钮降级隐藏；`gh api graphql` 作为 GraphQL 的 CLI 兜底。
+5. **验证**：`node --test` **238/238**（新增行内评论 id/thread 映射、GraphQL 错误映射、写请求形状、参数校验、路由转发）；装置 `--v23` 只测校验分支并断言 `confirmTrueSent=0 / writes=0`；页面只打开回复编辑器/解决确认/评论弹层后取消，断言三条写路由 0 请求。真实写评论默认不做。
+
+
 
 
 

@@ -670,6 +670,21 @@ test('normalizeInlineComments drops unusable entries and fills defaults', () => 
   assert.deepEqual(api.normalizeInlineComments(undefined), [])
 })
 
+test('normalizeInlineComments keeps the write identifiers used by reply/resolve', () => {
+  const list = api.normalizeInlineComments([
+    { id: 11, inReplyToId: 10, threadId: 'THREAD_1', isResolved: true, path: 'a.ts', line: 3, body: 'x' },
+    { id: 'nope', threadId: 42, isResolved: 1, path: 'a.ts', line: null, body: 'y' },
+  ])
+  assert.equal(list[0].id, 11)
+  assert.equal(list[0].inReplyToId, 10)
+  assert.equal(list[0].threadId, 'THREAD_1')
+  assert.equal(list[0].isResolved, true)
+  assert.equal(list[1].id, null)
+  assert.equal(list[1].inReplyToId, null)
+  assert.equal(list[1].threadId, '')
+  assert.equal(list[1].isResolved, false)
+})
+
 test('groupCommentsByFile separates line comments from file-level ones', () => {
   const grouped = api.groupCommentsByFile([
     { path: 'a.ts', line: 12, body: 'x' },

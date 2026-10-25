@@ -366,6 +366,25 @@ window.__ModuleLoader__.load({
       autoPublishMaxComments: 'Max comments',
       autoPublishMaxCommentsHint: '1–50 per review.',
       autoPublishNote: 'Automatic publishing is off by default and only applies to future auto reviews.',
+      inlineReply: 'Reply',
+      inlineReplyPlaceholder: 'Write a reply…',
+      inlineReplySend: 'Send reply',
+      inlineResolve: 'Resolve',
+      inlineResolved: 'Resolved',
+      inlineResolveConfirm: 'Resolve this discussion?',
+      inlineResolveYes: 'Resolve',
+      writeCancel: 'Cancel',
+      writeSending: 'Sending…',
+      prComment: 'Comment',
+      commentDialogTitle: 'Comment on this pull request',
+      commentDialogPlaceholder: 'Write a comment…',
+      commentDialogSend: 'Publish comment',
+      commentDialogNote: 'This posts a public comment on the pull request and notifies watchers.',
+      commentDone: 'Comment published',
+      replyDone: 'Reply posted',
+      resolveDone: 'Discussion resolved',
+      writeFailed: 'GitHub rejected the write request',
+      writeForbidden: 'The GitHub token has no write permission (repo scope required)',
     }
 
     const zh = {
@@ -657,7 +676,26 @@ window.__ModuleLoader__.load({
       autoPublishMinSeverity: '最低严重度',
       autoPublishMaxComments: '最多评论数',
       autoPublishMaxCommentsHint: '每次 review 1–50 条。',
-      autoPublishNote: '自动发布默认关闭，且只对之后的自动审查生效。',
+      autoPublishNote: '自动发布默认关闭；开启后对之后的手动与自动审查都生效。',
+      inlineReply: '回复',
+      inlineReplyPlaceholder: '写一条回复…',
+      inlineReplySend: '发送回复',
+      inlineResolve: '解决',
+      inlineResolved: '已解决',
+      inlineResolveConfirm: '确认解决这条讨论？',
+      inlineResolveYes: '确认解决',
+      writeCancel: '取消',
+      writeSending: '发送中…',
+      prComment: '评论',
+      commentDialogTitle: '就此 Pull Request 发表评论',
+      commentDialogPlaceholder: '写一条评论…',
+      commentDialogSend: '发表评论',
+      commentDialogNote: '这会在 PR 上发布公开评论并通知关注者。',
+      commentDone: '评论已发布',
+      replyDone: '回复已发送',
+      resolveDone: '讨论已解决',
+      writeFailed: 'GitHub 拒绝了这次写入',
+      writeForbidden: '当前 GitHub token 没有写权限（需要 repo scope）',
     }
 
     // ---------------------------------------------------------------------
@@ -1284,6 +1322,10 @@ window.__ModuleLoader__.load({
         if (path === '') continue
         const line = Number(entry.line)
         list.push({
+          id: Number.isInteger(entry.id) && entry.id > 0 ? entry.id : null,
+          inReplyToId: Number.isInteger(entry.inReplyToId) && entry.inReplyToId > 0 ? entry.inReplyToId : null,
+          threadId: typeof entry.threadId === 'string' ? entry.threadId : '',
+          isResolved: entry.isResolved === true,
           path,
           line: Number.isFinite(line) && line > 0 ? line : null,
           body: typeof entry.body === 'string' ? entry.body : '',
@@ -2589,6 +2631,17 @@ window.__ModuleLoader__.load({
 .cr-inline-comment-author{color:var(--cr-text-2);font-weight:500}
 .cr-inline-comment-body{margin-top:4px;font-size:12px;line-height:19px;color:var(--cr-text-2);white-space:pre-wrap;overflow-wrap:anywhere}
 
+/* ---------------- v2.3: comment write actions ---------------- */
+.cr-inline-actions{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+.cr-inline-actions .cr-btn{height:22px;padding:0 8px;border-radius:6px;font-size:11px}
+.cr-inline-reply{margin-top:7px;display:flex;flex-direction:column;gap:6px}
+.cr-inline-reply textarea,.cr-comment-dialog textarea{width:100%;min-height:58px;resize:vertical;padding:7px 9px;border-radius:7px;border:1px solid var(--cr-border-2);background:var(--cr-raised);color:var(--cr-text);font-size:12px;line-height:18px;font-family:inherit;box-sizing:border-box}
+.cr-inline-reply textarea:focus,.cr-comment-dialog textarea:focus{outline:none;border-color:var(--cr-border-strong);background:var(--cr-card)}
+.cr-inline-resolve-confirm{margin-top:7px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border-radius:7px;background:color-mix(in srgb,var(--cr-orange) 9%,transparent);border:1px solid color-mix(in srgb,var(--cr-orange) 24%,transparent);font-size:11.5px;line-height:16px;color:var(--cr-text-2)}
+.cr-comment-dialog{width:520px}
+.cr-comment-dialog-body{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.cr-comment-error{margin-top:6px;padding:6px 8px;border-radius:6px;font-size:11px;line-height:16px;color:var(--cr-text-2);background:color-mix(in srgb,var(--cr-red) 8%,transparent);border:1px solid color-mix(in srgb,var(--cr-red) 22%,transparent)}
+
 /* ---------------- v1.1: verdict badge, filter chips, review meta ---------------- */
 .cr-verdict{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;border:1px solid transparent;font-size:11.5px;font-weight:700;letter-spacing:.01em;white-space:nowrap}
 .cr-verdict--block{color:var(--cr-red);background:color-mix(in srgb,var(--cr-red) 14%,transparent);border-color:color-mix(in srgb,var(--cr-red) 32%,transparent)}
@@ -3407,6 +3460,20 @@ window.__ModuleLoader__.load({
             { className: 'cr-pr-repo' },
             repoName + ' #' + (summary.number === undefined ? '' : summary.number),
           ),
+          props.onComment
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'cr-btn cr-btn--ghost',
+                  'data-action': 'pr-comment',
+                  style: { marginLeft: 'auto' },
+                  onClick: props.onComment,
+                },
+                Icon('comment', 12),
+                h('span', { style: { marginLeft: '5px' } }, tx(t, 'prComment')),
+              )
+            : null,
         ),
         h(
           'h1',
@@ -3742,16 +3809,59 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Read-only rendering of an existing GitHub inline comment (CONTRACT §4.5.2). */
+    /**
+     * Existing GitHub inline comment (read-only body) plus the v2.3 write
+     * actions: reply to the comment and resolve its discussion thread
+     * (CONTRACT §8). The actions only appear when the Host supplied the comment
+     * id / thread id, so an older Host degrades to the read-only card.
+     */
     function InlineCommentCard(props) {
       const t = props.t
       const comment = props.comment || {}
+      const [replyOpen, setReplyOpen] = useState(false)
+      const [replyText, setReplyText] = useState('')
+      const [phase, setPhase] = useState('idle')
+      const [resolveConfirm, setResolveConfirm] = useState(false)
+      const [resolved, setResolved] = useState(comment.isResolved === true)
       const preview = truncateText(comment.body, COMMENT_PREVIEW_CHARS)
       const line = comment.line === null || comment.line === undefined ? '' : comment.line
       const label =
         line === ''
           ? tx(t, 'inlineCommentFile')
           : tx(t, 'inlineCommentTitle', { path: String(comment.path || ''), line })
+      const canReply = typeof props.onReply === 'function' && Number.isInteger(comment.id) && comment.id > 0
+      const canResolve =
+        typeof props.onResolve === 'function' && typeof comment.threadId === 'string' && comment.threadId !== '' && resolved !== true
+      const busy = phase === 'sending'
+      const sendReply = () => {
+        const body = replyText.trim()
+        if (body === '' || busy) return
+        setPhase('sending')
+        Promise.resolve(props.onReply(comment, body)).then(
+          (ok) => {
+            setPhase(ok === true ? 'idle' : 'error')
+            if (ok === true) {
+              setReplyOpen(false)
+              setReplyText('')
+            }
+          },
+          () => setPhase('error'),
+        )
+      }
+      const resolveThread = () => {
+        if (busy) return
+        setPhase('sending')
+        Promise.resolve(props.onResolve(comment)).then(
+          (ok) => {
+            setPhase('idle')
+            if (ok === true) {
+              setResolved(true)
+              setResolveConfirm(false)
+            }
+          },
+          () => setPhase('error'),
+        )
+      }
       return h(
         'div',
         {
@@ -3776,6 +3886,207 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'cr-inline-comment-body', title: String(comment.body || '') },
           preview.text,
+        ),
+        canReply || canResolve || resolved
+          ? h(
+              'div',
+              { className: 'cr-inline-actions' },
+              canReply
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn cr-btn--ghost',
+                      'data-action': 'inline-reply',
+                      'aria-expanded': replyOpen ? 'true' : 'false',
+                      onClick: () => {
+                        setReplyOpen((previous) => !previous)
+                        if (phase === 'error') setPhase('idle')
+                      },
+                    },
+                    tx(t, 'inlineReply'),
+                  )
+                : null,
+              canResolve
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn cr-btn--ghost',
+                      'data-action': 'inline-resolve',
+                      onClick: () => setResolveConfirm(true),
+                    },
+                    tx(t, 'inlineResolve'),
+                  )
+                : null,
+              resolved
+                ? h('span', { className: 'cr-chip-tag', 'data-inline-resolved': 'true' }, tx(t, 'inlineResolved'))
+                : null,
+            )
+          : null,
+        replyOpen
+          ? h(
+              'div',
+              { className: 'cr-inline-reply', 'data-inline-reply-composer': 'ready' },
+              h('textarea', {
+                value: replyText,
+                rows: 2,
+                placeholder: tx(t, 'inlineReplyPlaceholder'),
+                'aria-label': tx(t, 'inlineReply'),
+                onChange: (event) => setReplyText(event.target.value),
+              }),
+              h(
+                'div',
+                { className: 'cr-inline-actions' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'cr-btn',
+                    'data-action': 'inline-reply-send',
+                    disabled: busy || replyText.trim() === '',
+                    onClick: sendReply,
+                  },
+                  busy ? tx(t, 'writeSending') : tx(t, 'inlineReplySend'),
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'cr-btn cr-btn--ghost',
+                    'data-action': 'inline-reply-cancel',
+                    onClick: () => {
+                      setReplyOpen(false)
+                      setReplyText('')
+                      if (phase === 'error') setPhase('idle')
+                    },
+                  },
+                  tx(t, 'writeCancel'),
+                ),
+              ),
+              phase === 'error' ? h('div', { className: 'cr-comment-error' }, tx(t, 'writeFailed')) : null,
+            )
+          : null,
+        resolveConfirm && resolved !== true
+          ? h(
+              'div',
+              { className: 'cr-inline-resolve-confirm', 'data-inline-resolve-confirm': 'ready' },
+              h('span', null, tx(t, 'inlineResolveConfirm')),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'cr-btn',
+                  'data-action': 'inline-resolve-confirm',
+                  disabled: busy,
+                  onClick: resolveThread,
+                },
+                busy ? tx(t, 'writeSending') : tx(t, 'inlineResolveYes'),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'cr-btn cr-btn--ghost',
+                  'data-action': 'inline-resolve-cancel',
+                  onClick: () => setResolveConfirm(false),
+                },
+                tx(t, 'writeCancel'),
+              ),
+            )
+          : null,
+      )
+    }
+
+    /**
+     * Confirmation dialog for posting a PR conversation comment (CONTRACT §8).
+     * The confirm button is the only path that issues the write.
+     */
+    function CommentDialog(props) {
+      const t = props.t
+      const text = typeof props.text === 'string' ? props.text : ''
+      const busy = props.phase === 'submitting'
+      const error = props.error && typeof props.error === 'object' ? props.error : null
+      return h(
+        'div',
+        {
+          className: 'cr-modal-backdrop',
+          role: 'presentation',
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) props.onCancel()
+          },
+        },
+        h(
+          'div',
+          {
+            className: 'cr-modal cr-comment-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'cr-comment-title',
+            'data-cr-comment-dialog': 'open',
+            'data-comment-phase': props.phase || 'idle',
+          },
+          h(
+            'div',
+            { className: 'cr-modal-head' },
+            h('span', { className: 'cr-modal-title', id: 'cr-comment-title' }, tx(t, 'commentDialogTitle')),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-modal-close',
+                'aria-label': tx(t, 'writeCancel'),
+                title: tx(t, 'writeCancel'),
+                onClick: props.onCancel,
+              },
+              Icon('close', 12),
+            ),
+          ),
+          h('p', { className: 'cr-modal-note' }, tx(t, 'commentDialogNote')),
+          h(
+            'div',
+            { className: 'cr-comment-dialog-body' },
+            h('textarea', {
+              value: text,
+              rows: 5,
+              placeholder: tx(t, 'commentDialogPlaceholder'),
+              'aria-label': tx(t, 'commentDialogTitle'),
+              disabled: busy,
+              onChange: (event) => props.onTextChange(event.target.value),
+            }),
+          ),
+          error
+            ? h(
+                'div',
+                { className: 'cr-comment-error', 'data-comment-error': error.code || 'INTERNAL' },
+                String(error.message || tx(t, 'writeFailed')),
+              )
+            : null,
+          h(
+            'div',
+            { className: 'cr-modal-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--ghost',
+                'data-action': 'comment-cancel',
+                onClick: props.onCancel,
+              },
+              tx(t, 'writeCancel'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn',
+                'data-action': 'comment-send',
+                disabled: busy || text.trim() === '',
+                onClick: props.onConfirm,
+              },
+              busy ? tx(t, 'writeSending') : tx(t, 'commentDialogSend'),
+            ),
+          ),
         ),
       )
     }
@@ -4330,6 +4641,8 @@ window.__ModuleLoader__.load({
                   key: commentIndex,
                   comment,
                   t,
+                  onReply: props.writeActions && props.writeActions.reply,
+                  onResolve: props.writeActions && props.writeActions.resolve,
                 }),
               ),
             ),
@@ -4342,7 +4655,13 @@ window.__ModuleLoader__.load({
             'div',
             { key: 'cg', className: 'cr-diff-comments' },
             commentLines.general.map((comment, commentIndex) =>
-              h(InlineCommentCard, { key: commentIndex, comment, t }),
+              h(InlineCommentCard, {
+                key: commentIndex,
+                comment,
+                t,
+                onReply: props.writeActions && props.writeActions.reply,
+                onResolve: props.writeActions && props.writeActions.resolve,
+              }),
             ),
           ),
         )
@@ -4455,6 +4774,7 @@ window.__ModuleLoader__.load({
                 filePath: path,
                 highlightLine: props.highlightLine,
                 onLocate: props.onLocate,
+                writeActions: props.writeActions,
                 t,
               }),
               file.patchTruncated
@@ -4533,6 +4853,7 @@ window.__ModuleLoader__.load({
                 highlightLine: props.highlight && props.highlight.path === key ? props.highlight.line : null,
                 onToggle: () => props.onToggleFile(key),
                 onLocate: props.onLocate,
+                writeActions: props.writeActions,
               })
             }),
         detail.filesTruncated
@@ -6803,6 +7124,19 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
+      /**
+       * Re-fetch one PR's detail without resetting the review card. Used after a
+       * comment write so new comments/replies show up immediately.
+       */
+      const refreshDetail = useCallback((summary) => {
+        if (!summary || summary.repo === undefined || summary.number === undefined) return
+        const generation = ++detailGeneration.current
+        post(ROUTE + '/pr', { repo: summary.repo, number: summary.number }).then((result) => {
+          if (generation !== detailGeneration.current) return
+          if (result.ok) setDetail({ state: 'ready', value: normalizePrDetail(result.value), error: null })
+        })
+      }, [])
+
       const selectPr = useCallback(
         (summary) => {
           if (!summary) return
@@ -7663,6 +7997,96 @@ window.__ModuleLoader__.load({
       }, [autoPollDecision.active, autoRunning, autoReviewPollMs, refreshAutoReview])
 
       // -------------------------------------------------------------------
+      // v2.3: write comments — reply / resolve thread / PR conversation
+      // (CONTRACT §8). Every path requires confirm:true on the Host side.
+      // -------------------------------------------------------------------
+
+      const [commentDialog, setCommentDialog] = useState({
+        open: false,
+        text: '',
+        phase: 'idle',
+        error: null,
+      })
+
+      const openCommentDialog = useCallback(() => {
+        if (!selectedRef.current) return
+        setCommentDialog({ open: true, text: '', phase: 'idle', error: null })
+      }, [])
+
+      const updateCommentText = useCallback((text) => {
+        setCommentDialog((previous) => Object.assign({}, previous, { text, error: null }))
+      }, [])
+
+      const cancelCommentDialog = useCallback(() => {
+        setCommentDialog({ open: false, text: '', phase: 'idle', error: null })
+      }, [])
+
+      const confirmComment = useCallback(() => {
+        const current = selectedRef.current
+        const body = String(commentDialog.text || '').trim()
+        if (!current || body === '' || commentDialog.phase === 'submitting') return
+        setCommentDialog((previous) =>
+          Object.assign({}, previous, { phase: 'submitting', error: null }),
+        )
+        post(ROUTE + '/comment', {
+          repo: current.repo,
+          number: current.number,
+          body,
+          confirm: true,
+        }).then((result) => {
+          if (result.ok) {
+            showToast(tx(t, 'commentDone'))
+            setCommentDialog({ open: false, text: '', phase: 'idle', error: null })
+            refreshDetail(current)
+            return
+          }
+          setCommentDialog((previous) =>
+            Object.assign({}, previous, { phase: 'error', error: result.error || null }),
+          )
+        })
+      }, [commentDialog, refreshDetail, showToast, t])
+
+      /** Reply / resolve helpers handed down to the inline comment cards. */
+      const writeActions = useMemo(() => {
+        const finish = (result, doneKey) => {
+          if (result && result.ok) {
+            showToast(tx(t, doneKey))
+            const current = selectedRef.current
+            if (current) refreshDetail(current)
+            return true
+          }
+          const code = result && result.error ? result.error.code : ''
+          showToast(tx(t, code === 'GH_FORBIDDEN' ? 'writeForbidden' : 'writeFailed'))
+          return false
+        }
+        return {
+          reply: (comment, body) => {
+            const current = selectedRef.current
+            if (!current || !comment || !Number.isInteger(comment.id)) return Promise.resolve(false)
+            return post(ROUTE + '/reply', {
+              repo: current.repo,
+              number: current.number,
+              commentId: comment.id,
+              body,
+              confirm: true,
+            }).then((result) => finish(result, 'replyDone'))
+          },
+          resolve: (comment) => {
+            const current = selectedRef.current
+            if (!current || !comment || typeof comment.threadId !== 'string' || comment.threadId === '') {
+              return Promise.resolve(false)
+            }
+            return post(ROUTE + '/resolve', {
+              repo: current.repo,
+              number: current.number,
+              threadId: comment.threadId,
+              confirm: true,
+            }).then((result) => finish(result, 'resolveDone'))
+          },
+        }
+      }, [refreshDetail, showToast, t])
+
+      // -------------------------------------------------------------------
       // v2.2: publish the current review to GitHub (CONTRACT §7.3)
       // -------------------------------------------------------------------
 
@@ -7865,7 +8289,11 @@ window.__ModuleLoader__.load({
         docBody = h(
           'div',
           null,
-          h(PrHeader, { detail: detailValue || { summary }, t }),
+          h(PrHeader, {
+            detail: detailValue || { summary },
+            t,
+            onComment: selected ? openCommentDialog : null,
+          }),
           tab === 'changes'
             ? h(ChangesView, {
                 detail: detailValue || {},
@@ -7875,6 +8303,7 @@ window.__ModuleLoader__.load({
                 findingsByFile,
                 highlight,
                 onLocate: locateFinding,
+                writeActions,
                 t,
               })
             : h(SummaryView, {
@@ -8048,6 +8477,17 @@ window.__ModuleLoader__.load({
               onMinSeverityChange: (minSeverity) => updatePublishDialog({ minSeverity }),
               onConfirm: confirmPublish,
               onCancel: cancelPublish,
+            })
+          : null,
+        commentDialog.open && selected
+          ? h(CommentDialog, {
+              text: commentDialog.text,
+              phase: commentDialog.phase,
+              error: commentDialog.error,
+              t,
+              onTextChange: updateCommentText,
+              onConfirm: confirmComment,
+              onCancel: cancelCommentDialog,
             })
           : null,
         chat.open && selected

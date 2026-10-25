@@ -179,6 +179,7 @@ function createDoubles() {
   const guidelineCalls = []
   const mergeCalls = []
   const invalidated = []
+  const commentWrites = []
   const reviewer = createFakeReviewer()
   const publisher = createFakePublisher()
   let disposed = false
@@ -204,6 +205,18 @@ function createDoubles() {
     async mergePull(input) {
       mergeCalls.push(input)
       return { merged: true, sha: 'merge-sha-001', message: 'Pull Request successfully merged' }
+    },
+    async createIssueComment(input) {
+      commentWrites.push({ kind: 'comment', input })
+      return { id: 5, url: 'https://github.com/Acefake/yingbox/issues/129#issuecomment-5', createdAt: '2026-10-25T00:00:00Z' }
+    },
+    async replyToReviewComment(input) {
+      commentWrites.push({ kind: 'reply', input })
+      return { id: 6, url: 'https://github.com/Acefake/yingbox/pull/129#discussion_r6', createdAt: '2026-10-25T00:00:00Z' }
+    },
+    async resolveReviewThread(input) {
+      commentWrites.push({ kind: 'resolve', input })
+      return { resolved: true }
     },
     async chatContext(input) {
       return buildChatContext(input)
@@ -250,7 +263,7 @@ function createDoubles() {
       return disposed
     },
   }
-  return { github, engine, reviewer, publisher, started, guidelineCalls, mergeCalls, invalidated }
+  return { github, engine, reviewer, publisher, started, guidelineCalls, mergeCalls, invalidated, commentWrites }
 }
 
 /**
@@ -357,8 +370,7 @@ test('review-start auto-publishes a finished review only when publish.enabled is
   assert.equal(publishCall.maxComments, 5)
 })
 
-test('review-status carries the publish record once the head is published', async () => {
-  const { handler, doubles } = mount({ llmAvailable: true })
+test('review-status carries the publish record once the head is published', async () => {  const { handler, doubles } = mount({ llmAvailable: true })
   await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
   doubles.reviewer.getPublished = (key) => (
     key === 'Acefake/yingbox#129@abc123'
@@ -1069,4 +1081,39 @@ test('the prefix route does not answer the chat path', async () => {
   await prefixHandler(request, response)
   assert.equal(response.statusCode, 404)
   for (const dispose of disposers) dispose()
+})
+
+test('comment routes require confirm and forward the write only with valid ids', async () => {
+  const { handler, doubles } = mount()
+  const base = { repo: 'Acefake/yingbox', number: 129 }
+
+  // `confirm` is the write gate: missing or false never reaches the data layer.
+  for (const payload of [base, { ...base, confirm: false }]) {
+    const refused = await call(handler, '/codex-review/comment', { ...payload, body: 'hello' })
+    assert.equal(refused.body.ok, false)
+    assert.equal(refused.body.error.code, 'BAD_REQUEST')
+  }
+  assert.equal(doubles.commentWrites.length, 0)
+
+  const created = await call(handler, '/codex-review/comment', { ...base, body: 'hello', confirm: true })
+  assert.equal(created.body.ok, true)
+  assert.equal(created.body.value.id, 5)
+  assert.deepEqual(doubles.commentWrites[0], { kind: 'comment', input: { repo: 'Acefake/yingbox', number: 129, body: 'hello' } })
+
+  const missingConfirm = await call(handler, '/codex-review/reply', { ...base, commentId: 9, body: 'thanks' })
+  assert.equal(missingConfirm.body.error.code, 'BAD_REQUEST')
+  const badCommentId = await call(handler, '/codex-review/reply', { ...base, commentId: 0, body: 'x', confirm: true })
+  assert.equal(badCommentId.body.error.code, 'BAD_REQUEST')
+  assert.equal(doubles.commentWrites.length, 1)
+
+  const replied = await call(handler, '/codex-review/reply', { ...base, commentId: 9, body: 'thanks', confirm: true })
+  assert.equal(replied.body.ok, true)
+  assert.deepEqual(doubles.commentWrites[1], { kind: 'reply', input: { repo: 'Acefake/yingbox', number: 129, commentId: 9, body: 'thanks' } })
+
+  const badThread = await call(handler, '/codex-review/resolve', { ...base, threadId: '', confirm: true })
+  assert.equal(badThread.body.error.code, 'BAD_REQUEST')
+  const resolved = await call(handler, '/codex-review/resolve', { ...base, threadId: 'THREAD_1', confirm: true })
+  assert.equal(resolved.body.ok, true)
+  assert.deepEqual(resolved.body.value, { resolved: true })
+  assert.deepEqual(doubles.commentWrites[2], { kind: 'resolve', input: { repo: 'Acefake/yingbox', number: 129, threadId: 'THREAD_1' } })
 })

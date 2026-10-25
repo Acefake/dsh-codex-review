@@ -77,6 +77,62 @@ const MAX_COMMENT_BODY_CHARS = 4_000
 const REVIEW_COMMENT_PAGE_SIZE = 100
 const MAX_REVIEW_COMMENT_PAGES = 3
 
+/** Character cap for one user-written comment (issue comment or reply). */
+export const WRITE_COMMENT_MAX_CHARS = 4_000
+
+/**
+ * Trim and validate one user-written comment body.
+ * @param {unknown} value - raw body from a route.
+ * @returns {string} normalized body.
+ * @throws {AppError} BAD_REQUEST for a non-string, blank or over-long body.
+ */
+function normalizeCommentBody(value) {
+  if (typeof value !== 'string') throw new AppError('BAD_REQUEST', '评论内容必须是字符串')
+  const trimmed = value.trim()
+  if (trimmed === '') throw new AppError('BAD_REQUEST', '评论内容不能为空')
+  if (trimmed.length > WRITE_COMMENT_MAX_CHARS) throw new AppError('BAD_REQUEST', `评论内容超过 ${WRITE_COMMENT_MAX_CHARS} 字`)
+  return trimmed
+}
+
+/**
+ * Validate one positive integer id from a write request.
+ * @param {unknown} value - raw id.
+ * @param {string} label - field label used in the error message.
+ * @returns {number} the id.
+ * @throws {AppError} BAD_REQUEST for a non-positive or non-integer id.
+ */
+function requirePositiveNumber(value, label) {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(numeric) || numeric <= 0) throw new AppError('BAD_REQUEST', `${label} 必须是正整数`)
+  return numeric
+}
+
+/**
+ * Normalize one freshly created GitHub comment.
+ * @param {any} data - REST response body.
+ * @returns {{ id: number, url: string, createdAt: string }} created comment.
+ */
+function normalizeCreatedComment(data) {
+  return {
+    id: Number.isInteger(data?.id) ? data.id : 0,
+    url: typeof data?.html_url === 'string' ? data.html_url : '',
+    createdAt: typeof data?.created_at === 'string' ? data.created_at : '',
+  }
+}
+
+/**
+ * Map a GitHub GraphQL `errors` array onto a stable error code.
+ * @param {Array<{ message?: string, type?: string }>} errors - GraphQL errors.
+ * @returns {AppError} mapped failure.
+ */
+function graphqlError(errors) {
+  const first = Array.isArray(errors) ? errors[0] : undefined
+  const message = typeof first?.message === 'string' ? first.message : 'GitHub GraphQL 请求失败'
+  const type = typeof first?.type === 'string' ? first.type : ''
+  const code = type === 'NOT_FOUND' ? 'GH_NOT_FOUND' : 'GH_FORBIDDEN'
+  return new AppError(code, `${USER_MESSAGES[code]}（GitHub: ${message.slice(0, 200)}）`)
+}
+
 /** Merge methods accepted by the merge route (CONTRACT §5.1). */
 export const MERGE_METHODS = Object.freeze(['merge', 'squash', 'rebase'])
 
@@ -1205,6 +1261,130 @@ export class GitHubClient {
   }
 
   /**
+   * Run one GraphQL document through the same token transport (falls back to
+   * `gh api graphql`). GitHub GraphQL answers HTTP 200 even for a rejected
+   * operation, so an `errors` array is mapped to a stable code.
+   * @param {string} query - GraphQL document.
+   * @param {Record<string, unknown>} [variables] - operation variables.
+   * @returns {Promise<any>} the `data` payload.
+   * @throws {AppError} GH_FORBIDDEN / GH_NOT_FOUND / GH_NETWORK.
+   */
+  async graphql(query, variables = {}) {
+    const transport = await this.transport()
+    if (transport.kind === 'fetch') {
+      const { data } = await this.fetchJson(transport.token, '/graphql', { method: 'POST', body: { query, variables } })
+      if (Array.isArray(data?.errors) && data.errors.length > 0) throw graphqlError(data.errors)
+      return data?.data
+    }
+    const { stdout } = await this.runGh(['api', 'graphql', '-f', `query=${query}`, '-f', `variables=${JSON.stringify(variables)}`])
+    /** @type {any} */
+    let parsed
+    try {
+      parsed = JSON.parse(stdout)
+    } catch {
+      throw new AppError('GH_NETWORK', 'GitHub 返回了无法解析的响应内容')
+    }
+    if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) throw graphqlError(parsed.errors)
+    return parsed?.data
+  }
+
+  /**
+   * Read the PR's review threads so every inline comment knows its thread id
+   * and resolved state (resolving a discussion is GraphQL-only; a failed
+   * lookup simply leaves the resolve action out of the UI).
+   * @param {string} owner - repository owner.
+   * @param {string} name - repository name.
+   * @param {number} number - PR number.
+   * @returns {Promise<Record<number, { threadId: string, isResolved: boolean }>>} comment database id → thread.
+   */
+  async loadReviewThreads(owner, name, number) {
+    const data = await this.graphql(
+      `query ReviewThreads($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            reviewThreads(first: 100) {
+              nodes { id isResolved comments(first: 100) { nodes { databaseId } } }
+            }
+          }
+        }
+      }`,
+      { owner, name, number },
+    )
+    /** @type {Record<number, { threadId: string, isResolved: boolean }>} */
+    const map = {}
+    const threads = data?.repository?.pullRequest?.reviewThreads?.nodes
+    for (const thread of Array.isArray(threads) ? threads : []) {
+      const threadId = typeof thread?.id === 'string' ? thread.id : ''
+      if (threadId === '') continue
+      const nodes = thread?.comments?.nodes
+      for (const node of Array.isArray(nodes) ? nodes : []) {
+        const databaseId = Number(node?.databaseId)
+        if (!Number.isInteger(databaseId) || databaseId <= 0) continue
+        map[databaseId] = { threadId, isResolved: thread?.isResolved === true }
+      }
+    }
+    return map
+  }
+
+  /**
+   * Post one PR conversation comment (issue comment, CONTRACT §8).
+   * @param {{ repo: string, number: number, body: string }} input - write request.
+   * @returns {Promise<{ id: number, url: string, createdAt: string }>} created comment.
+   * @throws {AppError} GH_* / BAD_REQUEST.
+   */
+  async createIssueComment(input = {}) {
+    const [owner, name] = splitRepo(input.repo)
+    const number = requirePositiveNumber(input.number, 'number')
+    const body = normalizeCommentBody(input.body)
+    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`, {
+      method: 'POST',
+      body: { body },
+    })
+    this.invalidatePullCache(input.repo, number)
+    return normalizeCreatedComment(data)
+  }
+
+  /**
+   * Reply to one existing inline review comment (CONTRACT §8).
+   * @param {{ repo: string, number: number, commentId: number, body: string }} input - write request.
+   * @returns {Promise<{ id: number, url: string, createdAt: string }>} created comment.
+   * @throws {AppError} GH_* / BAD_REQUEST.
+   */
+  async replyToReviewComment(input = {}) {
+    const [owner, name] = splitRepo(input.repo)
+    const number = requirePositiveNumber(input.number, 'number')
+    const commentId = requirePositiveNumber(input.commentId, 'commentId')
+    const body = normalizeCommentBody(input.body)
+    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/comments/${commentId}/replies`, {
+      method: 'POST',
+      body: { body },
+    })
+    this.invalidatePullCache(input.repo, number)
+    return normalizeCreatedComment(data)
+  }
+
+  /**
+   * Resolve one review thread (GraphQL `resolveReviewThread`, CONTRACT §8).
+   * @param {{ repo: string, number: number, threadId: string }} input - write request.
+   * @returns {Promise<{ resolved: boolean }>} whether the thread is resolved.
+   * @throws {AppError} GH_* / BAD_REQUEST.
+   */
+  async resolveReviewThread(input = {}) {
+    splitRepo(input.repo)
+    const number = requirePositiveNumber(input.number, 'number')
+    const threadId = typeof input.threadId === 'string' ? input.threadId.trim() : ''
+    if (threadId === '' || threadId.length > 200) throw new AppError('BAD_REQUEST', 'threadId 不合法')
+    const data = await this.graphql(
+      `mutation ResolveThread($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
+      }`,
+      { threadId },
+    )
+    this.invalidatePullCache(input.repo, number)
+    return { resolved: data?.resolveReviewThread?.thread?.isResolved === true }
+  }
+
+  /**
    * Fetch and normalize every part of one PR.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
@@ -1223,6 +1403,7 @@ export class GitHubClient {
       this.loadInlineComments(owner, name, number),
       this.loadChecks(owner, name, headSha),
       this.loadStack(owner, name, baseRefName, pull?.body),
+      this.loadReviewThreads(owner, name, number),
     ])
     const files = settled(results[0], { files: [], filesTruncated: false })
     const issueComments = settled(results[1], [])
@@ -1230,6 +1411,14 @@ export class GitHubClient {
     const inline = settled(results[3], [])
     const checks = settled(results[4], { state: 'unknown', items: [] })
     const stack = settled(results[5], buildStack({ baseRefName, parents: [] }))
+    // Thread ids come from GraphQL only; resolving a discussion is impossible
+    // over REST. A failed lookup degrades to comments without resolve buttons.
+    const threads = settled(results[6], {})
+    const inlineWithThreads = inline.map((comment) => {
+      const thread = comment.id === null || comment.id === undefined ? undefined : threads[comment.id]
+      if (thread === undefined) return comment
+      return { ...comment, threadId: thread.threadId, isResolved: thread.isResolved }
+    })
     const body = truncateText(pull?.body, this.maxBodyChars)
     const summary = normalizePullSummary(pull, repo, number)
     const totalComments = (toCount(pull?.comments) + toCount(pull?.review_comments))
@@ -1240,7 +1429,7 @@ export class GitHubClient {
       bodyTruncated: body.truncated,
       files: files.files,
       filesTruncated: files.filesTruncated,
-      comments: { total: totalComments, issue: issueComments, reviews, inline },
+      comments: { total: totalComments, issue: issueComments, reviews, inline: inlineWithThreads },
       checks,
       stack,
     }
@@ -1313,6 +1502,9 @@ export class GitHubClient {
     const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/comments?per_page=${MAX_INLINE_COMMENTS}`)
     const list = Array.isArray(data) ? data.slice(0, MAX_INLINE_COMMENTS) : []
     return list.map((comment) => ({
+      id: Number.isInteger(comment?.id) ? comment.id : null,
+      inReplyToId: Number.isInteger(comment?.in_reply_to_id) ? comment.in_reply_to_id : null,
+      reviewId: Number.isInteger(comment?.pull_request_review_id) ? comment.pull_request_review_id : null,
       path: typeof comment?.path === 'string' ? comment.path : '',
       line: Number.isInteger(comment?.line) ? comment.line : null,
       body: truncateText(comment?.body, MAX_COMMENT_BODY_CHARS).text,

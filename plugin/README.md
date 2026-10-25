@@ -32,6 +32,7 @@
 9. **就此 PR 提问**（v2）：底部输入框输入问题 → 右侧浮起对话面板，流式回答（可停止、清空、重试、三枚快捷提问）；回答上下文包含 PR 元信息/正文/文件清单/最近一次 AI 审查摘要/当前展开文件 patch；每个 PR 的历史独立保存在 `localStorage['codex-review:chat:<repo>#<number>']`（≤20 条）。
 10. **自动审查**（v2.1）：在「审查设置」里打开自动审查后，Host 每 180 秒（可调 60–3600）扫描一次，对新的/有新提交的 PR 自动跑审查；右栏「自动审查」卡显示状态与最近结果，列表行显示徽章，新结果会 toast。默认关闭；「立即检查」可手动触发一次。
 11. **发布审查到 GitHub**（v2.2，写操作）：审查完成且有发现时，审查卡出现「发布到 GitHub」→ 确认弹层（行内 / 汇总 / 两者、最低严重度、预计评论数、写操作警告）→「确认发布」才真正在 PR 上创建 review 评论；成功后显示「已发布 · 在 GitHub 查看」。「审查设置」里的自动发布开关默认关闭，开启需二次确认。
+12. **评论写操作**（v2.3，写操作）：diff 内已有行内评论可「回复」或「解决」讨论线程；PR 头部「评论」可发表 PR 总评论。三条写路径都要 `confirm:true`，失败有明确错误码，成功后自动刷新。
 
 ## v1.1 新增（0.2.0）
 
@@ -66,6 +67,14 @@
 - **安全**：发布只创建 review 评论，绝不修改代码、不推送、不合并；GitHub token 只留在 Host；手动发布必须 `confirm:true`，自动发布默认关闭。
 - 版本 0.5.1；测试 231 例。
 
+## v2.3 新增（0.6.0）：评论写操作
+
+- **回复行内评论**：diff 里已有的 GitHub 行内评论卡新增「回复」→ 行内输入框 →「发送回复」才真正写入 GitHub（`POST /codex-review/reply`，`commentId` + `confirm:true`）。
+- **解决讨论线程**：评论卡「解决」→ 确认条 → 确认后调用 GraphQL `resolveReviewThread`；解决后显示「已解决」并隐藏操作。需要 token 写权限；GraphQL 不可用时该操作自动隐藏，回复仍可用。
+- **发表 PR 总评论**：PR 头部「评论」→ 弹层 →「发表评论」（`POST /codex-review/comment`）。
+- **安全与一致性**：三条路由都要求 `confirm:true`；body ≤4000 字；失败回显 `BAD_REQUEST` / `GH_FORBIDDEN` / `GH_NOT_FOUND` / `GH_RATE_LIMIT` / `GH_NETWORK`；写入成功后自动失效 PR 详情缓存并刷新页面，新评论即时可见。
+- 版本 0.6.0；测试 238 例。
+
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
 
@@ -89,7 +98,7 @@
 
 ## Host HTTP 路由
 
-JSON 路由（同源 POST，`{ok,value}|{ok:false,error}` 信封）：`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel,merge,auto-review-status,auto-review-config,auto-review-run,review-publish}`；SSE 路由：`POST /codex-review/chat`（`text/event-stream`，`data: {"delta"}` / `{"done":true}` / `{"error"}`）。契约见 [CONTRACT.md](CONTRACT.md) §1、§5、§6、§7。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB（chat 512KiB）、15s 请求 deadline（chat 单独 5 分钟）、合并与发布必须 `confirm:true` + head SHA 校验；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
+JSON 路由（同源 POST，`{ok,value}|{ok:false,error}` 信封）：`/codex-review/{health,llm-info,prs,pr,review-start,review-status,review-cancel,merge,auto-review-status,auto-review-config,auto-review-run,review-publish,comment,reply,resolve}`；SSE 路由：`POST /codex-review/chat`（`text/event-stream`，`data: {"delta"}` / `{"done":true}` / `{"error"}`）。契约见 [CONTRACT.md](CONTRACT.md) §1、§5、§6、§7、§8。安全：loopback + Host 头校验、拒绝代理头、JSON content-type、body ≤64KiB（chat 512KiB）、15s 请求 deadline（chat 单独 5 分钟）、合并与发布必须 `confirm:true` + head SHA 校验；GitHub token 只在 Host 的 gh 子进程/内存中，不进前端、不落日志。
 
 ## 结构
 
@@ -111,11 +120,12 @@ locale/            Plugin Manager 显示元数据（zh/en）
 
 ## 验证
 
-- `node --test` → **228/228**（v1 74 → v1.1 115 → v2 163 → v2.1 186 → v2.2 228；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码、自动审查调度与持久化、发布映射/marker 去重/并发去重）；`node --check` 全部通过。
-- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12、v2.1 见 REPORT §13、v2.2 见 REPORT §14，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
+- `node --test` → **238/238**（v1 74 → v1.1 115 → v2 163 → v2.1 186 → v2.2 228 → v2.3 238；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码、自动审查调度与持久化、发布映射/marker 去重/并发去重、评论写校验与 GraphQL 线程映射）；`node --check` 全部通过。
+- 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12、v2.1 见 REPORT §13、v2.2 见 REPORT §14、v2.3 见 REPORT §15，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
 - AI 审查实测：v1.1 `depth=fast` 真实运行 + 同设置 `cached=true`；`severityThreshold=P0` 服务端过滤；文件级复用 `reusedFiles=24` 且 0 次额外模型调用（见 REPORT）。
 - 合并：**只做守卫测试，未对真实 PR 执行合并**（避免误操作）；对话：真实流式问答验证（SSE delta→done，1.4s 返回 603 字上下文相关回答）。
 - 发布：**只做校验分支与页面取消路径验证，未对真实 PR 发布评论**（`--v22` 硬约束：绝不发送 `confirm:true` + 已完成审查的组合）。
+- 评论写操作：**只做校验分支与页面取消路径验证，未真实回复/解决/发评论**（`--v23` 硬约束：confirmTrueSent=0、writes=0）。
 
 ## 已知限制
 
