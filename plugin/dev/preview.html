@@ -406,6 +406,37 @@
           document.title = '代码审查 · ' + scene
 
           var root = window.ReactDOM.createRoot(document.getElementById('root'))
+          if (scene === 'settings') {
+            // Dev-only: render the DSH Settings section alone so its layout and
+            // control styling can be inspected without opening the real panel.
+            var section = registrations.filter(function (entry) {
+              return entry.options.name === 'settings.section'
+            })[0]
+            if (!section) throw new Error('preview loader: plugin did not register settings.section')
+            root.render(
+              window.React.createElement(
+                'div',
+                { className: 'pv-settings-host' },
+                window.React.createElement(section.component, { t: t }),
+              ),
+            )
+            waitFor(function () { return document.querySelector('[data-cr-settings-page]') }, 8000)
+              .then(function (found) {
+                if (!found) throw new Error('settings page never mounted')
+                return waitFor(function () { return document.querySelectorAll('.cr-set-row').length >= 4 }, 8000)
+              })
+              .then(function () {
+                document.body.dataset.previewReady = '1'
+                document.body.dataset.previewScene = scene
+                window.__PREVIEW_READY__ = true
+                console.info('[preview] scene ready:', scene)
+              })
+              .catch(function (error) {
+                document.body.dataset.previewError = String((error && error.stack) || error)
+                console.error('[preview] scene failed', error)
+              })
+            return
+          }
           root.render(window.React.createElement(main.component, { t: t }))
           drive(plugin, main)
         }

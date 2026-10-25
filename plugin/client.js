@@ -379,6 +379,17 @@ const EMPTY_LIST = Object.freeze([])
       settingsSaveFailed: 'Could not save locally',
       settingsLoading: 'Loading…',
       settingsMoved: 'More settings (auto review, publishing, status) live in DSH Settings → Code Review.',
+      settingsReviewDesc: 'Applies to the next review you start.',
+      settingsAutoDesc: 'Scans the query in the background and reviews new commits. Nothing is written to GitHub.',
+      settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
+      settingsPluginVersion: 'Plugin version',
+      settingsSaving: 'Saving…',
+      settingsIntervalHint: '60–3600 s, default 180 s.',
+      settingsQueryHint: 'GitHub search syntax, default is:open author:@me.',
+      settingsDraftsHint: 'Draft pull requests are skipped by default.',
+      settingsMaxPerCycleHint: '1–5 per cycle, default 2.',
+      settingsPublishOnHint: 'On: finished reviews are written to GitHub automatically.',
+      settingsPublishOffHint: 'Off by default. Enabling applies to future reviews.',
       inlineReply: 'Reply',
       inlineReplyPlaceholder: 'Write a reply…',
       inlineReplySend: 'Send reply',
@@ -701,6 +712,17 @@ const EMPTY_LIST = Object.freeze([])
       settingsSaveFailed: '本地保存失败',
       settingsLoading: '加载中…',
       settingsMoved: '更多设置（自动审查、发布、状态）已移到 DSH 设置 → 代码审查。',
+      settingsReviewDesc: '对下一次手动审查生效。',
+      settingsAutoDesc: '后台按查询扫描新提交并自动审查；不会向 GitHub 写入任何内容。',
+      settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
+      settingsPluginVersion: '插件版本',
+      settingsSaving: '保存中…',
+      settingsIntervalHint: '60–3600 秒，默认 180 秒。',
+      settingsQueryHint: 'GitHub 搜索语法，默认 is:open author:@me。',
+      settingsDraftsHint: '默认跳过草稿 PR。',
+      settingsMaxPerCycleHint: '每轮 1–5 个，默认 2。',
+      settingsPublishOnHint: '已开启：审查完成后会自动写入 GitHub。',
+      settingsPublishOffHint: '默认关闭；开启后对之后的审查生效。',
       inlineReply: '回复',
       inlineReplyPlaceholder: '写一条回复…',
       inlineReplySend: '发送回复',
@@ -2909,7 +2931,7 @@ const EMPTY_LIST = Object.freeze([])
    action. Density is tighter than the default workbench and the document +
    details share ONE scroll container, so the page has two scrollbars at most.
    ========================================================================== */
-.cr-root{
+.cr-root,.cr-panel-root{
   --cr-bg: var(--dsw-alias-bg-base);
   --cr-side: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--cr-bg));
   --cr-panel: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--cr-bg));
@@ -3117,17 +3139,48 @@ const EMPTY_LIST = Object.freeze([])
   .cr-composer{left:50%;width:calc(100% - 32px);bottom:12px}
 }
 
-/* ---- v0.9: DSH Settings panel section ---- */
-.cr-settings-page{max-width:720px;padding:6px 2px 24px;color:var(--cr-text)}
-.cr-settings-lead{margin:0 0 10px;font:12.5px/18px ${SANS};color:var(--cr-text-3)}
-.cr-settings-block{padding:14px 0 16px;border-bottom:1px solid var(--cr-hair-soft)}
-.cr-settings-block:last-child{border-bottom:0}
-.cr-settings-title{margin:0 0 8px;font:600 13px/18px ${SANS};color:var(--cr-text)}
-.cr-settings-status{display:flex;gap:16px;flex-wrap:wrap;font:12px/18px ${SANS};color:var(--cr-text-2)}
-.cr-settings-note{margin:8px 0 0;font:11.5px/17px ${SANS};color:var(--cr-text-3)}
-.cr-settings-page .cr-field + .cr-field{margin-top:12px;padding-top:12px;border-top:1px solid var(--cr-hair-soft)}
-.cr-settings-page .cr-option{padding:4px 6px;border-radius:6px}
-
+/* ---- v0.9: DSH Settings section (row-based, native settings language) ---- */
+.cr-panel-root{font:13px/20px ${SANS};color:var(--cr-text);background:var(--cr-bg)}
+.cr-panel-root :focus-visible{outline:2px solid color-mix(in srgb,var(--dsw-alias-label-primary) 60%,transparent);outline-offset:1px}
+.cr-set-page{max-width:620px;padding:6px 14px 28px 0;box-sizing:border-box;color:var(--cr-text)}
+.cr-set-sec{margin:0 0 22px}
+.cr-set-sec:last-child{margin-bottom:0}
+.cr-set-head{display:flex;align-items:baseline;gap:10px;margin:0 0 3px}
+.cr-set-title{margin:0;font:600 14.5px/20px ${SANS};letter-spacing:-.01em;color:var(--cr-text)}
+.cr-set-note{margin-left:auto;font:11.5px/16px ${SANS};color:var(--cr-text-3)}
+.cr-set-desc{margin:0 0 6px;font:12px/18px ${SANS};color:var(--cr-text-3);max-width:56ch}
+.cr-set-rows{border-top:1px solid var(--cr-hair-soft)}
+.cr-set-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;padding:11px 0;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-set-row--stack{align-items:stretch;flex-direction:column;gap:8px}
+.cr-set-text{flex:1 1 220px;min-width:0}
+.cr-set-label{font:12.5px/18px ${SANS};color:var(--cr-text)}
+.cr-set-hint{margin-top:2px;font:11.5px/16px ${SANS};color:var(--cr-text-3);max-width:54ch}
+.cr-set-control{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:flex-end}
+.cr-set-row--stack .cr-set-control{justify-content:flex-start}
+.cr-seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent)}
+.cr-seg-btn{height:24px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--cr-text-2);font:12px/24px ${SANS};cursor:pointer;white-space:nowrap}
+.cr-seg-btn:hover{color:var(--cr-text)}
+.cr-seg-btn:disabled{opacity:.45;cursor:not-allowed}
+.cr-seg-btn--on,.cr-seg-btn--on:hover{background:var(--dsw-alias-bg-base);color:var(--cr-text);box-shadow:inset 0 0 0 1px var(--cr-hair),0 1px 2px color-mix(in srgb,#000 22%,transparent)}
+.cr-toggle{position:relative;width:34px;height:20px;flex:none;padding:0;border:0;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 24%,transparent);cursor:pointer;transition:background .15s ease}
+.cr-toggle:disabled{opacity:.45;cursor:not-allowed}
+.cr-toggle--on{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 82%,var(--cr-bg))}
+.cr-toggle-knob{position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px color-mix(in srgb,#000 26%,transparent);transition:transform .15s ease}
+.cr-toggle--on .cr-toggle-knob{transform:translateX(14px)}
+.cr-set-num{width:68px;height:26px;padding:0 7px;border:1px solid var(--cr-hair);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--cr-text);font:12px/24px var(--cr-mono);text-align:right;font-variant-numeric:tabular-nums}
+.cr-set-num:focus{outline:none;border-color:color-mix(in srgb,var(--dsw-alias-label-primary) 48%,transparent)}
+.cr-set-input{width:100%;height:28px;padding:0 9px;border:1px solid var(--cr-hair);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--cr-text);font:12px/26px var(--cr-mono)}
+.cr-set-input:focus{outline:none;border-color:color-mix(in srgb,var(--dsw-alias-label-primary) 48%,transparent)}
+.cr-set-unit{font:11.5px/16px ${SANS};color:var(--cr-text-3)}
+.cr-set-inline{margin-top:8px;padding:8px 10px;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);font:11.5px/17px ${SANS};color:var(--cr-text-2)}
+.cr-set-inline--warn{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent);color:var(--dsw-alias-state-warn-label)}
+.cr-set-inline b{display:block;margin-bottom:2px;font-weight:600;color:var(--cr-text)}
+.cr-set-actions{display:flex;gap:8px;margin-top:7px}
+.cr-set-status{display:flex;flex-direction:column;border-top:1px solid var(--cr-hair-soft)}
+.cr-set-status-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-set-status-row:last-child{border-bottom:0}
+.cr-set-status-key{flex:1;font:12.5px/18px ${SANS};color:var(--cr-text-2)}
+.cr-set-status-val{font:12px/18px var(--cr-mono);color:var(--cr-text)}
 `
 
     // ---------------------------------------------------------------------
@@ -6098,10 +6151,90 @@ const EMPTY_LIST = Object.freeze([])
     }
 
     /**
-     * DSH Settings panel section (v0.9): the same review options as the workbench
-     * popover, plus automatic review / publishing. Review options persist in the
-     * browser (shared key with the popover); auto-review config lives on the host.
+     * DSH Settings panel section (v0.9): a row-based page for review options,
+     * automatic review, publishing and host status. Review options persist in the
+     * browser (shared with the workbench popover); auto-review config lives on the
+     * host. Changes save immediately.
      */
+
+    /** A settings section: title, optional description, and rows. */
+    function SettingsSection(props) {
+      return h(
+        'section',
+        { className: 'cr-set-sec' },
+        h(
+          'div',
+          { className: 'cr-set-head' },
+          h('h2', { className: 'cr-set-title' }, props.title),
+          props.note ? h('span', { className: 'cr-set-note' }, props.note) : null,
+        ),
+        props.desc ? h('p', { className: 'cr-set-desc' }, props.desc) : null,
+        h('div', { className: 'cr-set-rows' }, props.children),
+      )
+    }
+
+    /** One label/hint + control row; `stack` puts the control below the text. */
+    function SettingRow(props) {
+      return h(
+        'div',
+        { className: 'cr-set-row' + (props.stack ? ' cr-set-row--stack' : '') },
+        h(
+          'div',
+          { className: 'cr-set-text' },
+          h('div', { className: 'cr-set-label' }, props.label),
+          props.hint ? h('div', { className: 'cr-set-hint' }, props.hint) : null,
+        ),
+        h('div', { className: 'cr-set-control' }, props.children),
+      )
+    }
+
+    /** Segmented radio control used by the settings rows. */
+    function Segmented(props) {
+      return h(
+        'div',
+        { className: 'cr-seg', role: 'radiogroup', 'aria-label': props.label },
+        (props.options || []).map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              role: 'radio',
+              'aria-checked': option.value === props.value ? 'true' : 'false',
+              className: 'cr-seg-btn' + (option.value === props.value ? ' cr-seg-btn--on' : ''),
+              title: option.hint || '',
+              disabled: Boolean(props.disabled),
+              onClick: () => {
+                if (option.value !== props.value && typeof props.onChange === 'function') {
+                  props.onChange(option.value)
+                }
+              },
+            },
+            option.label,
+          ),
+        ),
+      )
+    }
+
+    /** Switch control used by the settings rows. */
+    function Toggle(props) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          role: 'switch',
+          'aria-checked': props.checked ? 'true' : 'false',
+          'aria-label': props.label,
+          className: 'cr-toggle' + (props.checked ? ' cr-toggle--on' : ''),
+          disabled: Boolean(props.disabled),
+          onClick: () => {
+            if (typeof props.onChange === 'function') props.onChange(!props.checked)
+          },
+        },
+        h('span', { className: 'cr-toggle-knob' }),
+      )
+    }
+
     function CodeReviewSettingsPanel(props) {
       const t = props.t
       const [settings, setSettings] = useState(() => readSettings(localStore()))
@@ -6110,6 +6243,8 @@ const EMPTY_LIST = Object.freeze([])
       const [autoReviewResetToken, setAutoReviewResetToken] = useState(0)
       const [health, setHealth] = useState(null)
       const [note, setNote] = useState('')
+      const [publishPending, setPublishPending] = useState(false)
+      const [drafts, setDrafts] = useState({ interval: '', maxPerCycle: '', query: '', maxComments: '' })
 
       const refresh = useCallback(() => {
         post(ROUTE + '/health', {}).then((result) => {
@@ -6132,6 +6267,12 @@ const EMPTY_LIST = Object.freeze([])
         refresh()
       }, [refresh])
 
+      useEffect(() => {
+        if (note === '') return undefined
+        const timer = setTimeout(() => setNote(''), 1800)
+        return () => clearTimeout(timer)
+      }, [note])
+
       const patchAutoReview = useCallback(
         (patch) => {
           if (!patch || typeof patch !== 'object') return
@@ -6153,6 +6294,22 @@ const EMPTY_LIST = Object.freeze([])
         [refresh],
       )
 
+      const status = autoReview.status
+      const supported = autoReview.supported !== false
+      const config = normalizeAutoReviewConfig(status ? status.config : null)
+      const publish = status && status.publish ? status.publish : PUBLISH_DEFAULT_CONFIG
+      const busy = autoReviewBusy || autoReview.loading
+
+      useEffect(() => {
+        setDrafts({
+          interval: String(config.intervalSeconds),
+          maxPerCycle: String(config.maxPerCycle),
+          query: config.query,
+          maxComments: String(publish.maxComments),
+        })
+        if (publish.enabled) setPublishPending(false)
+      }, [config.intervalSeconds, config.maxPerCycle, config.query, publish.maxComments, publish.enabled, autoReviewResetToken])
+
       const updateSettings = (patch) => {
         const next = normalizeSettings(Object.assign({}, settings, patch))
         setSettings(next)
@@ -6167,107 +6324,325 @@ const EMPTY_LIST = Object.freeze([])
         }
       }
 
-      const depthHints = { fast: 'depthFastHint', standard: 'depthStandardHint', deep: 'depthDeepHint' }
+      const patch = (value) => {
+        if (!autoReviewBusy) patchAutoReview(value)
+      }
+      const patchPublish = (partial) => patchAutoReview({ publish: partial })
+      const setDraft = (key, value) => setDrafts((previous) => Object.assign({}, previous, { [key]: value }))
+      const commitInterval = (raw) => {
+        const value = clampInteger(raw, AUTO_REVIEW_INTERVAL_MIN, AUTO_REVIEW_INTERVAL_MAX, config.intervalSeconds)
+        setDraft('interval', String(value))
+        if (value !== config.intervalSeconds) patch({ intervalSeconds: value })
+      }
+      const commitMaxPerCycle = (raw) => {
+        const value = clampInteger(raw, AUTO_REVIEW_MAX_PER_CYCLE_MIN, AUTO_REVIEW_MAX_PER_CYCLE_MAX, config.maxPerCycle)
+        setDraft('maxPerCycle', String(value))
+        if (value !== config.maxPerCycle) patch({ maxPerCycle: value })
+      }
+      const commitQuery = () => {
+        const next = String(drafts.query || '').trim()
+        if (next === '') {
+          setDraft('query', config.query)
+          return
+        }
+        if (next !== config.query) patch({ query: next })
+      }
+      const commitMaxComments = () => {
+        const value = clampInteger(drafts.maxComments, PUBLISH_MAX_COMMENTS_MIN, PUBLISH_MAX_COMMENTS_MAX, publish.maxComments)
+        setDraft('maxComments', String(value))
+        if (value !== publish.maxComments) patchPublish({ maxComments: value })
+      }
+      const onEnter = (commit) => (event) => {
+        if (event && event.key === 'Enter') {
+          event.preventDefault()
+          commit()
+        }
+      }
+
+      const depthOptions = [
+        { value: 'fast', label: tx(t, 'depthFast'), hint: tx(t, 'depthFastHint') },
+        { value: 'standard', label: tx(t, 'depthStandard'), hint: tx(t, 'depthStandardHint') },
+        { value: 'deep', label: tx(t, 'depthDeep'), hint: tx(t, 'depthDeepHint') },
+      ]
+      const depthHintKey =
+        settings.depth === 'fast' ? 'depthFastHint' : settings.depth === 'deep' ? 'depthDeepHint' : 'depthStandardHint'
+      const thresholdOptions = [
+        { value: 'P0', label: tx(t, 'thresholdP0') },
+        { value: 'P1', label: tx(t, 'thresholdP1') },
+        { value: 'P2', label: tx(t, 'thresholdP2') },
+      ]
+      const publishModeOptions = [
+        { value: 'inline', label: tx(t, 'publishModeInline') },
+        { value: 'summary', label: tx(t, 'publishModeSummary') },
+        { value: 'both', label: tx(t, 'publishModeBoth') },
+      ]
+      const statusRow = (key, value) =>
+        h(
+          'div',
+          { className: 'cr-set-status-row' },
+          h('span', { className: 'cr-set-status-key' }, key),
+          h('span', { className: 'cr-set-status-val' }, value === undefined || value === null || value === '' ? '—' : String(value)),
+        )
+
       return h(
         'div',
-        { className: 'cr-settings-page', 'data-cr-settings-page': 'ready' },
-        h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsLead')),
+        { className: 'cr-panel-root cr-set-page', 'data-cr-settings-page': 'ready' },
+        h('style', null, CSS),
         h(
-          'section',
-          { className: 'cr-settings-block' },
-          h('h3', { className: 'cr-settings-title' }, tx(t, 'reviewOptions')),
+          SettingsSection,
+          { title: tx(t, 'reviewOptions'), desc: tx(t, 'settingsReviewDesc'), note },
           h(
-            'fieldset',
-            { className: 'cr-field' },
-            h('legend', null, tx(t, 'depth')),
-            DEPTHS.map((depth) =>
-              h(
-                'label',
-                { key: depth, className: 'cr-option' },
-                h('input', {
-                  type: 'radio',
-                  name: 'cr-set-depth',
-                  value: depth,
-                  checked: settings.depth === depth,
-                  onChange: () => updateSettings({ depth }),
-                }),
-                h(
-                  'span',
-                  { className: 'cr-option-text' },
-                  h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
-                  h('span', { className: 'cr-option-hint' }, tx(t, depthHints[depth])),
-                ),
-              ),
-            ),
-          ),
-          h(
-            'fieldset',
-            { className: 'cr-field' },
-            h('legend', null, tx(t, 'severityThreshold')),
-            THRESHOLDS.map((threshold) =>
-              h(
-                'label',
-                { key: threshold, className: 'cr-option' },
-                h('input', {
-                  type: 'radio',
-                  name: 'cr-set-threshold',
-                  value: threshold,
-                  checked: settings.severityThreshold === threshold,
-                  onChange: () => updateSettings({ severityThreshold: threshold }),
-                }),
-                h(
-                  'span',
-                  { className: 'cr-option-text' },
-                  h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
-                ),
-              ),
-            ),
-            h('p', { className: 'cr-modal-note' }, tx(t, 'thresholdHint')),
-          ),
-          h(
-            'label',
-            { className: 'cr-option' },
-            h('input', {
-              type: 'checkbox',
-              checked: settings.includeGuidelines,
-              onChange: (event) => updateSettings({ includeGuidelines: Boolean(event && event.target && event.target.checked) }),
+            SettingRow,
+            { label: tx(t, 'depth'), hint: tx(t, depthHintKey) },
+            h(Segmented, {
+              label: tx(t, 'depth'),
+              value: settings.depth,
+              options: depthOptions,
+              onChange: (value) => updateSettings({ depth: value }),
             }),
-            h(
-              'span',
-              { className: 'cr-option-text' },
-              h('span', { className: 'cr-option-label' }, tx(t, 'includeGuidelines')),
-              h('span', { className: 'cr-option-hint' }, tx(t, 'includeGuidelinesHint')),
-            ),
           ),
-          note === '' ? null : h('p', { className: 'cr-settings-note' }, note),
+          h(
+            SettingRow,
+            { label: tx(t, 'severityThreshold'), hint: tx(t, 'thresholdHint') },
+            h(Segmented, {
+              label: tx(t, 'severityThreshold'),
+              value: settings.severityThreshold,
+              options: thresholdOptions,
+              onChange: (value) => updateSettings({ severityThreshold: value }),
+            }),
+          ),
+          h(
+            SettingRow,
+            { label: tx(t, 'includeGuidelines'), hint: tx(t, 'includeGuidelinesHint') },
+            h(Toggle, {
+              label: tx(t, 'includeGuidelines'),
+              checked: settings.includeGuidelines,
+              onChange: (value) => updateSettings({ includeGuidelines: value }),
+            }),
+          ),
         ),
         h(
-          'section',
-          { className: 'cr-settings-block' },
-          h('h3', { className: 'cr-settings-title' }, tx(t, 'settingsAuto')),
-          h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsAutoHint')),
-          h(AutoReviewSettings, {
-            t,
-            autoReview: autoReview.status,
-            supported: autoReview.supported,
-            busy: autoReviewBusy,
-            resetToken: autoReviewResetToken,
-            onPatch: patchAutoReview,
-          }),
+          SettingsSection,
+          { title: tx(t, 'autoReview'), desc: tx(t, 'settingsAutoDesc'), note: busy ? tx(t, 'settingsSaving') : '' },
+          !supported
+            ? h('div', { className: 'cr-set-inline cr-set-inline--warn' }, tx(t, 'autoReviewUnsupported') + ' · ' + tx(t, 'autoReviewUnsupportedHint'))
+            : h(
+                React.Fragment,
+                null,
+                h(
+                  SettingRow,
+                  { label: tx(t, 'autoReviewEnabled'), hint: tx(t, 'autoReviewHint') },
+                  h(Toggle, {
+                    label: tx(t, 'autoReviewEnabled'),
+                    checked: config.enabled,
+                    disabled: busy,
+                    onChange: (value) => patch({ enabled: value }),
+                  }),
+                ),
+                !config.enabled
+                  ? null
+                  : h(
+                      React.Fragment,
+                      null,
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoReviewInterval'), hint: tx(t, 'settingsIntervalHint') },
+                        h(Segmented, {
+                          label: tx(t, 'autoReviewInterval'),
+                          value: config.intervalSeconds,
+                          disabled: busy,
+                          options: AUTO_REVIEW_INTERVAL_PRESETS.map((preset) => ({ value: preset, label: preset + 's' })),
+                          onChange: (value) => commitInterval(value),
+                        }),
+                        h('input', {
+                          type: 'number',
+                          className: 'cr-set-num',
+                          min: AUTO_REVIEW_INTERVAL_MIN,
+                          max: AUTO_REVIEW_INTERVAL_MAX,
+                          step: 10,
+                          value: drafts.interval,
+                          'aria-label': tx(t, 'autoReviewInterval'),
+                          disabled: busy,
+                          onChange: (event) => setDraft('interval', String(event.target.value)),
+                          onBlur: () => commitInterval(drafts.interval),
+                          onKeyDown: onEnter(() => commitInterval(drafts.interval)),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoReviewQuery'), hint: tx(t, 'settingsQueryHint'), stack: true },
+                        h('input', {
+                          type: 'text',
+                          className: 'cr-set-input',
+                          value: drafts.query,
+                          spellCheck: false,
+                          'aria-label': tx(t, 'autoReviewQuery'),
+                          disabled: busy,
+                          onChange: (event) => setDraft('query', String(event.target.value)),
+                          onBlur: commitQuery,
+                          onKeyDown: onEnter(commitQuery),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'depth') },
+                        h(Segmented, {
+                          label: tx(t, 'depth'),
+                          value: config.depth,
+                          disabled: busy,
+                          options: depthOptions,
+                          onChange: (value) => patch({ depth: value }),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'severityThreshold') },
+                        h(Segmented, {
+                          label: tx(t, 'severityThreshold'),
+                          value: config.severityThreshold,
+                          disabled: busy,
+                          options: thresholdOptions,
+                          onChange: (value) => patch({ severityThreshold: value }),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoReviewIncludeDrafts'), hint: tx(t, 'settingsDraftsHint') },
+                        h(Toggle, {
+                          label: tx(t, 'autoReviewIncludeDrafts'),
+                          checked: config.includeDrafts,
+                          disabled: busy,
+                          onChange: (value) => patch({ includeDrafts: value }),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoReviewMaxPerCycle'), hint: tx(t, 'settingsMaxPerCycleHint') },
+                        h('input', {
+                          type: 'number',
+                          className: 'cr-set-num',
+                          min: AUTO_REVIEW_MAX_PER_CYCLE_MIN,
+                          max: AUTO_REVIEW_MAX_PER_CYCLE_MAX,
+                          step: 1,
+                          value: drafts.maxPerCycle,
+                          'aria-label': tx(t, 'autoReviewMaxPerCycle'),
+                          disabled: busy,
+                          onChange: (event) => setDraft('maxPerCycle', String(event.target.value)),
+                          onBlur: () => commitMaxPerCycle(drafts.maxPerCycle),
+                          onKeyDown: onEnter(() => commitMaxPerCycle(drafts.maxPerCycle)),
+                        }),
+                      ),
+                    ),
+              ),
         ),
         h(
-          'section',
-          { className: 'cr-settings-block' },
-          h('h3', { className: 'cr-settings-title' }, tx(t, 'settingsStatus')),
-          health
+          SettingsSection,
+          { title: tx(t, 'autoPublish'), desc: tx(t, 'settingsPublishDesc'), note: busy ? tx(t, 'settingsSaving') : '' },
+          publishPending
             ? h(
                 'div',
-                { className: 'cr-settings-status' },
-                h('span', null, tx(t, 'settingsHealthGh') + ': ' + String(health.gh || '?')),
-                h('span', null, tx(t, 'settingsHealthLlm') + ': ' + String(health.llm || '?')),
-                h('span', null, 'version: ' + String(health.version || '?')),
+                { className: 'cr-set-inline cr-set-inline--warn' },
+                h('b', null, tx(t, 'autoPublishConfirmTitle')),
+                tx(t, 'autoPublishConfirmBody'),
+                h(
+                  'div',
+                  { className: 'cr-set-actions' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn cr-btn--ghost',
+                      onClick: () => setPublishPending(false),
+                    },
+                    tx(t, 'cancel'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'cr-btn cr-btn--primary',
+                      onClick: () => {
+                        setPublishPending(false)
+                        patchPublish({ enabled: true })
+                      },
+                    },
+                    tx(t, 'autoPublishConfirm'),
+                  ),
+                ),
               )
-            : h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsLoading')),
+            : h(
+                React.Fragment,
+                null,
+                h(
+                  SettingRow,
+                  { label: tx(t, 'autoPublish'), hint: publish.enabled ? tx(t, 'settingsPublishOnHint') : tx(t, 'settingsPublishOffHint') },
+                  h(Toggle, {
+                    label: tx(t, 'autoPublish'),
+                    checked: publish.enabled,
+                    disabled: busy,
+                    onChange: (value) => {
+                      if (value && !publish.enabled) setPublishPending(true)
+                      else patchPublish({ enabled: false })
+                    },
+                  }),
+                ),
+                !publish.enabled
+                  ? null
+                  : h(
+                      React.Fragment,
+                      null,
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoPublishMode') },
+                        h(Segmented, {
+                          label: tx(t, 'autoPublishMode'),
+                          value: publish.mode,
+                          disabled: busy,
+                          options: publishModeOptions,
+                          onChange: (value) => patchPublish({ mode: value }),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoPublishMinSeverity'), hint: tx(t, 'publishMinSeverityHint') },
+                        h(Segmented, {
+                          label: tx(t, 'autoPublishMinSeverity'),
+                          value: publish.minSeverity,
+                          disabled: busy,
+                          options: thresholdOptions,
+                          onChange: (value) => patchPublish({ minSeverity: value }),
+                        }),
+                      ),
+                      h(
+                        SettingRow,
+                        { label: tx(t, 'autoPublishMaxComments'), hint: tx(t, 'autoPublishMaxCommentsHint') },
+                        h('input', {
+                          type: 'number',
+                          className: 'cr-set-num',
+                          min: PUBLISH_MAX_COMMENTS_MIN,
+                          max: PUBLISH_MAX_COMMENTS_MAX,
+                          step: 1,
+                          value: drafts.maxComments,
+                          'aria-label': tx(t, 'autoPublishMaxComments'),
+                          disabled: busy,
+                          onChange: (event) => setDraft('maxComments', String(event.target.value)),
+                          onBlur: commitMaxComments,
+                          onKeyDown: onEnter(commitMaxComments),
+                        }),
+                      ),
+                    ),
+              ),
+        ),
+        h(
+          SettingsSection,
+          { title: tx(t, 'settingsStatus') },
+          h(
+            'div',
+            { className: 'cr-set-status' },
+            statusRow(tx(t, 'settingsPluginVersion'), health ? health.version : ''),
+            statusRow(tx(t, 'settingsHealthGh'), health ? health.gh : ''),
+            statusRow(tx(t, 'settingsHealthLlm'), health ? health.llm : ''),
+          ),
         ),
       )
     }

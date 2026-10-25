@@ -600,7 +600,17 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 - 设置面板的实际点击导航在本无头环境中未跑通（DSH 账号菜单的 DOM 点击不触发设置弹层），因此面板的「打开→渲染」断言未纳入自动验收，需在 GUI 设置面板人工确认；注册契约与组件类型由单测覆盖，真实加载后插件 console 0 error。
 - 宿主自身 `cannot get property "remote.session" without inject` pageerror 仍存在，与本插件无关。
 
-**v0.9 判定：PASS（颜色/设置面板实现 + 246 单测 + dev 11/11 + 真实 GUI 工作台与 v23 13/13；设置面板点击断言待人工确认）。**
+### 18.4 设置页改版（0.9.1）
+
+首版设置 section 直接复用了工作台弹窗的 fieldset 标记，且样式表只随工作台组件注入，所以在 DSH 设置面板里裸奔（浏览器默认 fieldset 边框、标签与说明挤行）。0.9.1 重做：
+
+- 设置页自带 `<style>` 与主题 token（`.cr-panel-root` 共享 `--cr-*`），不再依赖工作台是否挂载。
+- 行式布局：标签 + 说明在左、控件在右（`flex-wrap`，窄容器不裁切）；枚举用分段控件、布尔用开关、数字用右对齐等宽输入；无 fieldset 边框。
+- 条件行：开启自动审查才显示间隔/查询/深度/阈值/草稿/每轮上限；开启发布（二次确认后）才显示方式/最低严重度/评论上限。
+- 测量：620px 测量宽度 + 右侧 14px 安全内边距（避开设置面板滚动条）；1600/1000/760 三种视口下 `clippedRows=0`、`controlsOutside=0`、`pageOverflowX=false`、`fieldsets=0`；全开状态 14 行、7 分段控件、3 开关、3 数字输入，无裁切。
+- dev 预览新增 `?scene=settings` 渲染场景（`plugin/dev/preview.html`），用 CDP 程序化验证上述数据，并截图 `plugin/dev/shots/21-settings-enabled.png`、`22-settings-all-on.png`。
+
+**v0.9 判定：PASS（颜色/设置面板实现 + 246 单测 + dev 11/11 + 真实 GUI 工作台与 v23 13/13；设置页布局与交互态已程序化验证，最终视觉请在 GUI 设置面板确认）。**
 
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 

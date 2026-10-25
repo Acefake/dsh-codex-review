@@ -235,6 +235,6 @@ v2.2 之后剩下最大的缺口是「只能看评论、不能写」。v2.3 接�
 ## 20. v0.9 回填：颜色跟随宿主 + 设置进入 DSH 设置面板（2026-10-25，版本 0.9.0）
 
 1. **颜色修正**：v0.8 初版把暖中性底与固定陶土红写进皮肤，用户反馈「颜色不合理」。已改为完全使用宿主 `--dsw-alias-*` token（rootBg 直接取 `--dsw-alias-bg-base`，暗色下实测 #181818；主按钮用 `--dsw-alias-label-primary` 底 + `--dsw-alias-bg-base` 字，中性高对比，深浅主题一致跟随 DSH）。皮肤中不再有任何硬编码色值。
-2. **设置面板**：客户端注册 `ctx.slots.inject('settings.section', …)`（id `codex-review`，order 60），组件 `CodeReviewSettingsPanel` 三块：审查选项（depth / severityThreshold / includeGuidelines，写 localStorage 并派发 `codex-review:settings-changed`，工作台监听后同步）、自动审查与发布（复用既有 `AutoReviewSettings`，通过 `auto-review-config` 持久化到 Host）、状态（health: gh / llm / version）。工作台齿轮弹层保留为快捷方式，并提示完整设置位置。
+2. **设置面板**：客户端注册 `ctx.slots.inject('settings.section', …)`（id `codex-review`，order 60）。0.9.1 按 DSH 设置页原生语言重做为行式布局：标签/说明在左、控件在右（分段控件选枚举、开关选布尔、右对齐数字输入，无 fieldset 边框）；设置页自带样式与 `--cr-*` token（`.cr-panel-root`），不再依赖工作台挂载；条件行只在开启自动审查/发布后出现，开启发布需二次确认。审查选项写 localStorage 并派发 `codex-review:settings-changed`；自动审查/发布走 `auto-review-config`；状态行显示 gh/llm/version。工作台齿轮弹层保留为快捷方式。dev 预览新增 `?scene=settings` 场景做程序化布局验证（620px 测量宽度、无裁切、无横向溢出）。
 3. **兼容与验证**：loader-stub 的注册断言更新为 3 个 slot；`node --test` 246/246；dev 预览 11/11；真实 GUI 工作台正常、插件 console 0 error、v23 13/13（宿主自身 remote.session pageerror 为环境噪音，见 REPORT §18）。设置面板的点击导航受无头环境限制未能端到端断言，需在 GUI 设置面板人工确认。
 

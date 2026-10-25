@@ -96,10 +96,10 @@
 
 ## v0.9（0.9.0）：设置进入 DSH 设置面板 + 颜色回到宿主主题
 
-- **设置面板**：新增 `settings.section` 注册（DSH 设置 → 代码审查），集中放「审查选项」「自动审查与发布」「状态」三块；审查选项仍写浏览器 localStorage（与工作台齿轮共用同一个 key），自动审查/发布走 Host `auto-review-config` 持久化。
+- **设置面板**：新增 `settings.section` 注册（DSH 设置 → 代码审查），按 DSH 设置页的原生语言重做——行式布局（标签/说明在左、控件在右）、分段控件选枚举、开关选布尔、没有 fieldset 边框；三块「审查选项 / 自动审查 / 发布审查到 GitHub / 状态」。审查选项写浏览器 localStorage（与工作台齿轮共用同一个 key），自动审查/发布走 Host `auto-review-config` 持久化；开启自动发布需二次确认，开启后才显示方式/最低严重度/评论上限。
 - **工作台齿轮保留**为快捷方式，弹层里注明「更多设置已移到 DSH 设置 → 代码审查」。
 - **颜色修正**：界面不再使用暖色硬编码或固定品牌色，所有 surface/text/border/强调色都来自宿主 `--dsw-alias-*` token（或在其上做 color-mix）；主按钮改为中性高对比（label-primary 底 + bg 字），深浅主题都跟随 DSH。
-- 版本 0.9.0；测试 246 例；dev 预览 11/11 场景通过。
+- 版本 0.9.1；测试 246 例；dev 预览 11/11 场景通过（另含设置页 `?scene=settings` 渲染场景）。
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
 
