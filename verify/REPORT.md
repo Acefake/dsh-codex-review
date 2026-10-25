@@ -686,7 +686,15 @@ PASS  行内 marker 只认本人评论  (own=19 foreign=0 comments=38)
 | #141 | 19 | 5641711856（另有 5641425505 为 v2.4 前无 marker 历史汇总，按固定标题+作者也可采纳） | 13 |
 | #145 | 4 | 5641592279 | 0 |
 
-**v2.5 判定：PASS（单测 267/267 + 只读真实探测 6/6；0 真实 GitHub 写；真实滚动更新仍待用户下一次开启自动发布的审查自然发生）。**
+### 20.3 Host 加载与客户端 bundle
+
+- profile 里 `include:dsh-codex-review` disable → enable 热重载后，`POST /codex-review/health` 返回 `version=0.10.0`（gh=ok、llm=ok），说明宿主已加载新代码；
+- `POST /codex-review/pr` 的真实响应里 `review` 快照已能带 `partial` 字段（当前 #139 无审查结果，`state=none`，字段缺省属正常）；
+- `POST /codex-review/review-publish` 的守卫在真实路由上生效：不带 `confirm` → `BAD_REQUEST`；带 `jobId: "no-such-job"` → `REVIEW_NOT_READY`；两次都没有触发任何 GitHub 写；
+- `POST /codex-review/auto-review-status` 仍返回 `publish.enabled=true / mode=summary / recent=13`，自动发布配置未被本轮改动影响；
+- `node verify/v25-bundle-check.mjs` 从真实 GUI 页面读出 preload 的插件 bundle（4.94 MB），确认 `PUBLISH_TIMEOUT_MS` / `publishUnknown` / `REVIEW_PARTIAL` / `isPublishRouteMissing` / `timeoutMs: PUBLISH_TIMEOUT_MS` 都在里面——即浏览器拿到的就是 0.10.0 的客户端代码，不是缓存里的旧版本。
+
+**v2.5 判定：PASS（单测 267/267 + 只读真实探测 6/6 + Host 0.10.0 加载 + 真实 bundle 校验；0 真实 GitHub 写；真实滚动更新仍待用户下一次开启自动发布的审查自然发生）。**
 
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
