@@ -150,7 +150,7 @@
     </style>
   </head>
   <body data-theme="dark">
-    <div class="pv-window" aria-hidden="true">
+    <div class="pv-window">
       <header class="pv-titlebar" data-preview-chrome>
         <span class="pv-nav">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 6 9 12l6 6" /></svg>
@@ -581,9 +581,9 @@
               if (scene === 'v2.1-auto-review') {
                 // Enable auto review in settings, then trigger one manual cycle.
                 click('[data-action="review-settings"]')
-                return waitFor(function () { return document.querySelector('[data-cr-settings]') }).then(function () {
-                  var toggle = document.querySelector('input[data-auto-enabled]')
-                  if (toggle && !toggle.checked) toggle.click()
+                return waitFor(function () { var toggle = document.querySelector('button[data-auto-enabled]'); return toggle && !toggle.disabled }).then(function () {
+                  var toggle = document.querySelector('button[data-auto-enabled]')
+                  if (toggle && toggle.getAttribute('aria-checked') !== 'true') toggle.click()
                   return waitFor(function () {
                     var root = document.querySelector('[data-cr-root]')
                     return root && root.getAttribute('data-cr-auto-enabled') === 'true'

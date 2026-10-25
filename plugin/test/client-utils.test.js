@@ -1545,3 +1545,15 @@ test('selecting a freshly cached PR revalidates and restores reviews completed e
   assert.equal(harness.states[9].state, 'done')
   assert.equal(harness.states[9].jobId, 'automatic-result')
 })
+
+test('toolbar and native settings reuse the same form with one set of review controls', () => {
+  const dialog = api.ReviewSettings({})
+  assert.equal(nodes(dialog).filter(node => node.type === api.CodeReviewSettingsPanel).length, 1)
+  const harness = componentHarness()
+  // Native form after the host loaded; automatic review enabled.
+  harness.states[0] = { supported: true, loading: false, status: { config: { enabled: true, depth: 'deep', severityThreshold: 'P0', includeGuidelines: false } } }
+  const panel = harness.render(harness.api.CodeReviewSettingsPanel, {})
+  const controls = nodes(panel).filter(node => node.props?.label)
+  assert.equal(controls.filter(node => node.props.label === 'depth' && node.props.options).length, 1)
+  assert.equal(controls.filter(node => node.props.label === 'severityThreshold' && node.props.options).length, 1)
+})

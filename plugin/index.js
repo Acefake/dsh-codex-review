@@ -590,7 +590,8 @@ export function createRoutes(wiring) {
       if (!engine.available()) throw new AppError('LLM_UNAVAILABLE')
       // Resolve the v1.1 options here as well so the guideline fetch happens
       // only when requested; the engine resolves the same values internally.
-      const options = resolveReviewOptions(payload.options, config)
+      const shared = reviewer?.status?.()?.config ?? {}
+      const options = resolveReviewOptions({ ...shared, ...(payload.options ?? {}) }, config)
       const detail = await github.getPull(repo, number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')

@@ -274,7 +274,7 @@ ctx.slots.inject('main', () => ctx.slots.register(
 - 冷路径（v1.0.2）：`/pr` 的 files/comments/reviews/inline/threads 与 `pull` 并发发起，checks/stack 依赖 head SHA/base 后并行；files 在无 SHA 时按 `repo#number@latest` 键缓存 60s。
 - 切换性能（客户端）：列表行 hover/focus 触发 `/pr` 预取（`prefetchDetail`，与点击共享在飞 promise）；详情按 `repo#number` 内存缓存 120s，命中即时渲染、过期先渲染再后台刷新；切换到不同 PR 时必须清空旧 `detail.value` 并渲染右栏骨架（`data-cr-details-loading`），不得继续显示上一个 PR 的右栏内容。
 - 设置页（v0.9.1）不回退：行式布局 + 分段控件 + 开关，颜色跟随宿主 `--dsw-alias-*` token，禁止退回弹窗 fieldset 形式。
-- 设置入口（v0.9）：注册 `settings.section`（id `codex-review`，order 60，label = 「代码审查」），内容含审查选项（localStorage `codex-review:settings`）、自动审查/发布（Host `auto-review-config`）与 health 状态；工作台齿轮弹层保留为快捷方式。修改审查选项时派发 `codex-review:settings-changed` 事件，工作台监听后重读 localStorage。
+- 设置入口（v0.9）：注册 `settings.section`（id `codex-review`，order 60，label = 「代码审查」），内容含宿主统一保存的审查参数、自动审查/发布（Host `auto-review-config`）与 health 状态；工作台齿轮复用同一份表单。localStorage 仅用于参数显示缓存，修改后派发 `codex-review:settings-changed` 事件同步工作台。
 - 颜色：只能使用 `--dsw-alias-*` token 或其 color-mix/透明叠加；不得硬编码品牌色/暖色（v0.8 初版的暖底+陶土红已按用户反馈移除，见 REPORT §18）。
 - 性能：`.cr-file` / `.cr-finding` / `.cr-row` 使用 `content-visibility: auto`；`FileCard` / `DiffView` / `ChangesView` 用 `React.memo` 且 props 需引用稳定（空列表用共享 `EMPTY_LIST`）。
 - 组件清单（全部 `h(...)` 函数组件，状态用 hooks）：
@@ -364,7 +364,7 @@ verdict?: 'block' | 'changes' | 'approve'   // P0>0 → block；P1>0 → changes
 
 1. **diff 行内 finding 卡片**：命中 `finding.line` 的 diff 行渲染 gutter 圆点；点击圆点/卡片在行下方展开卡片（严重度、标题、为什么、怎么改、confidence、evidence、定位按钮）。同一行多条时折叠为「N 条」。
 2. **已有 GitHub 行内评论**：把 `PrDetail.comments.inline` 按 `path + line` 渲染为只读评论卡（作者、正文前 400 字、时间），与 finding 卡视觉区分（灰/蓝边 vs 严重度色）。
-3. **审查设置弹层**（齿轮）：depth（快/标准/深）、severityThreshold（P0 / P1 / P2+）、includeGuidelines（开关），存 `localStorage['codex-review:settings']`，审查时作为 `options` 传 `review-start`；弹层内说明「deep 多一轮复核、耗时更长」。
+3. **审查设置弹层**（齿轮）：depth（快/标准/深）、severityThreshold（P0 / P1 / P2+）、includeGuidelines（开关），通过 `auto-review-config` 保存，与自动审查共用；手动 `review-start` 默认使用宿主参数。
 4. **审查卡改版**：verdict 徽章（block 阻塞 / changes 需要修改 / approve 建议合并）+ P0/P1/P2 计数 + 本地过滤 chips（全部/P0/P1/P2，纯前端过滤，不重跑）+ reusedFiles/guidelines 状态行 + 重新审查（带当前设置）。
 5. **体验细节**：详情列 sticky；`j/k` 上下切 PR、`/` 聚焦搜索、`r` 触发审查、`Esc` 关弹层；所有可点元素有 focus-visible 与 aria-label；切换 Summary/Changes 保留滚动位置；右栏文件列表点击滚动到对应文件。
 6. 文案全部走 locale（zh/en），不新增硬编码英文。
@@ -678,3 +678,7 @@ type PublishRequest = {
 - PR 详情客户端缓存可以立即显示，但选择 PR 时仍须核对宿主最新 review；缓存中的 `none` 不代表后台尚未完成。
 - 生产 ReviewEngine 原子持久化最近 `maxJobs` 个已结束任务（默认 20），上限 20 MiB；通过当前 profile 目录隔离。恢复保持 jobId、PR/head、选项与 findings，支持 status 与发布守卫；不恢复运行中的任务，不保存完整 diff 或提示词。
 - 合并后的 engine.invalidate 同步删除磁盘记录；当前 head 不匹配时结果不展示。
+
+## 统一设置补充
+
+`auto-review-config` 的 depth、severityThreshold、includeGuidelines 为手动/自动审查共享参数；includeGuidelines 默认 true，自动流程尊重该开关并跳过指引读取。review-start 未提供 options 时从宿主共享参数解析；显式 options 仍可用于兼容旧 API 客户端。工具栏对话框与原生设置页使用同一组件，浏览器缓存不是配置来源。升级保留已有宿主参数，不自动迁移浏览器旧手动设置，也不改变调度与发布开关。

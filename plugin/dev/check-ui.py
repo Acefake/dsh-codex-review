@@ -124,4 +124,44 @@ with sync_playwright() as playwright:
     page.screenshot(path=str(OUTPUT / 'restored-review.png'))
     print('PASS background result restored after PR switch and page reload')
     page.close()
+    # Both entry points render the shared host-backed controls exactly once.
+    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    page.request.post(f'{BASE}/codex-review/auto-review-config', data={'patch': {'enabled': False, 'depth': 'fast', 'severityThreshold': 'P2', 'includeGuidelines': True}})
+    page.goto(f'{BASE}/?scene=default')
+    page.locator('.cr-pr-title').wait_for()
+    composer = page.locator('.cr-composer-input')
+    composer.focus()
+    assert composer.evaluate('e => getComputedStyle(e).outlineStyle') == 'none'
+    focus = page.locator('.cr-composer').evaluate('e => getComputedStyle(e).outlineColor')
+    assert focus != 'rgb(64, 201, 119)'
+    page.locator('[data-action="review-settings"]').click()
+    form = page.locator('[data-cr-settings-page]')
+    form.wait_for()
+    depth = form.get_by_role('radiogroup', name='审查深度', exact=True)
+    depth.wait_for()
+    assert depth.count() == 1
+    depth.get_by_role('radio', name='深', exact=True).click()
+    page.wait_for_function('() => document.querySelector("[data-cr-settings-page] [role=radio][aria-checked=true]")?.textContent === "深"')
+    threshold = form.get_by_role('radiogroup', name='严重度阈值', exact=True)
+    assert threshold.count() == 1
+    threshold.get_by_role('radio', name='仅 P0', exact=True).click()
+    page.wait_for_timeout(150)
+    form.get_by_role('switch', name='注入仓库 AGENTS.md 审查指引', exact=True).click()
+    page.wait_for_timeout(150)
+    form.get_by_role('switch', name='开启自动审查', exact=True).click()
+    page.wait_for_timeout(150)
+    assert depth.count() == 1 and threshold.count() == 1
+    page.screenshot(path=str(OUTPUT / 'shared-settings.png'))
+    page.locator('.cr-modal-close').click()
+    # Reload through the native settings entry, using the same persisted values.
+    page.goto(f'{BASE}/?scene=settings')
+    form = page.locator('[data-cr-settings-page]')
+    form.wait_for()
+    page.wait_for_timeout(200)
+    assert form.get_by_role('radio', name='深', exact=True).get_attribute('aria-checked') == 'true'
+    assert form.get_by_role('radio', name='仅 P0', exact=True).get_attribute('aria-checked') == 'true'
+    assert form.get_by_role('switch', name='注入仓库 AGENTS.md 审查指引', exact=True).get_attribute('aria-checked') == 'false'
+    assert form.get_by_role('radiogroup', name='审查深度', exact=True).count() == 1
+    print('PASS toolbar/native settings share one persisted parameter set')
+    page.close()
     browser.close()

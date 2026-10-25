@@ -396,7 +396,7 @@ test('review-start forwards the PR snapshot to the engine and answers the job re
       jobId: 'job-1',
       headSha: 'abc123',
       cached: false,
-      options: { depth: 'standard', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 9000, maxChunks: 9, concurrency: 3 },
+      options: { depth: 'fast', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 16000, maxChunks: 6, concurrency: 4 },
     },
   })
   assert.equal(doubles.started.length, 1)
@@ -404,7 +404,7 @@ test('review-start forwards the PR snapshot to the engine and answers the job re
   assert.equal(doubles.started[0].number, 129)
   assert.equal(doubles.started[0].headSha, 'abc123')
   assert.equal(doubles.started[0].files.length, 1)
-  assert.deepEqual(doubles.started[0].options, { depth: 'standard', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 9000, maxChunks: 9, concurrency: 3 })
+  assert.deepEqual(doubles.started[0].options, { depth: 'fast', severityThreshold: 'P2', includeGuidelines: true, chunkChars: 16000, maxChunks: 6, concurrency: 4 })
   assert.deepEqual(doubles.guidelineCalls, ['Acefake/yingbox'])
   assert.equal(doubles.started[0].guidelines.loaded, true)
 })
@@ -1134,4 +1134,18 @@ test('comment routes require confirm and forward the write only with valid ids',
   assert.equal(resolved.body.ok, true)
   assert.deepEqual(resolved.body.value, { resolved: true })
   assert.deepEqual(doubles.commentWrites[2], { kind: 'resolve', input: { repo: 'Acefake/yingbox', number: 129, threadId: 'THREAD_1' } })
+})
+
+test('manual reviews use the shared host settings when the UI supplies no options', async () => {
+  const { handler, doubles } = mount({ llmAvailable: true })
+  const saved = await call(handler, '/codex-review/auto-review-config', {
+    patch: { depth: 'deep', severityThreshold: 'P0', includeGuidelines: false },
+  })
+  assert.equal(saved.body.ok, true)
+  doubles.reviewer.status = () => saved.body.value
+  await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
+  assert.equal(doubles.started[0].options.depth, 'deep')
+  assert.equal(doubles.started[0].options.severityThreshold, 'P0')
+  assert.equal(doubles.started[0].options.includeGuidelines, false)
+  assert.deepEqual(doubles.guidelineCalls, [])
 })

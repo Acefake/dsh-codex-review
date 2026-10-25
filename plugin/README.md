@@ -9,6 +9,14 @@
 
 > 本目录同时是 npm 包目录（`package.json` 双面声明：`dsh.bundle.patch` + `dsh.client`），可直接 `plugin_manager install_bundle` 安装。
 
+## 统一审查设置
+
+审查深度、严重度阈值和仓库指引由手动与自动审查共用，统一保存在宿主当前 profile 的自动审查配置文件中。工具栏齿轮与 DSH 设置 → 代码审查复用同一份表单；自动审查区域仅保留开关、检查间隔、查询范围、草稿和每轮上限。
+
+升级时沿用宿主原有的自动审查参数，缺少的仓库指引开关默认开启；浏览器旧版手动参数不再覆盖宿主。手动审查请求默认读取宿主共享参数，浏览器 localStorage 只用于显示缓存。修改审查参数不自动开启自动审查或自动发布。
+
+PR 提问栏聚焦时只显示一圈中性边框，不再显示内外两层绿色框。
+
 ## 审查结果恢复
 
 切换 PR 会先显示缓存内容，再向宿主核对最新审查状态，因此后台或其他标签页完成的审查可以正常显示。刷新页面后由宿主返回该 PR 当前 head 的结果。
@@ -31,7 +39,7 @@
    - 完成：审查卡显示 verdict（阻塞 / 需要修改 / 建议合并）+ P0/P1/P2 计数 + 发现列表；点「定位到 diff」跳到对应文件与行并高亮；
    - **diff 行内**：命中发现的行有 gutter 圆点，点击在行下方展开卡片（严重度、标题、为什么、怎么改、confidence、evidence）；
    - 结果按 `repo#PR@headSha + 审查选项` 缓存，同一提交同设置再次打开秒回；同 PR 新提交只重审变化的文件（文件级增量缓存）。
-5. **齿轮「审查设置」**（v1.1）：审查深度（快 / 标准 / 深）、严重度阈值（P0 / P1 / P2+）、是否叠加仓库 `AGENTS.md` 审查指引；设置存浏览器 `localStorage['codex-review:settings']`，随 `review-start` 的 `options` 发给 Host。
+5. **齿轮「审查设置」**（v1.1）：审查深度（快 / 标准 / 深）、严重度阈值（P0 / P1 / P2+）、是否叠加仓库 `AGENTS.md` 审查指引；设置统一保存在 Host，手动和自动审查共用；浏览器仅缓存显示值。
 6. **键盘**：`j`/`k` 上下切 PR，`/` 聚焦搜索，`r` 用当前设置审查，`Esc` 关闭弹层；所有交互元素有 aria-label 与 focus-visible。
 7. 刷新/切面板不丢数据（Host 缓存），审查结果按 head SHA 失效。
 8. **合并 PR**（v2，写操作）：右上「合并」→ 确认弹层（合并方式 Squash / Merge commit / Rebase、删除源分支、head 版本、风险提示）→「确认合并」才会真正调用 GitHub。服务端会校验 `confirm===true`、`expectedHeadSha` 未移动、mergeable 状态；失败给出 `MERGE_HEAD_MOVED` / `MERGE_CONFLICT` / `MERGE_NOT_ALLOWED` 等明确原因。

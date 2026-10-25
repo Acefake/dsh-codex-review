@@ -951,3 +951,14 @@ test('automatic publishing is skipped for reviews that did not finish', async ()
   assert.equal(publisher.calls.length, 0)
   assert.equal(reviewer.status().recent[0].state, 'error')
 })
+
+test('shared review parameters persist and automatic reviews respect disabled guidelines', async () => {
+  const github = makeGithub({ items: [makeItem(1)], details: { 1: makeDetail('sha-1') } })
+  const engine = makeEngine()
+  const { reviewer, dir } = makeReviewer({ github, engine })
+  reviewer.updateConfig({ enabled: true, depth: 'deep', severityThreshold: 'P0', includeGuidelines: false })
+  const restored = makeReviewer({ dir, github, engine }).reviewer
+  await restored.runCycle({ force: false })
+  assert.deepEqual(engine.state.startCalls[0].options, { depth: 'deep', severityThreshold: 'P0', includeGuidelines: false })
+  assert.deepEqual(github.calls.guidelines, [])
+})

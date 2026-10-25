@@ -184,9 +184,9 @@ const LAYOUT_EXPRESSION = `(() => {
     inlineOpen: document.querySelectorAll('[data-inline-open]').length,
     inlineComments: document.querySelectorAll('[data-inline-comment]').length,
     settingsOpen: Boolean(document.querySelector('[role="dialog"][data-cr-settings]')),
-    settingsDepth: document.querySelectorAll('input[data-depth]').length,
-    settingsThreshold: document.querySelectorAll('input[data-threshold]').length,
-    settingsGuidelines: Boolean(document.querySelector('input[data-guidelines]')),
+    settingsDepth: document.querySelectorAll('button[data-depth]').length,
+    settingsThreshold: document.querySelectorAll('button[data-threshold]').length,
+    settingsGuidelines: Boolean(document.querySelector('button[data-guidelines]')),
     settingsAriaModal: (() => {
       const node = document.querySelector('[role="dialog"][data-cr-settings]')
       return node ? node.getAttribute('aria-modal') : ''
@@ -264,9 +264,10 @@ const LAYOUT_EXPRESSION = `(() => {
     autoToast: document.body.dataset.previewAutoToast || '',
     autoMissingCalls:
       typeof window.__CR_AUTO_MISSING_CALLS__ === 'number' ? window.__CR_AUTO_MISSING_CALLS__ : -1,
-    autoSettingsToggle: Boolean(document.querySelector('input[data-auto-enabled]')),
+    autoSettingsToggle: Boolean(document.querySelector('button[data-auto-enabled]')),
+    autoSettingsEnabled: document.querySelector('button[data-auto-enabled]')?.getAttribute('aria-checked') === 'true',
     autoSettingsPresets: document.querySelectorAll('[data-auto-interval-preset]').length,
-    autoSettingsDepth: document.querySelectorAll('input[data-auto-depth]').length,
+    autoSettingsDepth: document.querySelectorAll('button[data-depth]').length,
     autoSettingsQuery: Boolean(document.querySelector('[data-auto-query]')),
     autoSettingsMax: Boolean(document.querySelector('input[data-auto-max]')),
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -420,7 +421,7 @@ async function probeInteractions(send, scene) {
     if (scene === 'v11-settings') {
       // Change depth to "deep": the popover persists to localStorage immediately.
       await evaluate(
-        `(() => { const input = document.querySelector('input[data-depth="deep"]'); if (input) input.click(); return Boolean(input) })()`,
+        `(() => { const input = document.querySelector('button[data-depth="deep"]'); if (input) input.click(); return Boolean(input) })()`,
       )
       await sleep(250)
       result.settingsStored = await evaluate(
@@ -665,7 +666,7 @@ async function probeInteractions(send, scene) {
       await evaluate(`document.querySelector('[data-action="review-settings"]').click()`)
       await sleep(500)
       await evaluate(
-        `(() => { const input = document.querySelector('input[data-auto-enabled]'); if (input) input.click(); return Boolean(input) })()`,
+        `(() => { const input = document.querySelector('button[data-auto-enabled]'); if (input) input.click(); return Boolean(input) })()`,
       )
       await sleep(800)
       result.autoDisabled = await evaluate(
@@ -758,13 +759,13 @@ function assertScene(scene, layout, errors, interactions) {
     if (!layout.settingsGuidelines) problems.push('guidelines toggle missing')
     if (!layout.settingsFocusInside) problems.push('focus did not move into the popover')
     if (!layout.autoSettingsToggle) problems.push('auto review toggle missing from settings')
-    if (layout.autoSettingsPresets !== 3) {
+    if (layout.autoSettingsEnabled && layout.autoSettingsPresets !== 3) {
       problems.push(`auto review interval presets ${layout.autoSettingsPresets}`)
     }
     if (layout.autoSettingsDepth !== 3) {
       problems.push(`auto review depth radios ${layout.autoSettingsDepth}`)
     }
-    if (!layout.autoSettingsQuery || !layout.autoSettingsMax) {
+    if (layout.autoSettingsEnabled && (!layout.autoSettingsQuery || !layout.autoSettingsMax)) {
       problems.push('auto review query/max fields missing from settings')
     }
   }

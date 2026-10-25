@@ -64,6 +64,7 @@ const autoReview = {
     query: 'is:open author:@me',
     depth: 'fast',
     severityThreshold: 'P2',
+    includeGuidelines: true,
     includeDrafts: false,
     maxPerCycle: 2,
     publish: {
@@ -108,6 +109,7 @@ function applyAutoReviewPatch(patch) {
   if (patch.severityThreshold === 'P0' || patch.severityThreshold === 'P1' || patch.severityThreshold === 'P2') {
     next.severityThreshold = patch.severityThreshold
   }
+  if (patch.includeGuidelines !== undefined) next.includeGuidelines = Boolean(patch.includeGuidelines)
   if (patch.includeDrafts !== undefined) next.includeDrafts = Boolean(patch.includeDrafts)
   if (patch.maxPerCycle !== undefined) {
     next.maxPerCycle = clampMockNumber(patch.maxPerCycle, 1, 5, next.maxPerCycle)
@@ -225,7 +227,7 @@ const DEPTH_PRESETS = {
 
 /** Resolve the optional review-start options into the echo the client renders. */
 function resolveOptions(payload) {
-  const raw = payload && typeof payload.options === 'object' && payload.options ? payload.options : {}
+  const raw = { ...autoReview.config, ...(payload && typeof payload.options === 'object' && payload.options ? payload.options : {}) }
   const preset = DEPTH_PRESETS[raw.depth] || DEPTH_PRESETS.standard
   const threshold =
     raw.severityThreshold === 'P0' || raw.severityThreshold === 'P1' ? raw.severityThreshold : 'P2'
@@ -630,6 +632,7 @@ async function handleApi(req, res, pathname) {
         query: 'is:open author:@me',
         depth: 'fast',
         severityThreshold: 'P2',
+        includeGuidelines: true,
         includeDrafts: false,
         maxPerCycle: 2,
         publish: {

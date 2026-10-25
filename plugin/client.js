@@ -64,6 +64,7 @@ const EMPTY_LIST = Object.freeze([])
       query: 'is:open author:@me',
       depth: 'fast',
       severityThreshold: 'P2',
+      includeGuidelines: true,
       includeDrafts: false,
       maxPerCycle: 2,
     }
@@ -196,7 +197,7 @@ const EMPTY_LIST = Object.freeze([])
       thresholdHint: 'Findings below the threshold are dropped by the host.',
       includeGuidelines: 'Inject repo AGENTS.md guidelines',
       includeGuidelinesHint: 'Reads AGENTS.md or .github/AGENTS.md when the repo has one.',
-      settingsNote: 'Saved in this browser only and attached to review requests; nothing is written to GitHub.',
+      settingsNote: 'Saved in the host and shared by manual and automatic reviews.',
       settingsReset: 'Reset',
       close: 'Close',
       settingsSaved: 'Settings saved',
@@ -390,10 +391,10 @@ const EMPTY_LIST = Object.freeze([])
       settingsHealthGh: 'GitHub CLI',
       settingsHealthLlm: 'Model',
       settingsSaved: 'Saved',
-      settingsSaveFailed: 'Could not save locally',
+      settingsSaveFailed: 'Could not save; try again',
       settingsLoading: 'Loading…',
       settingsMoved: 'More settings (auto review, publishing, status) live in DSH Settings → Code Review.',
-      settingsReviewDesc: 'Applies to the next review you start.',
+      settingsReviewDesc: 'Shared by manual and automatic reviews. Saved in the host.',
       settingsAutoDesc: 'Scans the query in the background and reviews new commits. Nothing is written to GitHub.',
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
@@ -538,7 +539,7 @@ const EMPTY_LIST = Object.freeze([])
       thresholdHint: '低于阈值的发现会被宿主直接丢弃，不返回给页面。',
       includeGuidelines: '注入仓库 AGENTS.md 审查指引',
       includeGuidelinesHint: '仓库存在 AGENTS.md 或 .github/AGENTS.md 时读取并注入提示词。',
-      settingsNote: '设置只存在本机浏览器，并随审查请求发送；不会写入 GitHub。',
+      settingsNote: '审查参数统一由宿主保存，手动与自动审查共用。',
       settingsReset: '恢复默认',
       close: '关闭',
       settingsSaved: '设置已保存',
@@ -724,7 +725,7 @@ const EMPTY_LIST = Object.freeze([])
       autoPublishMaxComments: '最多评论数',
       autoPublishMaxCommentsHint: '每次 review 1–50 条。',
       autoPublishNote: '自动发布默认关闭；开启后对之后的手动与自动审查都生效。',
-      settingsLead: '审查选项对下一次手动审查生效；自动审查与发布由 Host 保存。',
+      settingsLead: '手动与自动审查共用一套参数，统一由宿主保存。',
       reviewOptions: '审查选项',
       settingsAuto: '自动审查与发布',
       settingsAutoHint: '后台按间隔扫描；发布会为每个 PR 保留一条汇总 review。',
@@ -732,10 +733,10 @@ const EMPTY_LIST = Object.freeze([])
       settingsHealthGh: 'GitHub CLI',
       settingsHealthLlm: '模型',
       settingsSaved: '已保存',
-      settingsSaveFailed: '本地保存失败',
+      settingsSaveFailed: '保存失败，请重试',
       settingsLoading: '加载中…',
       settingsMoved: '更多设置（自动审查、发布、状态）已移到 DSH 设置 → 代码审查。',
-      settingsReviewDesc: '对下一次手动审查生效。',
+      settingsReviewDesc: '手动与自动审查共用，统一保存在宿主。',
       settingsAutoDesc: '后台按查询扫描新提交并自动审查；不会向 GitHub 写入任何内容。',
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
@@ -1839,6 +1840,16 @@ const EMPTY_LIST = Object.freeze([])
       return Math.min(max, Math.max(min, Math.round(number)))
     }
 
+    /** Local storage mirrors shared settings for toolbar hints only. */
+    function cacheSharedSettings(config, refresh = false) {
+      const settings = normalizeSettings(config)
+      writeSettings(localStore(), settings)
+      try {
+        window.dispatchEvent(new CustomEvent('codex-review:settings-changed', { detail: { refresh } }))
+      } catch { /* a missing browser event API does not affect host settings */ }
+      return settings
+    }
+
     /** Normalize the Host's AutoReviewConfig (echoed by status/config routes). */
     function normalizeAutoReviewConfig(value) {
       const source = value && typeof value === 'object' ? value : {}
@@ -1861,6 +1872,7 @@ const EMPTY_LIST = Object.freeze([])
           THRESHOLDS.indexOf(source.severityThreshold) >= 0
             ? source.severityThreshold
             : AUTO_REVIEW_DEFAULT.severityThreshold,
+        includeGuidelines: source.includeGuidelines === undefined ? true : Boolean(source.includeGuidelines),
         includeDrafts:
           source.includeDrafts === undefined
             ? AUTO_REVIEW_DEFAULT.includeDrafts
@@ -2963,7 +2975,8 @@ const EMPTY_LIST = Object.freeze([])
 
 /* ---------------- v2: interactive composer (real PR chat input) ---------------- */
 .cr-composer{position:absolute;right:21px;bottom:21px;z-index:8;display:flex;align-items:flex-end;gap:7px;width:min(560px,calc(100% - 42px));min-height:43px;padding:5px 6px 5px 12px;border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 11%,var(--dsw-alias-bg-base));box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2)}
-.cr-composer:focus-within{outline:2px solid color-mix(in srgb,var(--cr-green) 45%,transparent);outline-offset:1px}
+.cr-composer:focus-within{outline:1px solid var(--cr-border-strong);outline-offset:0;border-color:var(--cr-text-2)}
+.cr-root .cr-composer-input:focus-visible{outline:none;box-shadow:none}
 .cr-composer-plus{flex:none;align-self:center;display:grid;place-items:center;color:var(--cr-text-3)}
 .cr-composer-input{flex:1;min-width:0;max-height:92px;padding:8px 0;border:0;outline:none;background:transparent;color:var(--cr-text);font:13.5px/20px ${SANS};resize:none;overflow-y:auto}
 .cr-composer-input::placeholder{color:var(--cr-text-3)}
@@ -3204,6 +3217,11 @@ const EMPTY_LIST = Object.freeze([])
 .cr-set-hint{margin-top:2px;font:11.5px/16px ${SANS};color:var(--cr-text-3);max-width:54ch}
 .cr-set-control{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:flex-end}
 .cr-set-row--stack .cr-set-control{justify-content:flex-start}
+.cr-shared-settings{width:min(720px,calc(100% - 32px))}
+.cr-shared-settings .cr-set-page{max-width:none;padding:8px 0 0}
+.cr-shared-settings .cr-panel-root{background:transparent}
+.cr-set-row--stack .cr-set-control{width:100%}
+.cr-set-row--stack .cr-set-text{flex:0 0 auto}
 .cr-seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent)}
 .cr-seg-btn{height:24px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--cr-text-2);font:12px/24px ${SANS};cursor:pointer;white-space:nowrap}
 .cr-seg-btn:hover{color:var(--cr-text)}
@@ -5664,441 +5682,11 @@ const EMPTY_LIST = Object.freeze([])
      * the gear (handled by the workbench).
      */
     /**
-     * Auto-review block at the top of the review-settings popover (CONTRACT §6.4).
-     * Every change is POSTed immediately; the Host echo is authoritative.
+     * The toolbar dialog renders the same settings form as the native settings page.
      */
-    function AutoReviewSettings(props) {
-      const t = props.t
-      const supported = props.supported !== false
-      const status = props.autoReview ? normalizeAutoReviewStatus(props.autoReview) : null
-      const config = status ? status.config : normalizeAutoReviewConfig(null)
-      const busy = Boolean(props.busy)
-      const patch = (value) => {
-        if (typeof props.onPatch === 'function') props.onPatch(value)
-      }
-      const [intervalDraft, setIntervalDraft] = useState(String(config.intervalSeconds))
-      const [maxDraft, setMaxDraft] = useState(String(config.maxPerCycle))
-      const [queryDraft, setQueryDraft] = useState(config.query)
-      const publish = status && status.publish ? status.publish : null
-      const [publishPending, setPublishPending] = useState(false)
-      const [maxCommentsDraft, setMaxCommentsDraft] = useState(
-        String(publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments),
-      )
-      useEffect(() => {
-        setIntervalDraft(String(config.intervalSeconds))
-        setMaxDraft(String(config.maxPerCycle))
-        setQueryDraft(config.query)
-      }, [config.intervalSeconds, config.maxPerCycle, config.query, props.resetToken])
-      useEffect(() => {
-        setMaxCommentsDraft(
-          String(publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments),
-        )
-        if (publish && publish.enabled) setPublishPending(false)
-      }, [publish && publish.maxComments, publish && publish.enabled, props.resetToken])
-      const patchPublish = (partial) => patch({ publish: partial })
-      const commitMaxComments = () => {
-        const current = publish ? publish.maxComments : PUBLISH_DEFAULT_CONFIG.maxComments
-        const value = clampInteger(
-          maxCommentsDraft,
-          PUBLISH_MAX_COMMENTS_MIN,
-          PUBLISH_MAX_COMMENTS_MAX,
-          current,
-        )
-        setMaxCommentsDraft(String(value))
-        if (value !== current) patchPublish({ maxComments: value })
-      }
-      const commitInterval = (raw) => {
-        const value = clampInteger(
-          raw,
-          AUTO_REVIEW_INTERVAL_MIN,
-          AUTO_REVIEW_INTERVAL_MAX,
-          config.intervalSeconds,
-        )
-        setIntervalDraft(String(value))
-        if (value !== config.intervalSeconds) patch({ intervalSeconds: value })
-      }
-      const commitMax = (raw) => {
-        const value = clampInteger(
-          raw,
-          AUTO_REVIEW_MAX_PER_CYCLE_MIN,
-          AUTO_REVIEW_MAX_PER_CYCLE_MAX,
-          config.maxPerCycle,
-        )
-        setMaxDraft(String(value))
-        if (value !== config.maxPerCycle) patch({ maxPerCycle: value })
-      }
-      const commitQuery = () => {
-        const next = String(queryDraft || '').trim()
-        if (next === '') {
-          setQueryDraft(config.query)
-          return
-        }
-        if (next !== config.query) patch({ query: next })
-      }
-      const numberKeyDown = (commit) => (event) => {
-        if (event && event.key === 'Enter') {
-          event.preventDefault()
-          commit()
-        }
-      }
-      if (!supported) {
-        return h(
-          'fieldset',
-          { className: 'cr-field', 'data-auto-settings': 'degraded' },
-          h('legend', null, tx(t, 'autoReview')),
-          h(
-            'p',
-            { className: 'cr-auto-note' },
-            tx(t, 'autoReviewUnsupported') + ' · ' + tx(t, 'autoReviewUnsupportedHint'),
-          ),
-        )
-      }
-      return h(
-        'fieldset',
-        { className: 'cr-field', 'data-auto-settings': 'ready' },
-        h(
-          'legend',
-          null,
-          h(
-            'span',
-            { className: 'cr-auto-title' },
-            tx(t, 'autoReview'),
-            busy ? h('span', { className: 'cr-spinner', style: { width: 9, height: 9 } }) : null,
-          ),
-        ),
-        h(
-          'div',
-          { className: 'cr-auto-section' },
-          h(
-            'label',
-            { className: 'cr-option' },
-            h('input', {
-              type: 'checkbox',
-              'data-auto-enabled': 'toggle',
-              checked: config.enabled,
-              disabled: busy,
-              onChange: (event) =>
-                patch({ enabled: Boolean(event && event.target && event.target.checked) }),
-            }),
-            h(
-              'span',
-              { className: 'cr-option-text' },
-              h('span', { className: 'cr-option-label' }, tx(t, 'autoReviewEnabled')),
-              h('span', { className: 'cr-option-hint' }, tx(t, 'autoReviewHint')),
-            ),
-          ),
-          !config.enabled
-            ? h('p', { className: 'cr-auto-note' }, tx(t, 'autoReviewDisabledBody'))
-            : null,
-          h(
-            React.Fragment,
-            null,
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoReviewInterval')),
-                  h(
-                    'div',
-                    { className: 'cr-auto-presets' },
-                    AUTO_REVIEW_INTERVAL_PRESETS.map((preset) =>
-                      h(
-                        'button',
-                        {
-                          key: preset,
-                          type: 'button',
-                          className:
-                            'cr-auto-preset' +
-                            (config.intervalSeconds === preset ? ' cr-auto-preset--active' : ''),
-                          'data-auto-interval-preset': String(preset),
-                          disabled: busy,
-                          onClick: () => commitInterval(preset),
-                        },
-                        String(preset) + 's',
-                      ),
-                    ),
-                    h('input', {
-                      type: 'number',
-                      className: 'cr-auto-num',
-                      min: AUTO_REVIEW_INTERVAL_MIN,
-                      max: AUTO_REVIEW_INTERVAL_MAX,
-                      step: 10,
-                      value: intervalDraft,
-                      'data-auto-interval-input': 'ready',
-                      'aria-label': tx(t, 'autoReviewInterval'),
-                      disabled: busy,
-                      onChange: (event) => setIntervalDraft(String(event.target.value)),
-                      onBlur: () => commitInterval(intervalDraft),
-                      onKeyDown: numberKeyDown(() => commitInterval(intervalDraft)),
-                    }),
-                  ),
-                ),
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'depth')),
-                  DEPTHS.map((depth) =>
-                    h(
-                      'label',
-                      { key: depth, className: 'cr-option', style: { padding: '2px 5px' } },
-                      h('input', {
-                        type: 'radio',
-                        name: 'cr-auto-depth',
-                        'data-auto-depth': depth,
-                        checked: config.depth === depth,
-                        disabled: busy,
-                        onChange: () => patch({ depth }),
-                      }),
-                      h(
-                        'span',
-                        { className: 'cr-option-text' },
-                        h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
-                      ),
-                    ),
-                  ),
-                ),
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'severityThreshold')),
-                  THRESHOLDS.map((threshold) =>
-                    h(
-                      'label',
-                      { key: threshold, className: 'cr-option', style: { padding: '2px 5px' } },
-                      h('input', {
-                        type: 'radio',
-                        name: 'cr-auto-threshold',
-                        'data-auto-threshold': threshold,
-                        checked: config.severityThreshold === threshold,
-                        disabled: busy,
-                        onChange: () => patch({ severityThreshold: threshold }),
-                      }),
-                      h(
-                        'span',
-                        { className: 'cr-option-text' },
-                        h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
-                      ),
-                    ),
-                  ),
-                ),
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h(
-                    'label',
-                    { className: 'cr-option', style: { padding: '2px 5px' } },
-                    h('input', {
-                      type: 'checkbox',
-                      'data-auto-drafts': 'toggle',
-                      checked: config.includeDrafts,
-                      disabled: busy,
-                      onChange: (event) =>
-                        patch({
-                          includeDrafts: Boolean(event && event.target && event.target.checked),
-                        }),
-                    }),
-                    h(
-                      'span',
-                      { className: 'cr-option-text' },
-                      h('span', { className: 'cr-option-label' }, tx(t, 'autoReviewIncludeDrafts')),
-                    ),
-                  ),
-                  h(
-                    'span',
-                    { className: 'cr-auto-label', style: { minWidth: 0 } },
-                    tx(t, 'autoReviewMaxPerCycle'),
-                  ),
-                  h('input', {
-                    type: 'number',
-                    className: 'cr-auto-num',
-                    min: AUTO_REVIEW_MAX_PER_CYCLE_MIN,
-                    max: AUTO_REVIEW_MAX_PER_CYCLE_MAX,
-                    step: 1,
-                    value: maxDraft,
-                    'data-auto-max': 'ready',
-                    'aria-label': tx(t, 'autoReviewMaxPerCycle'),
-                    disabled: busy,
-                    onChange: (event) => setMaxDraft(String(event.target.value)),
-                    onBlur: () => commitMax(maxDraft),
-                    onKeyDown: numberKeyDown(() => commitMax(maxDraft)),
-                  }),
-                ),
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoReviewQuery')),
-                  h('input', {
-                    type: 'text',
-                    className: 'cr-auto-query',
-                    value: queryDraft,
-                    spellCheck: false,
-                    'data-auto-query': 'ready',
-                    'aria-label': tx(t, 'autoReviewQuery'),
-                    disabled: busy,
-                    onChange: (event) => setQueryDraft(String(event.target.value)),
-                    onBlur: commitQuery,
-                    onKeyDown: numberKeyDown(commitQuery),
-                  }),
-                ),
-                h('p', { className: 'cr-auto-note' }, tx(t, 'autoReviewSettingsNote')),
-          ),
-          publish
-            ? h(
-                'div',
-                {
-                  className: 'cr-auto-row',
-                  'data-auto-publish-section': 'ready',
-                  style: { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingTop: 6, borderTop: '1px solid var(--cr-border)' },
-                },
-                h(
-                  'label',
-                  { className: 'cr-option', style: { padding: '2px 5px' } },
-                  h('input', {
-                    type: 'checkbox',
-                    'data-auto-publish': 'toggle',
-                    checked: publish.enabled || publishPending,
-                    disabled: busy,
-                    onChange: (event) => {
-                      const next = Boolean(event && event.target && event.target.checked)
-                      if (next && !publish.enabled) {
-                        setPublishPending(true)
-                      } else if (!next) {
-                        setPublishPending(false)
-                        if (publish.enabled) patchPublish({ enabled: false })
-                      }
-                    },
-                  }),
-                  h(
-                    'span',
-                    { className: 'cr-option-text' },
-                    h('span', { className: 'cr-option-label' }, tx(t, 'autoPublish')),
-                    h('span', { className: 'cr-option-hint' }, tx(t, 'autoPublishHint')),
-                  ),
-                ),
-                publishPending && !publish.enabled
-                  ? h(
-                      'div',
-                      { className: 'cr-auto-publish-confirm', 'data-auto-publish-confirm': 'ready' },
-                      h('b', null, tx(t, 'autoPublishConfirmTitle')),
-                      h('span', null, tx(t, 'autoPublishConfirmBody')),
-                      h(
-                        'div',
-                        { className: 'cr-auto-publish-actions' },
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'cr-btn cr-btn--primary',
-                            style: { height: 24, padding: '0 9px', borderRadius: 6, fontSize: 11 },
-                            'data-action': 'auto-publish-confirm',
-                            disabled: busy,
-                            onClick: () => {
-                              setPublishPending(false)
-                              patchPublish({ enabled: true })
-                            },
-                          },
-                          tx(t, 'autoPublishConfirm'),
-                        ),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'cr-btn cr-btn--ghost',
-                            style: { height: 24, fontSize: 11 },
-                            'data-action': 'auto-publish-cancel',
-                            onClick: () => setPublishPending(false),
-                          },
-                          tx(t, 'cancel'),
-                        ),
-                      ),
-                    )
-                  : null,
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoPublishMode')),
-                  PUBLISH_MODES.map((value) =>
-                    h(
-                      'label',
-                      { key: value, className: 'cr-option', style: { padding: '2px 5px' } },
-                      h('input', {
-                        type: 'radio',
-                        name: 'cr-auto-publish-mode',
-                        'data-auto-publish-mode': value,
-                        checked: publish.mode === value,
-                        disabled: busy,
-                        onChange: () => patchPublish({ mode: value }),
-                      }),
-                      h(
-                        'span',
-                        { className: 'cr-option-text' },
-                        h('span', { className: 'cr-option-label' }, tx(t, publishModeLabelKey(value))),
-                      ),
-                    ),
-                  ),
-                ),
-                h(
-                  'div',
-                  { className: 'cr-auto-row' },
-                  h('span', { className: 'cr-auto-label' }, tx(t, 'autoPublishMinSeverity')),
-                  PUBLISH_MIN_SEVERITIES.map((value) =>
-                    h(
-                      'label',
-                      { key: value, className: 'cr-option', style: { padding: '2px 5px' } },
-                      h('input', {
-                        type: 'radio',
-                        name: 'cr-auto-publish-min',
-                        'data-auto-publish-min': value,
-                        checked: publish.minSeverity === value,
-                        disabled: busy,
-                        onChange: () => patchPublish({ minSeverity: value }),
-                      }),
-                      h(
-                        'span',
-                        { className: 'cr-option-text' },
-                        h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(value))),
-                      ),
-                    ),
-                  ),
-                  h(
-                    'span',
-                    { className: 'cr-auto-label', style: { minWidth: 0 } },
-                    tx(t, 'autoPublishMaxComments'),
-                  ),
-                  h('input', {
-                    type: 'number',
-                    className: 'cr-auto-num',
-                    min: PUBLISH_MAX_COMMENTS_MIN,
-                    max: PUBLISH_MAX_COMMENTS_MAX,
-                    step: 1,
-                    value: maxCommentsDraft,
-                    'data-auto-publish-max': 'ready',
-                    'aria-label': tx(t, 'autoPublishMaxComments'),
-                    disabled: busy,
-                    onChange: (event) => setMaxCommentsDraft(String(event.target.value)),
-                    onBlur: commitMaxComments,
-                    onKeyDown: numberKeyDown(commitMaxComments),
-                  }),
-                ),
-                h('p', { className: 'cr-auto-note' }, tx(t, 'autoPublishNote')),
-                h(
-                  'div',
-                  {
-                    className: 'cr-auto-publish-status',
-                    'data-auto-publish-settings-status': publish.enabled ? 'on' : 'off',
-                  },
-                  tx(t, autoPublishStatusKey(publish.enabled)),
-                ),
-              )
-            : null,
-        ),
-      )
-    }
-
     function ReviewSettings(props) {
       const t = props.t
-      const settings = normalizeSettings(props.settings)
       const dialogRef = useRef(null)
-      const onChange = props.onChange
       const onClose = props.onClose
       useEffect(() => {
         try {
@@ -6140,11 +5728,6 @@ const EMPTY_LIST = Object.freeze([])
           /* a focus-trap failure must not break the dialog */
         }
       }
-      const update = (patch) => {
-        if (typeof onChange === 'function') onChange(patch)
-      }
-      const depthHint = (depth) =>
-        depth === 'fast' ? 'depthFastHint' : depth === 'deep' ? 'depthDeepHint' : 'depthStandardHint'
       return h(
         'div',
         {
@@ -6159,7 +5742,7 @@ const EMPTY_LIST = Object.freeze([])
         h(
           'div',
           {
-            className: 'cr-modal',
+            className: 'cr-modal cr-shared-settings',
             role: 'dialog',
             'aria-modal': 'true',
             'aria-labelledby': 'cr-review-settings-title',
@@ -6182,6 +5765,7 @@ const EMPTY_LIST = Object.freeze([])
                 type: 'button',
                 className: 'cr-modal-close',
                 'aria-label': tx(t, 'close'),
+                'data-action': 'settings-close',
                 title: tx(t, 'close'),
                 onClick: () => {
                   if (typeof onClose === 'function') onClose()
@@ -6190,120 +5774,15 @@ const EMPTY_LIST = Object.freeze([])
               Icon('close', 13, { strokeWidth: 2 }),
             ),
           ),
-          h(AutoReviewSettings, {
-            t,
-            autoReview: props.autoReview,
-            supported: props.autoReviewSupported,
-            busy: props.autoReviewBusy,
-            resetToken: props.autoReviewResetToken,
-            onPatch: props.onAutoReviewPatch,
-          }),
-          h(
-            'fieldset',
-            { className: 'cr-field' },
-            h('legend', null, tx(t, 'depth')),
-            DEPTHS.map((depth) =>
-              h(
-                'label',
-                { key: depth, className: 'cr-option' },
-                h('input', {
-                  type: 'radio',
-                  name: 'cr-review-depth',
-                  value: depth,
-                  'data-depth': depth,
-                  checked: settings.depth === depth,
-                  onChange: () => update({ depth }),
-                }),
-                h(
-                  'span',
-                  { className: 'cr-option-text' },
-                  h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
-                  h('span', { className: 'cr-option-hint' }, tx(t, depthHint(depth))),
-                ),
-              ),
-            ),
-          ),
-          h(
-            'fieldset',
-            { className: 'cr-field' },
-            h('legend', null, tx(t, 'severityThreshold')),
-            THRESHOLDS.map((threshold) =>
-              h(
-                'label',
-                { key: threshold, className: 'cr-option' },
-                h('input', {
-                  type: 'radio',
-                  name: 'cr-review-threshold',
-                  value: threshold,
-                  'data-threshold': threshold,
-                  checked: settings.severityThreshold === threshold,
-                  onChange: () => update({ severityThreshold: threshold }),
-                }),
-                h(
-                  'span',
-                  { className: 'cr-option-text' },
-                  h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
-                ),
-              ),
-            ),
-            h('p', { className: 'cr-modal-note' }, tx(t, 'thresholdHint')),
-          ),
-          h(
-            'label',
-            { className: 'cr-option', style: { marginTop: 10 } },
-            h('input', {
-              type: 'checkbox',
-              'data-guidelines': 'toggle',
-              checked: settings.includeGuidelines,
-              onChange: (event) =>
-                update({ includeGuidelines: Boolean(event && event.target && event.target.checked) }),
-            }),
-            h(
-              'span',
-              { className: 'cr-option-text' },
-              h('span', { className: 'cr-option-label' }, tx(t, 'includeGuidelines')),
-              h('span', { className: 'cr-option-hint' }, tx(t, 'includeGuidelinesHint')),
-            ),
-          ),
-          h('p', { className: 'cr-modal-note' }, tx(t, 'settingsNote')),
-          h('p', { className: 'cr-modal-note' }, tx(t, 'settingsMoved')),
-          h(
-            'div',
-            { className: 'cr-modal-actions' },
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'cr-btn cr-btn--ghost',
-                'data-action': 'settings-reset',
-                onClick: () => {
-                  if (typeof props.onReset === 'function') props.onReset()
-                },
-              },
-              tx(t, 'settingsReset'),
-            ),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'cr-btn',
-                'data-action': 'settings-close',
-                onClick: () => {
-                  if (typeof onClose === 'function') onClose()
-                },
-              },
-              tx(t, 'close'),
-            ),
-          ),
+          h(CodeReviewSettingsPanel, { t }),
         ),
       )
     }
 
     /**
      * DSH Settings panel section (v0.9): a row-based page for review options,
-     * automatic review, publishing and host status. Review options persist in the
-     * browser (shared with the workbench popover); auto-review config lives on the
-     * host. Changes save immediately.
+     * automatic review, publishing and host status. All settings live on the
+     * host and are shared by manual and automatic reviews.
      */
 
     /** A settings section: title, optional description, and rows. */
@@ -6348,6 +5827,9 @@ const EMPTY_LIST = Object.freeze([])
             {
               key: option.value,
               type: 'button',
+              'data-depth': props.kind === 'depth' ? option.value : undefined,
+              'data-threshold': props.kind === 'threshold' ? option.value : undefined,
+              'data-auto-interval-preset': props.kind === 'interval' ? option.value : undefined,
               role: 'radio',
               'aria-checked': option.value === props.value ? 'true' : 'false',
               className: 'cr-seg-btn' + (option.value === props.value ? ' cr-seg-btn--on' : ''),
@@ -6372,6 +5854,8 @@ const EMPTY_LIST = Object.freeze([])
         {
           type: 'button',
           role: 'switch',
+          'data-auto-enabled': props.kind === 'auto-enabled' ? 'toggle' : undefined,
+          'data-guidelines': props.kind === 'guidelines' ? 'toggle' : undefined,
           'aria-checked': props.checked ? 'true' : 'false',
           'aria-label': props.label,
           className: 'cr-toggle' + (props.checked ? ' cr-toggle--on' : ''),
@@ -6386,7 +5870,6 @@ const EMPTY_LIST = Object.freeze([])
 
     function CodeReviewSettingsPanel(props) {
       const t = props.t
-      const [settings, setSettings] = useState(() => readSettings(localStore()))
       const [autoReview, setAutoReview] = useState({ supported: true, loading: true, status: null })
       const [autoReviewBusy, setAutoReviewBusy] = useState(false)
       const [autoReviewResetToken, setAutoReviewResetToken] = useState(0)
@@ -6402,6 +5885,7 @@ const EMPTY_LIST = Object.freeze([])
         post(ROUTE + '/auto-review-status', {}).then((result) => {
           if (result.ok) {
             setAutoReview({ supported: true, loading: false, status: normalizeAutoReviewStatus(result.value) })
+            cacheSharedSettings(result.value?.config)
             return
           }
           if (isAutoReviewRouteMissing(result.error)) {
@@ -6430,22 +5914,26 @@ const EMPTY_LIST = Object.freeze([])
             setAutoReviewBusy(false)
             if (result.ok) {
               setAutoReview({ supported: true, loading: false, status: normalizeAutoReviewStatus(result.value) })
+              cacheSharedSettings(result.value?.config, true)
+              setNote(tx(t, 'settingsSaved'))
               return
             }
             if (isAutoReviewRouteMissing(result.error)) {
               setAutoReview({ supported: false, loading: false, status: null })
               return
             }
+            setNote(tx(t, 'settingsSaveFailed'))
             setAutoReviewResetToken((token) => token + 1)
             refresh()
           })
         },
-        [refresh],
+        [refresh, t],
       )
 
       const status = autoReview.status
       const supported = autoReview.supported !== false
       const config = normalizeAutoReviewConfig(status ? status.config : null)
+      const settings = normalizeSettings(config)
       const publish = status && status.publish ? status.publish : PUBLISH_DEFAULT_CONFIG
       const busy = autoReviewBusy || autoReview.loading
 
@@ -6459,18 +5947,8 @@ const EMPTY_LIST = Object.freeze([])
         if (publish.enabled) setPublishPending(false)
       }, [config.intervalSeconds, config.maxPerCycle, config.query, publish.maxComments, publish.enabled, autoReviewResetToken])
 
-      const updateSettings = (patch) => {
-        const next = normalizeSettings(Object.assign({}, settings, patch))
-        setSettings(next)
-        const saved = writeSettings(localStore(), next)
-        setNote(tx(t, saved ? 'settingsSaved' : 'settingsSaveFailed'))
-        try {
-          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-            window.dispatchEvent(new CustomEvent('codex-review:settings-changed'))
-          }
-        } catch {
-          /* same-window sync is best effort */
-        }
+      const updateSettings = (partial) => {
+        if (!busy && supported && status) patchAutoReview(partial)
       }
 
       const patch = (value) => {
@@ -6544,7 +6022,9 @@ const EMPTY_LIST = Object.freeze([])
             SettingRow,
             { label: tx(t, 'depth'), hint: tx(t, depthHintKey) },
             h(Segmented, {
+              kind: 'depth',
               label: tx(t, 'depth'),
+              disabled: busy || !supported || !status,
               value: settings.depth,
               options: depthOptions,
               onChange: (value) => updateSettings({ depth: value }),
@@ -6554,7 +6034,9 @@ const EMPTY_LIST = Object.freeze([])
             SettingRow,
             { label: tx(t, 'severityThreshold'), hint: tx(t, 'thresholdHint') },
             h(Segmented, {
+              kind: 'threshold',
               label: tx(t, 'severityThreshold'),
+              disabled: busy || !supported || !status,
               value: settings.severityThreshold,
               options: thresholdOptions,
               onChange: (value) => updateSettings({ severityThreshold: value }),
@@ -6564,7 +6046,9 @@ const EMPTY_LIST = Object.freeze([])
             SettingRow,
             { label: tx(t, 'includeGuidelines'), hint: tx(t, 'includeGuidelinesHint') },
             h(Toggle, {
+              kind: 'guidelines',
               label: tx(t, 'includeGuidelines'),
+              disabled: busy || !supported || !status,
               checked: settings.includeGuidelines,
               onChange: (value) => updateSettings({ includeGuidelines: value }),
             }),
@@ -6582,6 +6066,7 @@ const EMPTY_LIST = Object.freeze([])
                   SettingRow,
                   { label: tx(t, 'autoReviewEnabled'), hint: tx(t, 'autoReviewHint') },
                   h(Toggle, {
+                    kind: 'auto-enabled',
                     label: tx(t, 'autoReviewEnabled'),
                     checked: config.enabled,
                     disabled: busy,
@@ -6597,6 +6082,7 @@ const EMPTY_LIST = Object.freeze([])
                         SettingRow,
                         { label: tx(t, 'autoReviewInterval'), hint: tx(t, 'settingsIntervalHint') },
                         h(Segmented, {
+                          kind: 'interval',
                           label: tx(t, 'autoReviewInterval'),
                           value: config.intervalSeconds,
                           disabled: busy,
@@ -6626,32 +6112,11 @@ const EMPTY_LIST = Object.freeze([])
                           value: drafts.query,
                           spellCheck: false,
                           'aria-label': tx(t, 'autoReviewQuery'),
+                          'data-auto-query': 'ready',
                           disabled: busy,
                           onChange: (event) => setDraft('query', String(event.target.value)),
                           onBlur: commitQuery,
                           onKeyDown: onEnter(commitQuery),
-                        }),
-                      ),
-                      h(
-                        SettingRow,
-                        { label: tx(t, 'depth') },
-                        h(Segmented, {
-                          label: tx(t, 'depth'),
-                          value: config.depth,
-                          disabled: busy,
-                          options: depthOptions,
-                          onChange: (value) => patch({ depth: value }),
-                        }),
-                      ),
-                      h(
-                        SettingRow,
-                        { label: tx(t, 'severityThreshold') },
-                        h(Segmented, {
-                          label: tx(t, 'severityThreshold'),
-                          value: config.severityThreshold,
-                          disabled: busy,
-                          options: thresholdOptions,
-                          onChange: (value) => patch({ severityThreshold: value }),
                         }),
                       ),
                       h(
@@ -6675,6 +6140,7 @@ const EMPTY_LIST = Object.freeze([])
                           step: 1,
                           value: drafts.maxPerCycle,
                           'aria-label': tx(t, 'autoReviewMaxPerCycle'),
+                          'data-auto-max': 'ready',
                           disabled: busy,
                           onChange: (event) => setDraft('maxPerCycle', String(event.target.value)),
                           onBlur: () => commitMaxPerCycle(drafts.maxPerCycle),
@@ -8003,7 +7469,10 @@ const EMPTY_LIST = Object.freeze([])
       const [reviewFinishedAt, setReviewFinishedAt] = useState(0)
       // v0.9: settings also live in the DSH Settings panel; keep this page is copy in sync
       useEffect(() => {
-        const reload = () => setSettings(readSettings(localStore()))
+        const reload = (event) => {
+          setSettings(readSettings(localStore()))
+          if (event?.detail?.refresh === true) refreshAutoReview()
+        }
         try {
           window.addEventListener('codex-review:settings-changed', reload)
           window.addEventListener('storage', reload)
@@ -8032,9 +7501,7 @@ const EMPTY_LIST = Object.freeze([])
       // v2.1: auto review status (CONTRACT §6.4)
       const [autoReview, setAutoReview] = useState({ supported: true, loading: true, status: null })
       const [autoReviewOpen, setAutoReviewOpen] = useState(true)
-      const [autoReviewBusy, setAutoReviewBusy] = useState(false)
       const [autoReviewRunBusy, setAutoReviewRunBusy] = useState(false)
-      const [autoReviewResetToken, setAutoReviewResetToken] = useState(0)
       const [pageVisible, setPageVisible] = useState(() => {
         try {
           return typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
@@ -8073,8 +7540,6 @@ const EMPTY_LIST = Object.freeze([])
       const detailVersions = useRef(new Map())
       const selectedRef = useRef(null)
       selectedRef.current = selected
-      const settingsRef = useRef(settings)
-      settingsRef.current = settings
       const gearRef = useRef(null)
       const searchRef = useRef(null)
       const listRef = useRef(null)
@@ -8343,7 +7808,7 @@ const EMPTY_LIST = Object.freeze([])
             progress: {},
           }),
         )
-        post(ROUTE + '/review-start', { repo: current.repo, number: current.number, options }).then(
+        post(ROUTE + '/review-start', { repo: current.repo, number: current.number }).then(
           (result) => {
             if (generation !== reviewGeneration.current) return
             if (!result.ok) {
@@ -8469,21 +7934,6 @@ const EMPTY_LIST = Object.freeze([])
         }, 90)
         return () => clearTimeout(timer)
       }, [jumpTarget])
-
-      /** Persist a settings patch immediately and keep both storage + UI in sync. */
-      const updateSettings = useCallback((patch) => {
-        setSettings((previous) => {
-          const next = normalizeSettings(Object.assign({}, previous, patch))
-          writeSettings(localStore(), next)
-          return next
-        })
-      }, [])
-
-      const resetSettings = useCallback(() => {
-        const next = normalizeSettings(null)
-        writeSettings(localStore(), next)
-        setSettings(next)
-      }, [])
 
       const closeSettings = useCallback(() => {
         setSettingsOpen(false)
@@ -8977,6 +8427,7 @@ const EMPTY_LIST = Object.freeze([])
           autoReviewBaselineRef.current = true
           const newDone = firstLoad ? [] : diffAutoReviewRecent(previousRecent, status.recent)
           setAutoReview({ supported: true, loading: false, status })
+          setSettings(cacheSharedSettings(status.config))
           if (newDone.length > 0) {
             const last = newDone[newDone.length - 1]
             const target = { repo: last.repo, number: last.number }
@@ -9014,30 +8465,6 @@ const EMPTY_LIST = Object.freeze([])
       }, [applyAutoReviewStatus])
 
       /** Persist one auto-review config patch; the Host echo wins. */
-      const patchAutoReview = useCallback(
-        (patch) => {
-          if (!patch || typeof patch !== 'object') return
-          setAutoReviewBusy(true)
-          post(ROUTE + '/auto-review-config', { patch }).then((result) => {
-            setAutoReviewBusy(false)
-            if (result.ok) {
-              applyAutoReviewStatus(result.value)
-              return
-            }
-            if (isAutoReviewRouteMissing(result.error)) {
-              setAutoReview({ supported: false, loading: false, status: null })
-              showToast(tx(t, 'autoReviewUnsupported'))
-              return
-            }
-            // Rollback: the card/dialog read the Host status, and the drafts reset.
-            showToast(tx(t, 'autoReviewConfigFailed'))
-            setAutoReviewResetToken((token) => token + 1)
-            refreshAutoReview()
-          })
-        },
-        [applyAutoReviewStatus, refreshAutoReview, showToast, t],
-      )
-
       const runAutoReview = useCallback(() => {
         if (autoReviewRunBusy) return
         setAutoReviewRunBusy(true)
@@ -9607,16 +9034,8 @@ const EMPTY_LIST = Object.freeze([])
         ),
         settingsOpen
           ? h(ReviewSettings, {
-              settings,
               t,
-              onChange: updateSettings,
-              onReset: resetSettings,
-              onClose: closeSettings,
-              autoReview: autoReview.status,
-              autoReviewSupported: autoReview.supported !== false,
-              autoReviewBusy,
-              autoReviewResetToken,
-              onAutoReviewPatch: patchAutoReview,
+              onClose: () => { closeSettings(); refreshAutoReview() },
             })
           : null,
         publishDialog.open && selected
@@ -9910,6 +9329,8 @@ const EMPTY_LIST = Object.freeze([])
         normalizeReviewStatus,
         groupFindingsByLine,
         normalizeInlineComments,
+        CodeReviewSettingsPanel,
+        ReviewSettings,
         groupCommentThreads,
         CommentsCard,
         Workbench,

@@ -70,6 +70,7 @@ export const AUTO_REVIEW_DEFAULTS = Object.freeze({
   query: 'is:open author:@me',
   depth: 'fast',
   severityThreshold: 'P2',
+  includeGuidelines: true,
   includeDrafts: false,
   maxPerCycle: 2,
   publish: PUBLISH_DEFAULTS,
@@ -116,7 +117,7 @@ function clampInteger(value, limits, fallback) {
  * `base` (defaults when loading the file, the live config when patching).
  * @param {unknown} raw - candidate config/patch.
  * @param {typeof AUTO_REVIEW_DEFAULTS} [base] - fallback config.
- * @returns {{ enabled: boolean, intervalSeconds: number, query: string, depth: 'fast' | 'standard' | 'deep', severityThreshold: 'P0' | 'P1' | 'P2', includeDrafts: boolean, maxPerCycle: number, publish: typeof PUBLISH_DEFAULTS }} sanitized config.
+ * @returns {{ enabled: boolean, intervalSeconds: number, query: string, depth: 'fast' | 'standard' | 'deep', severityThreshold: 'P0' | 'P1' | 'P2', includeGuidelines: boolean, includeDrafts: boolean, maxPerCycle: number, publish: typeof PUBLISH_DEFAULTS }} sanitized config.
  */
 export function sanitizeAutoReviewConfig(raw, base = AUTO_REVIEW_DEFAULTS) {
   const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, unknown>} */ (raw) : {}
@@ -131,6 +132,7 @@ export function sanitizeAutoReviewConfig(raw, base = AUTO_REVIEW_DEFAULTS) {
     severityThreshold: AUTO_REVIEW_THRESHOLDS.includes(source.severityThreshold)
       ? /** @type {'P0' | 'P1' | 'P2'} */ (source.severityThreshold)
       : base.severityThreshold,
+    includeGuidelines: typeof source.includeGuidelines === 'boolean' ? source.includeGuidelines : (base.includeGuidelines ?? true),
     includeDrafts: typeof source.includeDrafts === 'boolean' ? source.includeDrafts : base.includeDrafts,
     maxPerCycle: clampInteger(source.maxPerCycle, AUTO_REVIEW_MAX_PER_CYCLE_LIMITS, base.maxPerCycle),
     // A patch may carry a partial `publish` object; it is merged over the live one.
@@ -673,7 +675,7 @@ export class AutoReviewer {
       /** @type {any} */
       let guidelines
       try {
-        if (typeof this.github.getGuidelines === 'function') guidelines = await this.github.getGuidelines(repo, {})
+        if (this.config.includeGuidelines && typeof this.github.getGuidelines === 'function') guidelines = await this.github.getGuidelines(repo, {})
       } catch {
         // Guidelines are an enhancement; the review proceeds without them.
         guidelines = undefined
@@ -690,7 +692,7 @@ export class AutoReviewer {
         options: {
           depth: this.config.depth,
           severityThreshold: this.config.severityThreshold,
-          includeGuidelines: true,
+          includeGuidelines: this.config.includeGuidelines,
         },
         guidelines,
       })
