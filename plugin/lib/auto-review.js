@@ -500,8 +500,10 @@ export class AutoReviewer {
       const tmpPath = `${this.statePath}.tmp-${process.pid}-${Math.floor(this.now())}`
       writeFileSync(tmpPath, JSON.stringify(payload), 'utf8')
       renameSync(tmpPath, this.statePath)
+      return true
     } catch (error) {
       this.logger?.warn?.(`dsh-codex-review: cannot persist auto-review state: ${error?.message ?? error}`)
+      return false
     }
   }
 
@@ -780,9 +782,13 @@ export class AutoReviewer {
    */
   updateConfig(patch) {
     if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) throw badRequest('patch 必须是对象')
-    const previousInterval = this.config.intervalSeconds
-    this.config = sanitizeAutoReviewConfig(patch, this.config)
-    this.persistState()
+    const previous = this.config
+    const previousInterval = previous.intervalSeconds
+    this.config = sanitizeAutoReviewConfig(patch, previous)
+    if (!this.persistState()) {
+      this.config = previous
+      throw new AppError('INTERNAL', '设置写入失败，未保存更改；请检查配置目录权限或磁盘空间后重试。')
+    }
     if (this.config.intervalSeconds !== previousInterval) this.scheduleTimer()
     return this.status()
   }

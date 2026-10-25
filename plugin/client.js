@@ -7646,6 +7646,7 @@ const EMPTY_LIST = Object.freeze([])
         reviewGeneration.current += 1
         setReview(normalizeReviewStatus({ state: 'none' }))
         const seedGeneration = reviewGeneration.current
+        let restoredGeneration = seedGeneration
         const key = String(summary.repo) + '#' + String(summary.number)
         const cached = detailCache.current.get(key)
         if (cached) {
@@ -7656,6 +7657,7 @@ const EMPTY_LIST = Object.freeze([])
             setReview(seed)
           } else if (seed && seed.state === 'running' && seed.jobId) {
             const nextGeneration = ++reviewGeneration.current
+            restoredGeneration = nextGeneration
             setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
             void pollReview(nextGeneration, seed.jobId, summary)
           }
@@ -7671,14 +7673,20 @@ const EMPTY_LIST = Object.freeze([])
             return
           }
           setDetail({ state: 'ready', value: result.value, error: null })
-          if (seedGeneration !== reviewGeneration.current) return
+          if (seedGeneration !== reviewGeneration.current) {
+            // A cached running job may belong to the previous head. Stop only
+            // that restored poll; never override a review started meanwhile.
+            if (restoredGeneration === seedGeneration || restoredGeneration !== reviewGeneration.current ||
+                !cached?.value.headSha || !result.value.headSha || cached.value.headSha === result.value.headSha) return
+            reviewGeneration.current += 1
+          }
           const seed = result.value.review
-          if (seed && (seed.state === 'done' || seed.state === 'error')) {
-            setReview(seed)
-          } else if (seed && seed.state === 'running' && seed.jobId) {
+          if (seed && seed.state === 'running' && seed.jobId) {
             const nextGeneration = ++reviewGeneration.current
             setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
             void pollReview(nextGeneration, seed.jobId, summary)
+          } else {
+            setReview(seed || normalizeReviewStatus({ state: 'none' }))
           }
         })
       }, [fetchDetail])
@@ -7689,8 +7697,10 @@ const EMPTY_LIST = Object.freeze([])
        */
       const refreshDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
-        const generation = ++detailGeneration.current
         invalidateDetail(summary)
+        const current = selectedRef.current
+        if (!current || current.repo !== summary.repo || Number(current.number) !== Number(summary.number)) return
+        const generation = ++detailGeneration.current
         fetchDetail(summary).then((result) => {
           if (generation !== detailGeneration.current || !result.ok) return
           setDetail({ state: 'ready', value: result.value, error: null })
@@ -7724,6 +7734,7 @@ const EMPTY_LIST = Object.freeze([])
       const selectPr = useCallback(
         (summary) => {
           if (!summary) return
+          selectedRef.current = summary
           setSelected(summary)
           setTab('summary')
           setExpanded({})
@@ -8600,11 +8611,10 @@ const EMPTY_LIST = Object.freeze([])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
-        const finish = (result, doneKey) => {
+        const finish = (result, doneKey, origin) => {
           if (result && result.ok) {
             showToast(tx(t, doneKey))
-            const current = selectedRef.current
-            if (current) refreshDetail(current)
+            refreshDetail(origin)
             return true
           }
           const code = result && result.error ? result.error.code : ''
@@ -8621,7 +8631,7 @@ const EMPTY_LIST = Object.freeze([])
               commentId: comment.id,
               body,
               confirm: true,
-            }).then((result) => finish(result, 'replyDone'))
+            }).then((result) => finish(result, 'replyDone', current))
           },
           resolve: (comment) => {
             const current = selectedRef.current
@@ -8633,7 +8643,7 @@ const EMPTY_LIST = Object.freeze([])
               number: current.number,
               threadId: comment.threadId,
               confirm: true,
-            }).then((result) => finish(result, 'resolveDone'))
+            }).then((result) => finish(result, 'resolveDone', current))
           },
         }
       }, [refreshDetail, showToast, t])

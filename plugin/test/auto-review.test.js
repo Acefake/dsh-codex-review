@@ -962,3 +962,12 @@ test('shared review parameters persist and automatic reviews respect disabled gu
   assert.deepEqual(engine.state.startCalls[0].options, { depth: 'deep', severityThreshold: 'P0', includeGuidelines: false })
   assert.deepEqual(github.calls.guidelines, [])
 })
+
+test('configuration write failure rolls back live settings and reports failure', () => {
+  const { reviewer, dir, scheduler } = makeReviewer()
+  const before = reviewer.status().config
+  // A regular file in place of the state directory deterministically rejects writes.
+  writeFileSync(join(dir, '.codex-review'), 'not a directory')
+  assert.throws(() => reviewer.updateConfig({ enabled: true, intervalSeconds: 600, publish: { enabled: true } }), /设置写入失败/)
+  assert.deepEqual(reviewer.status().config, before)
+})

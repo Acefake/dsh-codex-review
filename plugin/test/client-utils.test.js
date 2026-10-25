@@ -1588,3 +1588,68 @@ test('settings load errors offer retry and failed refreshes preserve the last go
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(harness.states[0].status, config)
 })
+
+test('fresh detail with no review clears a cached result from an older head', async () => {
+  const harness = componentHarness()
+  const summary = { repo: 'a/b', number: 1 }
+  harness.bundle.sandbox.fetch = async () => ({ async json() { return { ok: true, value: { summary, headSha: 'new-head', review: { state: 'none', headSha: 'new-head' } } } } })
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  cache.set('a/b#1', { at: Date.now(), value: { summary, headSha: 'old-head', review: { state: 'done', headSha: 'old-head', findings: [] } } })
+  harness.callbacks.find(fn => String(fn).includes('setSelected(summary)'))(summary)
+  assert.equal(harness.states[9].state, 'done')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(harness.states[9].state, 'none')
+  assert.equal(harness.states[5].value.headSha, 'new-head')
+})
+
+test('a late comment refresh invalidates its original PR without replacing another selection', async () => {
+  const harness = componentHarness()
+  harness.states[4] = { repo: 'a/b', number: 2 }
+  const originalDetail = { state: 'ready', value: { body: 'PR B' } }
+  harness.states[5] = originalDetail
+  let requests = 0
+  harness.bundle.sandbox.fetch = async () => { requests += 1; return { async json() { return { ok: true, value: {} } } } }
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  cache.set('a/b#1', { at: Date.now(), value: {} })
+  const refresh = harness.callbacks.find(fn => String(fn).includes('invalidateDetail(summary)') && String(fn).includes('setDetail({ state:'))
+  refresh({ repo: 'a/b', number: 1 })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cache.has('a/b#1'), false)
+  assert.equal(harness.states[5], originalDetail)
+  assert.equal(requests, 0)
+})
+
+test('a cached running review is stopped when revalidation discovers a new PR head', async () => {
+  const harness = componentHarness()
+  const summary = { repo: 'a/b', number: 1 }
+  let statusCalls = 0
+  harness.bundle.sandbox.fetch = async path => {
+    if (path.endsWith('/review-status')) statusCalls += 1
+    return { async json() { return { ok: true, value: { summary, headSha: 'new', review: { state: 'none', headSha: 'new' } } } } }
+  }
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  cache.set('a/b#1', { at: Date.now(), value: { summary, headSha: 'old', review: { state: 'running', headSha: 'old', jobId: 'old-job' } } })
+  harness.callbacks.find(fn => String(fn).includes('setSelected(summary)'))(summary)
+  await new Promise(resolve => setTimeout(resolve, 900))
+  assert.equal(harness.states[9].state, 'none')
+  assert.equal(statusCalls, 0)
+})
+
+test('actions immediately after selecting a PR target the new PR before rerender', async () => {
+  const harness = componentHarness()
+  harness.states[4] = { repo: 'a/b', number: 1 }
+  const writes = []
+  harness.bundle.sandbox.fetch = async (path, init) => {
+    if (path.endsWith('/review-start')) writes.push(JSON.parse(init.body))
+    return { async json() { return { ok: false, error: { code: 'INTERNAL' } } } }
+  }
+  harness.render(harness.api.Workbench, {})
+  harness.callbacks.find(fn => String(fn).includes('setSelected(summary)'))({ repo: 'a/b', number: 2 })
+  harness.callbacks.find(fn => String(fn).includes("'/review-start'"))()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].number, 2)
+})
