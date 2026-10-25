@@ -222,7 +222,19 @@ v2.2 之后剩下最大的缺口是「只能看评论、不能写」。v2.3 接�
 5. **并发**：保留同 head in-flight 去重，新增 per-PR 串行锁，避免不同 head 同时更新同一条滚动 review。
 6. **验证**：`node --test` **246/246**（新增滚动更新、无变化 no-op、marker 恢复、404 回退、内容指纹等）；`node --check` 通过。真实 GitHub 写验证未做（避免未经请求的写）；同 head 回放 0 写由既有 head 记录保证。
 
+## 19. v0.8 回填：界面改版为 Claude Code 桌面端风格（2026-10-25，版本 0.8.0）
 
+用户要求「做成 Claude Code 桌面端的风格，减少滚动条、紧凑一些、性能也优化下」。这次只改客户端视觉层、布局语义与渲染性能，不改 Host 契约：
 
+1. **皮肤层**：在 client.js 内新增 v0.8 skin（覆盖在原有结构样式之上）。暖中性 surface 由宿主 token 与 #E9E1D3 混合，深浅主题同时成立；比例字体（Inter/系统中文字体）做 UI 与正文，等宽只用于 diff/代码/路径/分支/SHA；10–14px 圆角、1px 发丝描边、单一 `#B04E2E` 陶土红强调色（白字 5.28:1）。
+2. **更少滚动条**：把文档与右栏合并到同一个滚动容器 `.cr-body`（docRef 从 `.cr-doc` 移到 `.cr-body`，tab 滚动记忆/文件跳转逻辑照旧），右栏不再独立滚动；全页只剩左侧列表 + 主体两条 6px 滚动条。输入框由右下浮动胶囊改为文档列下方居中的桌面式输入卡。
+3. **更紧凑**：三栏 224 / 700–712 / 288，工具栏 46px，列表行约 58px，右栏小节 12px 节奏。
+4. **性能**：`.cr-file`/`.cr-finding`/`.cr-row` 用 content-visibility 跳过视口外渲染；`FileCard`/`DiffView`/`ChangesView` 用 React.memo + 共享 EMPTY_LIST + 稳定回调，审查轮询时不再重渲染整棵 diff。
+5. **验证**：dev 预览 11/11 场景 PASS（几何 224/1294/712/288、changes 24 files/292 rows、inline 评论/设置/合并/对话/自动审查场景全过）；真实 GUI 工作台渲染正常、插件 consoleErrors=0、v2.3 页面断言 13/13；`node --test` 246/246。宿主自身有一条 remote.session inject pageerror，与本插件无关，已在 REPORT §17 记录。
 
+## 20. v0.9 回填：颜色跟随宿主 + 设置进入 DSH 设置面板（2026-10-25，版本 0.9.0）
+
+1. **颜色修正**：v0.8 初版把暖中性底与固定陶土红写进皮肤，用户反馈「颜色不合理」。已改为完全使用宿主 `--dsw-alias-*` token（rootBg 直接取 `--dsw-alias-bg-base`，暗色下实测 #181818；主按钮用 `--dsw-alias-label-primary` 底 + `--dsw-alias-bg-base` 字，中性高对比，深浅主题一致跟随 DSH）。皮肤中不再有任何硬编码色值。
+2. **设置面板**：客户端注册 `ctx.slots.inject('settings.section', …)`（id `codex-review`，order 60），组件 `CodeReviewSettingsPanel` 三块：审查选项（depth / severityThreshold / includeGuidelines，写 localStorage 并派发 `codex-review:settings-changed`，工作台监听后同步）、自动审查与发布（复用既有 `AutoReviewSettings`，通过 `auto-review-config` 持久化到 Host）、状态（health: gh / llm / version）。工作台齿轮弹层保留为快捷方式，并提示完整设置位置。
+3. **兼容与验证**：loader-stub 的注册断言更新为 3 个 slot；`node --test` 246/246；dev 预览 11/11；真实 GUI 工作台正常、插件 console 0 error、v23 13/13（宿主自身 remote.session pageerror 为环境噪音，见 REPORT §18）。设置面板的点击导航受无头环境限制未能端到端断言，需在 GUI 设置面板人工确认。
 

@@ -14,6 +14,8 @@ window.__ModuleLoader__.load({
     /** Document-relative route base: the host page is served with <base href="./">. */
     const ROUTE = 'codex-review'
     const POLL_MS = 800
+/** Shared empty list so memoized rows keep reference equality on missing data. */
+const EMPTY_LIST = Object.freeze([])
     const REQUEST_TIMEOUT_MS = 15000
     const MONO =
       'ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace'
@@ -355,9 +357,9 @@ window.__ModuleLoader__.load({
       publishNoFindings: 'Nothing to publish',
       publishErrorTitle: 'Publish failed',
       autoPublish: 'Publish reviews to GitHub',
-      autoPublishHint: 'When enabled, every finished AI review — manual or automatic — is published to its pull request. This writes to GitHub.',
+      autoPublishHint: 'When enabled, every finished AI review — manual or automatic — is published to its pull request. One PR keeps a single summary review: later reviews update it in place instead of adding a new comment. This writes to GitHub.',
       autoPublishConfirmTitle: 'Enable automatic publishing?',
-      autoPublishConfirmBody: 'Finished AI reviews (manual or automatic) will create real review comments on their pull requests (up to the configured limit). This is a write operation.',
+      autoPublishConfirmBody: 'Finished AI reviews (manual or automatic) will publish to their pull requests. The first review creates one summary review; later reviews update that same review in place, and only newly found inline issues are added. This is a write operation.',
       autoPublishConfirm: 'Enable publishing',
       autoPublishStatusOn: 'Publishing: on',
       autoPublishStatusOff: 'Publishing: off',
@@ -366,6 +368,17 @@ window.__ModuleLoader__.load({
       autoPublishMaxComments: 'Max comments',
       autoPublishMaxCommentsHint: '1–50 per review.',
       autoPublishNote: 'Automatic publishing is off by default and only applies to future auto reviews.',
+      settingsLead: 'Review options apply to the next review you start. Automatic review and publishing are stored on the host.',
+      reviewOptions: 'Review options',
+      settingsAuto: 'Automatic review and publishing',
+      settingsAutoHint: 'Runs in the background on an interval. Publishing keeps one summary review per pull request.',
+      settingsStatus: 'Status',
+      settingsHealthGh: 'GitHub CLI',
+      settingsHealthLlm: 'Model',
+      settingsSaved: 'Saved',
+      settingsSaveFailed: 'Could not save locally',
+      settingsLoading: 'Loading…',
+      settingsMoved: 'More settings (auto review, publishing, status) live in DSH Settings → Code Review.',
       inlineReply: 'Reply',
       inlineReplyPlaceholder: 'Write a reply…',
       inlineReplySend: 'Send reply',
@@ -666,9 +679,9 @@ window.__ModuleLoader__.load({
       publishNoFindings: '没有可发布的问题',
       publishErrorTitle: '发布失败',
       autoPublish: '发布审查到 GitHub',
-      autoPublishHint: '开启后，AI 审查（手动点「用 AI 审查」或自动审查）完成后会自动把结果发布到对应 PR；这会写入 GitHub。',
+      autoPublishHint: '开启后，AI 审查（手动点「用 AI 审查」或自动审查）完成后会自动把结果发布到对应 PR。一个 PR 只保留一条汇总 review：之后的审查原地更新它，不会每次新增评论；只有新发现的行内问题会单独补发。这会写入 GitHub。',
       autoPublishConfirmTitle: '确认开启自动发布？',
-      autoPublishConfirmBody: '开启后，完成的 AI 审查（手动或自动）会在对应 PR 上创建 review 评论（按配置的上限过滤）。这是写操作。',
+      autoPublishConfirmBody: '开启后，完成的 AI 审查（手动或自动）会发布到对应 PR：首次审查创建一条汇总 review，之后原地更新同一条；只有新发现的行内问题会补发。这是写操作。',
       autoPublishConfirm: '确认开启',
       autoPublishStatusOn: '发布：已开启',
       autoPublishStatusOff: '发布：已关闭',
@@ -677,6 +690,17 @@ window.__ModuleLoader__.load({
       autoPublishMaxComments: '最多评论数',
       autoPublishMaxCommentsHint: '每次 review 1–50 条。',
       autoPublishNote: '自动发布默认关闭；开启后对之后的手动与自动审查都生效。',
+      settingsLead: '审查选项对下一次手动审查生效；自动审查与发布由 Host 保存。',
+      reviewOptions: '审查选项',
+      settingsAuto: '自动审查与发布',
+      settingsAutoHint: '后台按间隔扫描；发布会为每个 PR 保留一条汇总 review。',
+      settingsStatus: '状态',
+      settingsHealthGh: 'GitHub CLI',
+      settingsHealthLlm: '模型',
+      settingsSaved: '已保存',
+      settingsSaveFailed: '本地保存失败',
+      settingsLoading: '加载中…',
+      settingsMoved: '更多设置（自动审查、发布、状态）已移到 DSH 设置 → 代码审查。',
       inlineReply: '回复',
       inlineReplyPlaceholder: '写一条回复…',
       inlineReplySend: '发送回复',
@@ -2875,6 +2899,235 @@ window.__ModuleLoader__.load({
 @media (prefers-reduced-motion: reduce){
   .cr-root *,.cr-root *::before,.cr-root *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
 }
+
+/* ============================================================================
+   v0.8 skin — "Claude Code desktop" application surface
+
+   A desktop app, not a terminal: warm-neutral surfaces, proportional UI type,
+   soft 1px borders and 10-14px cards. Monospace is reserved for code paths,
+   diffs, branches and SHAs. One warm accent (terracotta) carries the live
+   action. Density is tighter than the default workbench and the document +
+   details share ONE scroll container, so the page has two scrollbars at most.
+   ========================================================================== */
+.cr-root{
+  --cr-bg: var(--dsw-alias-bg-base);
+  --cr-side: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--cr-bg));
+  --cr-panel: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--cr-bg));
+  --cr-card: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, var(--cr-bg));
+  --cr-raised: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, var(--cr-bg));
+  --cr-hair: color-mix(in srgb, var(--dsw-alias-label-primary) 11%, transparent);
+  --cr-hair-soft: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+  --cr-accent: var(--dsw-alias-label-primary);
+  --cr-accent-soft: color-mix(in srgb, var(--cr-accent) 14%, transparent);
+  --cr-r-card:12px;
+  --cr-r-ctl:8px;
+  font:13px/20px ${SANS};
+  background:var(--cr-bg);
+}
+.cr-root ::-webkit-scrollbar{width:6px;height:6px}
+.cr-root ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-primary) 16%,transparent);border-radius:3px}
+.cr-root ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 28%,transparent)}
+.cr-root :focus-visible{outline:2px solid color-mix(in srgb,var(--dsw-alias-label-primary) 60%,transparent);outline-offset:1px}
+
+/* ---- sidebar: app rail ---- */
+.cr-side{flex-basis:224px;width:224px;background:var(--cr-side);border-right:1px solid var(--cr-hair-soft)}
+.cr-side-head{padding:14px 12px 4px 16px}
+.cr-side-title{font:600 15px/20px ${SANS};letter-spacing:-.01em;color:var(--cr-text)}
+.cr-search-wrap{padding:8px 10px 9px}
+.cr-search{height:32px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid transparent;padding:0 6px 0 10px}
+.cr-search:focus-within{border-color:var(--cr-hair);background:var(--cr-panel)}
+.cr-search input{font:12.5px/18px ${SANS}}
+.cr-search-clear{width:18px;height:18px;border-radius:5px}
+.cr-list{padding:0 8px 20px;gap:1px}
+.cr-row{border-radius:var(--cr-r-ctl);padding:8px 10px 9px;border-bottom:0;content-visibility:auto;contain-intrinsic-size:auto 58px}
+.cr-row:hover{background:var(--cr-hover)}
+.cr-row--active,.cr-row--active:hover{background:var(--cr-card);box-shadow:inset 0 0 0 1px var(--cr-hair-soft)}
+.cr-row-title{font:500 12.5px/18px ${SANS}}
+.cr-row-meta{margin-top:5px;font:11.5px/15px ${SANS};gap:6px}
+.cr-badge-draft{border-radius:5px;font:600 10px/14px ${SANS};padding:0 4px}
+.cr-list-state{padding:12px 10px;font:12px/18px ${SANS}}
+.cr-avatar--16{width:16px;height:16px;font-size:8px}
+.cr-avatar--22{width:22px;height:22px;font-size:9px}
+
+/* ---- toolbar: segmented tabs, filled primary action ---- */
+.cr-toolbar{height:46px;padding:0 16px 0 20px;gap:12px;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-tabs{background:var(--cr-panel);padding:2px;border-radius:var(--cr-r-ctl);gap:2px}
+.cr-tab{height:28px;padding:0 11px;border-radius:6px;border-bottom:0;font:12.5px/28px ${SANS};color:var(--cr-text-2)}
+.cr-tab:hover{color:var(--cr-text)}
+.cr-tab--active,.cr-tab--active:hover{background:var(--cr-raised);color:var(--cr-text);border-bottom:0;font-weight:600}
+.cr-diffstat{font:12px/16px ${SANS}}
+.cr-iconbtn{width:28px;height:28px;border-radius:7px}
+.cr-review{height:30px;border-radius:var(--cr-r-ctl);background:var(--cr-accent);border:0;color:var(--dsw-alias-bg-base)}
+.cr-review-main{padding:0 11px;font:600 12.5px/30px ${SANS};color:var(--dsw-alias-bg-base)}
+.cr-review-main:hover{background:color-mix(in srgb,var(--cr-accent) 86%,var(--dsw-alias-bg-base))}
+.cr-review-gear{width:28px;border-left:1px solid color-mix(in srgb,var(--dsw-alias-bg-base) 30%,transparent);color:var(--dsw-alias-bg-base)}
+.cr-review-gear:hover{background:color-mix(in srgb,var(--cr-accent) 86%,var(--dsw-alias-bg-base))}
+.cr-root .cr-review-main:disabled{opacity:.7}
+.cr-btn{height:30px;padding:0 12px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid var(--cr-hair-soft);font:500 12.5px/28px ${SANS}}
+.cr-btn:hover{background:var(--cr-raised)}
+.cr-btn--ghost{height:24px;padding:0 8px;border-color:transparent;background:transparent;font-size:11.5px}
+.cr-btn--ghost:hover{border-color:var(--cr-hair-soft);background:var(--cr-hover)}
+.cr-btn--primary,.cr-btn--merge{border-color:transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
+.cr-btn--merge:hover{background:var(--dsw-alias-button-primary-fill)}
+.cr-health{font:12px/17px ${SANS};padding:7px 16px 7px 20px}
+
+/* ---- body: app canvas, one scrollbar; details flow with the document ---- */
+.cr-body{display:block;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
+.cr-cluster{display:flex;gap:32px;max-width:1072px;padding:0 20px;margin:0 auto;align-items:flex-start}
+.cr-doc{width:700px;flex:1 1 700px;overflow:visible;padding:4px 0 96px;scrollbar-gutter:auto}
+.cr-details{width:288px;flex:0 0 288px;position:static;align-self:flex-start;max-height:none;min-height:0;overflow:visible;padding:16px 0 96px}
+
+/* ---- PR header ---- */
+.cr-pr-badges{min-height:24px;gap:8px}
+.cr-badge{height:24px;padding:0 9px;border-radius:999px;font:600 11.5px/22px ${SANS};letter-spacing:.01em}
+.cr-pr-repo{font:12px/17px ${SANS};color:var(--cr-text-2)}
+.cr-pr-title{margin-top:10px;font:600 22px/30px ${SANS};letter-spacing:-.015em}
+.cr-pr-edit{margin-top:4px}
+.cr-pr-meta{margin-top:9px;gap:7px;font:12px/17px ${SANS};color:var(--cr-text-3)}
+.cr-branches{font-family:var(--cr-mono);font-size:11px;background:var(--cr-panel);border-radius:5px;padding:1px 6px}
+.cr-branch{max-width:180px}
+
+/* ---- prose ---- */
+.cr-md{margin-top:18px;font:14px/24px ${SANS};color:var(--cr-text)}
+.cr-md p{margin:0 0 12px}
+.cr-md h2{margin:24px 0 9px;font:600 17px/25px ${SANS};letter-spacing:-.01em}
+.cr-md h3{margin:19px 0 7px;font:600 14.5px/22px ${SANS}}
+.cr-md-list li{margin:0 0 5px;line-height:24px}
+.cr-md code{font-size:12px;border-radius:5px;padding:1px 5px}
+.cr-md pre{margin:0 0 12px;padding:11px 13px;border-radius:var(--cr-r-ctl);border:1px solid var(--cr-hair-soft);font-size:12px;line-height:19px}
+.cr-md blockquote{border-left:2px solid var(--cr-accent);padding-left:12px;color:var(--cr-text-2)}
+.cr-md hr{margin:18px 0;border-top-color:var(--cr-hair-soft)}
+
+/* ---- review result: app card ---- */
+.cr-review-card{margin:16px 0 4px;border:1px solid var(--cr-hair-soft);border-radius:var(--cr-r-card);background:var(--cr-panel);padding:12px 14px 6px}
+.cr-review-card-title{font:600 13px/18px ${SANS}}
+.cr-review-card-meta{font:11.5px/16px ${SANS}}
+.cr-review-verdict{margin-top:7px;font:12.5px/18px ${SANS}}
+.cr-review-counts{margin-top:8px;padding:7px 0;gap:18px;border-color:var(--cr-hair-soft);font:12px/16px ${SANS}}
+.cr-review-progress{margin-top:9px;font-size:12px}
+.cr-finding{content-visibility:auto;contain-intrinsic-size:auto 128px;margin:9px 0 4px;padding:10px 12px 10px 14px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid var(--cr-hair-soft)}
+.cr-finding-title{margin-top:6px;font:600 13.5px/19px ${SANS}}
+.cr-finding-loc{margin-top:3px;font-size:11.5px}
+.cr-finding-body{margin-top:6px;font:12.5px/19px ${SANS}}
+.cr-finding-label{font-size:11px;line-height:16px;border-radius:5px;border:1px solid var(--cr-hair-soft);background:var(--cr-panel)}
+.cr-finding-actions{margin-top:8px;gap:7px}
+.cr-sev{height:18px;padding:0 7px;border-radius:5px;font-size:10.5px;letter-spacing:.02em}
+.cr-finding-cat{border-radius:5px;font-size:10.5px;padding:0 6px;line-height:17px}
+.cr-verdict{height:20px;padding:0 8px;border-radius:6px;font-size:11px;letter-spacing:.01em}
+.cr-chips{margin-top:8px;gap:5px}
+.cr-chip{height:22px;padding:0 9px;border-radius:999px;font-size:11px}
+.cr-review-meta-row{margin-top:7px;font:11.5px/16px ${SANS}}
+
+/* ---- changes & diff ---- */
+.cr-changes-head{margin:14px 0 9px;font:12px/17px ${SANS}}
+.cr-file{border:1px solid var(--cr-hair-soft);border-radius:var(--cr-r-ctl);margin-bottom:8px;background:var(--cr-panel);content-visibility:auto;contain-intrinsic-size:auto 200px}
+.cr-file-head{min-height:34px;padding:5px 10px 5px 8px;background:transparent;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-file-head:hover{background:var(--cr-hover)}
+.cr-file--open .cr-file-head{background:var(--cr-card);border-bottom-color:var(--cr-hair-soft)}
+.cr-file-path{font:12px/17px var(--cr-mono)}
+.cr-file-status{font-size:10px}
+.cr-file-stat{font-size:11.5px}
+.cr-file-badge{height:16px;padding:0 6px;border-radius:999px;font-size:10px}
+.cr-diff{font:12px/19px var(--cr-mono)}
+.cr-diff-gutter{width:80px}
+.cr-diff-ln{width:36px;padding-right:6px}
+.cr-diff-hunk{padding:1px 11px;font-size:11px;line-height:17px}
+.cr-diff-meta{font-size:10.5px}
+.cr-diff-row--target{transition:background .35s ease}
+
+/* ---- details rail ---- */
+.cr-sec{padding:12px 0 13px;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-sec-title{font:600 11.5px/16px ${SANS};letter-spacing:.01em;color:var(--cr-text-2)}
+.cr-sec-body{margin-top:7px}
+.cr-changes-row{padding:5px 6px;margin:6px -6px -4px;border-radius:6px}
+.cr-changes-row-text{font-size:12.5px}
+.cr-empty-line{font:12px/18px ${SANS};color:var(--cr-text-3)}
+.cr-stack-item{margin-top:7px}
+.cr-stack-num{width:20px;height:20px;border-radius:6px;font-size:10.5px}
+.cr-stack-title{font:12px/17px ${SANS}}
+.cr-comment{margin-top:9px;padding-top:9px}
+.cr-comment-head{font-size:11px}
+.cr-comment-body{font:12px/18px ${SANS};-webkit-line-clamp:2}
+.cr-check{margin-top:7px;font-size:11.5px}
+.cr-filelinks{margin-top:6px}
+.cr-filelink{padding:3px 5px;margin:0 -5px;border-radius:5px}
+.cr-filelink-name{font-size:11px;line-height:16px}
+.cr-filelink-badge{border-radius:4px;font-size:10px}
+.cr-publish-published{height:24px;border-radius:6px;font-size:11.5px}
+
+/* ---- inline findings / comments in the diff ---- */
+.cr-inline-card{content-visibility:auto;contain-intrinsic-size:auto 92px;margin:7px 0 2px;padding:9px 11px 9px 13px;border-radius:var(--cr-r-ctl);background:var(--cr-panel);border:1px solid var(--cr-hair-soft)}
+.cr-inline-title{font:600 12.5px/18px ${SANS}}
+.cr-inline-loc{font-size:11px}
+.cr-inline-body{font:12px/18px ${SANS}}
+.cr-inline-label{border-radius:4px;font-size:10.5px}
+.cr-inline-evidence{border-radius:6px;font-size:11.5px;line-height:17px}
+.cr-inline-comment{margin:6px 0 2px;padding:8px 10px 9px 12px;border-radius:var(--cr-r-ctl);background:color-mix(in srgb,var(--cr-accent) 4%,var(--cr-panel));border:1px solid var(--cr-hair-soft)}
+.cr-inline-comment-head{font-size:11px}
+.cr-inline-comment-body{font:12px/18px ${SANS}}
+.cr-inline-actions .cr-btn{border-radius:6px}
+.cr-inline-reply textarea,.cr-comment-dialog textarea{border-radius:var(--cr-r-ctl);background:var(--cr-panel);font:12.5px/18px ${SANS}}
+.cr-inline-resolve-confirm{border-radius:var(--cr-r-ctl)}
+.cr-chip-tag{height:17px;border-radius:5px;font-size:10px;padding:0 5px}
+
+/* ---- overlays ---- */
+.cr-modal-backdrop{padding:56px 20px 20px}
+.cr-modal{border-radius:14px;background:var(--cr-card);box-shadow:0 18px 48px var(--dsw-alias-bg-mask-2);border:1px solid var(--cr-hair);padding:14px 16px}
+.cr-modal-title{font:600 13px/18px ${SANS}}
+.cr-modal-close{width:24px;height:24px;border-radius:6px}
+.cr-option{border-radius:7px;padding:5px 7px}
+.cr-option input{accent-color:var(--cr-accent)}
+.cr-modal-note{font-size:11px}
+.cr-merge-risk{border-radius:8px;font-size:11.5px}
+.cr-publish-error{border-radius:8px}
+.cr-chat{border-radius:14px;box-shadow:0 18px 48px var(--dsw-alias-bg-mask-2);bottom:calc(16px + 62px)}
+.cr-chat-body{font:12.5px/18px ${SANS}}
+.cr-chat-bubble{font-size:12.5px;line-height:18px}
+.cr-toast{bottom:calc(16px + 62px);border-radius:9px;box-shadow:0 10px 26px var(--dsw-alias-bg-mask-2);border:1px solid var(--cr-hair-soft);background:var(--cr-card);font:12px/17px ${SANS}}
+.cr-root .cr-toast--action{bottom:calc(16px + 78px)}
+.cr-skeleton{border-radius:8px}
+.cr-autoreview-toggle{font:600 12px/17px ${SANS};color:var(--cr-text-2)}
+.cr-autoreview-state{height:17px;border-radius:5px;font-size:10px}
+.cr-auto-preset{border-radius:6px;font-size:11px}
+.cr-auto-query,.cr-auto-num{border-radius:6px;background:var(--cr-panel);font:11.5px/16px ${SANS}}
+.cr-auto-note{font-size:10.5px}
+
+/* ---- input dock: one floating composer under the document column ---- */
+.cr-composer{
+  left:calc(224px + (100% - 224px - 288px) / 2);
+  right:auto;
+  bottom:16px;
+  transform:translateX(-50%);
+  width:min(660px, calc(100% - 224px - 288px - 48px));
+  min-height:46px;
+  border-radius:var(--cr-r-card);
+  background:var(--cr-card);
+  border:1px solid var(--cr-hair);
+  box-shadow:0 14px 36px var(--dsw-alias-bg-mask-2);
+  padding:6px 8px 6px 14px;
+  gap:8px;
+  align-items:center;
+}
+.cr-composer-input{font:13px/19px ${SANS};max-height:120px;padding:8px 0}
+.cr-composer-send{border-radius:8px}
+@media (max-width:1180px){
+  .cr-composer{left:50%;width:min(660px,calc(100% - 48px))}
+}
+@media (max-width:900px){
+  .cr-composer{left:50%;width:calc(100% - 32px);bottom:12px}
+}
+
+/* ---- v0.9: DSH Settings panel section ---- */
+.cr-settings-page{max-width:720px;padding:6px 2px 24px;color:var(--cr-text)}
+.cr-settings-lead{margin:0 0 10px;font:12.5px/18px ${SANS};color:var(--cr-text-3)}
+.cr-settings-block{padding:14px 0 16px;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-settings-block:last-child{border-bottom:0}
+.cr-settings-title{margin:0 0 8px;font:600 13px/18px ${SANS};color:var(--cr-text)}
+.cr-settings-status{display:flex;gap:16px;flex-wrap:wrap;font:12px/18px ${SANS};color:var(--cr-text-2)}
+.cr-settings-note{margin:8px 0 0;font:11.5px/17px ${SANS};color:var(--cr-text-3)}
+.cr-settings-page .cr-field + .cr-field{margin-top:12px;padding-top:12px;border-top:1px solid var(--cr-hair-soft)}
+.cr-settings-page .cr-option{padding:4px 6px;border-radius:6px}
+
 `
 
     // ---------------------------------------------------------------------
@@ -4480,7 +4733,7 @@ window.__ModuleLoader__.load({
       return file && typeof file.path === 'string' && file.path !== '' ? file.path : '#' + index
     }
 
-    function DiffView(props) {
+    const DiffView = React.memo(function DiffView(props) {
       const t = props.t
       const rows = useMemo(() => parseUnifiedDiff(props.patch || ''), [props.patch])
       const [showAll, setShowAll] = useState(false)
@@ -4684,9 +4937,9 @@ window.__ModuleLoader__.load({
         { className: 'cr-diff', role: 'table', 'aria-label': 'diff' },
         children,
       )
-    }
+    })
 
-    function FileCard(props) {
+    const FileCard = React.memo(function FileCard(props) {
       const t = props.t
       const file = props.file || {}
       const path = String(file.path || '')
@@ -4706,7 +4959,8 @@ window.__ModuleLoader__.load({
                 : status === 'unchanged'
                   ? '≈'
                   : 'M'
-      const findings = Array.isArray(props.findings) ? props.findings : []
+      const findings = Array.isArray(props.findings) ? props.findings : EMPTY_LIST
+      const comments = Array.isArray(props.comments) ? props.comments : EMPTY_LIST
       const worst =
         findings.length > 0
           ? sortFindings(findings)[0].severity === 'P0'
@@ -4731,7 +4985,9 @@ window.__ModuleLoader__.load({
             'aria-expanded': props.open ? 'true' : 'false',
             'aria-controls': 'cr-file-body-' + props.index,
             'data-file-index': String(props.index),
-            onClick: props.onToggle,
+            onClick: () => {
+              if (typeof props.onToggle === 'function') props.onToggle(props.fileKey)
+            },
           },
           h('span', { className: 'cr-chev' }, Icon('chevronRight', 13, { strokeWidth: 2 })),
           h(
@@ -4770,7 +5026,7 @@ window.__ModuleLoader__.load({
               h(DiffView, {
                 patch: file.patch || '',
                 findings,
-                comments: props.comments,
+                comments,
                 filePath: path,
                 highlightLine: props.highlightLine,
                 onLocate: props.onLocate,
@@ -4783,9 +5039,9 @@ window.__ModuleLoader__.load({
             )
           : null,
       )
-    }
+    })
 
-    function ChangesView(props) {
+    const ChangesView = React.memo(function ChangesView(props) {
       const t = props.t
       const detail = props.detail || {}
       const files = Array.isArray(detail.files) ? detail.files : []
@@ -4844,14 +5100,15 @@ window.__ModuleLoader__.load({
               const key = fileKey(file, index)
               return h(FileCard, {
                 key,
+                fileKey: key,
                 file,
                 index,
                 t,
                 open: Boolean(expanded[key]),
-                findings: findingsByFile[key] || [],
-                comments: commentsByFile[key] || [],
+                findings: findingsByFile[key] || EMPTY_LIST,
+                comments: commentsByFile[key] || EMPTY_LIST,
                 highlightLine: props.highlight && props.highlight.path === key ? props.highlight.line : null,
-                onToggle: () => props.onToggleFile(key),
+                onToggle: props.onToggleFile,
                 onLocate: props.onLocate,
                 writeActions: props.writeActions,
               })
@@ -4860,7 +5117,7 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'cr-md-notice' }, tx(t, 'filesTruncated'))
           : null,
       )
-    }
+    })
 
     // ---------------------------------------------------------------------
     // Right details column
@@ -5807,6 +6064,7 @@ window.__ModuleLoader__.load({
             ),
           ),
           h('p', { className: 'cr-modal-note' }, tx(t, 'settingsNote')),
+          h('p', { className: 'cr-modal-note' }, tx(t, 'settingsMoved')),
           h(
             'div',
             { className: 'cr-modal-actions' },
@@ -5835,6 +6093,181 @@ window.__ModuleLoader__.load({
               tx(t, 'close'),
             ),
           ),
+        ),
+      )
+    }
+
+    /**
+     * DSH Settings panel section (v0.9): the same review options as the workbench
+     * popover, plus automatic review / publishing. Review options persist in the
+     * browser (shared key with the popover); auto-review config lives on the host.
+     */
+    function CodeReviewSettingsPanel(props) {
+      const t = props.t
+      const [settings, setSettings] = useState(() => readSettings(localStore()))
+      const [autoReview, setAutoReview] = useState({ supported: true, loading: true, status: null })
+      const [autoReviewBusy, setAutoReviewBusy] = useState(false)
+      const [autoReviewResetToken, setAutoReviewResetToken] = useState(0)
+      const [health, setHealth] = useState(null)
+      const [note, setNote] = useState('')
+
+      const refresh = useCallback(() => {
+        post(ROUTE + '/health', {}).then((result) => {
+          setHealth(result.ok ? result.value || {} : { gh: 'unknown', llm: 'unknown', version: '' })
+        })
+        post(ROUTE + '/auto-review-status', {}).then((result) => {
+          if (result.ok) {
+            setAutoReview({ supported: true, loading: false, status: normalizeAutoReviewStatus(result.value) })
+            return
+          }
+          if (isAutoReviewRouteMissing(result.error)) {
+            setAutoReview({ supported: false, loading: false, status: null })
+            return
+          }
+          setAutoReview({ supported: true, loading: false, status: null, error: result.error || null })
+        })
+      }, [])
+
+      useEffect(() => {
+        refresh()
+      }, [refresh])
+
+      const patchAutoReview = useCallback(
+        (patch) => {
+          if (!patch || typeof patch !== 'object') return
+          setAutoReviewBusy(true)
+          post(ROUTE + '/auto-review-config', { patch }).then((result) => {
+            setAutoReviewBusy(false)
+            if (result.ok) {
+              setAutoReview({ supported: true, loading: false, status: normalizeAutoReviewStatus(result.value) })
+              return
+            }
+            if (isAutoReviewRouteMissing(result.error)) {
+              setAutoReview({ supported: false, loading: false, status: null })
+              return
+            }
+            setAutoReviewResetToken((token) => token + 1)
+            refresh()
+          })
+        },
+        [refresh],
+      )
+
+      const updateSettings = (patch) => {
+        const next = normalizeSettings(Object.assign({}, settings, patch))
+        setSettings(next)
+        const saved = writeSettings(localStore(), next)
+        setNote(tx(t, saved ? 'settingsSaved' : 'settingsSaveFailed'))
+        try {
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('codex-review:settings-changed'))
+          }
+        } catch {
+          /* same-window sync is best effort */
+        }
+      }
+
+      const depthHints = { fast: 'depthFastHint', standard: 'depthStandardHint', deep: 'depthDeepHint' }
+      return h(
+        'div',
+        { className: 'cr-settings-page', 'data-cr-settings-page': 'ready' },
+        h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsLead')),
+        h(
+          'section',
+          { className: 'cr-settings-block' },
+          h('h3', { className: 'cr-settings-title' }, tx(t, 'reviewOptions')),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'depth')),
+            DEPTHS.map((depth) =>
+              h(
+                'label',
+                { key: depth, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-set-depth',
+                  value: depth,
+                  checked: settings.depth === depth,
+                  onChange: () => updateSettings({ depth }),
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, depthKey(depth))),
+                  h('span', { className: 'cr-option-hint' }, tx(t, depthHints[depth])),
+                ),
+              ),
+            ),
+          ),
+          h(
+            'fieldset',
+            { className: 'cr-field' },
+            h('legend', null, tx(t, 'severityThreshold')),
+            THRESHOLDS.map((threshold) =>
+              h(
+                'label',
+                { key: threshold, className: 'cr-option' },
+                h('input', {
+                  type: 'radio',
+                  name: 'cr-set-threshold',
+                  value: threshold,
+                  checked: settings.severityThreshold === threshold,
+                  onChange: () => updateSettings({ severityThreshold: threshold }),
+                }),
+                h(
+                  'span',
+                  { className: 'cr-option-text' },
+                  h('span', { className: 'cr-option-label' }, tx(t, thresholdKey(threshold))),
+                ),
+              ),
+            ),
+            h('p', { className: 'cr-modal-note' }, tx(t, 'thresholdHint')),
+          ),
+          h(
+            'label',
+            { className: 'cr-option' },
+            h('input', {
+              type: 'checkbox',
+              checked: settings.includeGuidelines,
+              onChange: (event) => updateSettings({ includeGuidelines: Boolean(event && event.target && event.target.checked) }),
+            }),
+            h(
+              'span',
+              { className: 'cr-option-text' },
+              h('span', { className: 'cr-option-label' }, tx(t, 'includeGuidelines')),
+              h('span', { className: 'cr-option-hint' }, tx(t, 'includeGuidelinesHint')),
+            ),
+          ),
+          note === '' ? null : h('p', { className: 'cr-settings-note' }, note),
+        ),
+        h(
+          'section',
+          { className: 'cr-settings-block' },
+          h('h3', { className: 'cr-settings-title' }, tx(t, 'settingsAuto')),
+          h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsAutoHint')),
+          h(AutoReviewSettings, {
+            t,
+            autoReview: autoReview.status,
+            supported: autoReview.supported,
+            busy: autoReviewBusy,
+            resetToken: autoReviewResetToken,
+            onPatch: patchAutoReview,
+          }),
+        ),
+        h(
+          'section',
+          { className: 'cr-settings-block' },
+          h('h3', { className: 'cr-settings-title' }, tx(t, 'settingsStatus')),
+          health
+            ? h(
+                'div',
+                { className: 'cr-settings-status' },
+                h('span', null, tx(t, 'settingsHealthGh') + ': ' + String(health.gh || '?')),
+                h('span', null, tx(t, 'settingsHealthLlm') + ': ' + String(health.llm || '?')),
+                h('span', null, 'version: ' + String(health.version || '?')),
+              )
+            : h('p', { className: 'cr-settings-lead' }, tx(t, 'settingsLoading')),
         ),
       )
     }
@@ -7008,6 +7441,20 @@ window.__ModuleLoader__.load({
       const [pinned, setPinned] = useState(false)
       const [settings, setSettings] = useState(() => readSettings(localStore()))
       const [settingsOpen, setSettingsOpen] = useState(false)
+      // v0.9: settings also live in the DSH Settings panel; keep this page is copy in sync
+      useEffect(() => {
+        const reload = () => setSettings(readSettings(localStore()))
+        try {
+          window.addEventListener('codex-review:settings-changed', reload)
+          window.addEventListener('storage', reload)
+          return () => {
+            window.removeEventListener('codex-review:settings-changed', reload)
+            window.removeEventListener('storage', reload)
+          }
+        } catch {
+          return undefined
+        }
+      }, [])
       const [jumpTarget, setJumpTarget] = useState(null)
       const [toast, showToast, dismissToast] = useToast()
       const [clock] = useState(() => Date.now())
@@ -7226,7 +7673,7 @@ window.__ModuleLoader__.load({
         const current = selectedRef.current
         if (!current) return
         const generation = ++reviewGeneration.current
-        const options = settingsToOptions(settingsRef.current)
+        const options = settingsToOptions(readSettings(localStore()))
         setReview(
           normalizeReviewStatus({
             state: 'preparing',
@@ -8411,7 +8858,7 @@ window.__ModuleLoader__.load({
           }),
           h(
             'div',
-            { className: 'cr-body' },
+            { className: 'cr-body', ref: docRef },
             h(
               'div',
               { className: 'cr-cluster' },
@@ -8419,7 +8866,6 @@ window.__ModuleLoader__.load({
                 'div',
                 {
                   className: 'cr-doc',
-                  ref: docRef,
                   role: 'tabpanel',
                   'aria-label': tab === 'changes' ? tx(t, 'changes') : tx(t, 'summary'),
                 },
@@ -8691,6 +9137,18 @@ window.__ModuleLoader__.load({
             locale: NS,
           },
           CodeReviewPage,
+        ),
+      )
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.section',
+            id: PANEL_ID,
+            order: 60,
+            locale: NS,
+            label: () => tx(t, 'panel'),
+          },
+          CodeReviewSettingsPanel,
         ),
       )
     }

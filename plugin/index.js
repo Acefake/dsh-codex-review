@@ -47,7 +47,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.7.0'
+export const VERSION = '0.9.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }

@@ -445,7 +445,7 @@
         }
 
         function scrollDocTo(selector, offset) {
-          var doc = document.querySelector('.cr-doc')
+          var doc = document.querySelector('.cr-body')
           var node = document.querySelector(selector)
           if (!doc || !node) return
           var docBox = doc.getBoundingClientRect()
@@ -455,7 +455,7 @@
 
         /** Center a node (inside the doc scroller) without touching the page scroll. */
         function centerInDoc(selector, offset) {
-          var doc = document.querySelector('.cr-doc')
+          var doc = document.querySelector('.cr-body')
           var node = document.querySelector(selector)
           if (!doc || !node) return
           var docBox = doc.getBoundingClientRect()
@@ -491,7 +491,7 @@
                 return waitFor(function () {
                   return document.querySelector('[data-cr-review-state="' + wanted + '"]')
                 }, 12000).then(function () {
-                  var doc = document.querySelector('.cr-doc')
+                  var doc = document.querySelector('.cr-body')
                   if (doc) doc.scrollTop = 0
                 })
               }

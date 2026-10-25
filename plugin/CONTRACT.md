@@ -263,7 +263,12 @@ ctx.slots.inject('main', () => ctx.slots.register(
 ```
 - 数据：`post(path, body)` → `fetch(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body), signal })`，路径**无前导斜杠**；15s 超时；解 `{ok,value}|{ok:false,error}`。
 - 所有 API 值类型见 §1.2。渲染必须对缺字段容错（`?.`+默认值），任何组件不得 throw。
-- 视觉规格：遵循 `recon/ui-spec.md` §1–§3（三栏、内容簇宽度、四层背景色、右栏小节样式、diff 样式）。颜色只允许 `--dsw-alias-*` token（diff 增删用 `--dsw-alias-code-diff-added` / `--dsw-alias-code-diff-deleted`，正文用 `--dsw-alias-label-primary` 等）；允许 `rgba()` 叠加在 token 上做 hover。
+- 视觉规格（v0.8 起）：Claude Code 桌面端风格的工作站——三栏 224 / 700–712 / 288（窄屏按既有媒体查询收起右栏/左栏），暖中性 surfaces（宿主 token 与暖纸色混合），比例字体做 UI 与正文，等宽字体只用于 diff/代码/路径/分支/SHA；10–14px 卡片圆角、1px 发丝描边、单一陶土红强调色（主操作/选中/焦点）。
+- 颜色只允许 `--dsw-alias-*` token 或在其上做 `color-mix`/`rgba()` 叠加（diff 增删用 `--dsw-alias-code-diff-added` / `--dsw-alias-code-diff-deleted`，正文用 `--dsw-alias-label-primary` 等）；强调色 `--cr-accent` 固定为 `#B04E2E`（白字对比度 5.28:1，满足 AA）。
+- 滚动：文档与右栏共用一个滚动容器（`.cr-body`），全页最多两条滚动条（左侧列表 + 主体）；不得为右栏再开独立滚动区。
+- 设置入口（v0.9）：注册 `settings.section`（id `codex-review`，order 60，label = 「代码审查」），内容含审查选项（localStorage `codex-review:settings`）、自动审查/发布（Host `auto-review-config`）与 health 状态；工作台齿轮弹层保留为快捷方式。修改审查选项时派发 `codex-review:settings-changed` 事件，工作台监听后重读 localStorage。
+- 颜色：只能使用 `--dsw-alias-*` token 或其 color-mix/透明叠加；不得硬编码品牌色/暖色（v0.8 初版的暖底+陶土红已按用户反馈移除，见 REPORT §18）。
+- 性能：`.cr-file` / `.cr-finding` / `.cr-row` 使用 `content-visibility: auto`；`FileCard` / `DiffView` / `ChangesView` 用 `React.memo` 且 props 需引用稳定（空列表用共享 `EMPTY_LIST`）。
 - 组件清单（全部 `h(...)` 函数组件，状态用 hooks）：
   `PanelIcon`（接 `{size, active}`）、`CodeReviewPage`、`SearchBox`、`PrList`、`PrRow`、`PrHeader`、`TabBar`、`SummaryView`（自写 markdown 渲染：h2/h3/段落/有序无序列表/引用/代码块/行内 code/粗体/斜体/链接/分隔线，先 escape 再拼 React 元素，禁止 `dangerouslySetInnerHTML`）、`ChangesView`、`FileCard`、`DiffView`（解析 `@@ -a,b +c,d @@`，双行号列 + 内容，`+`/`-`/空格着色，上下文行；大文件默认折叠/截断）、`RightPanel`、`Section`、`StackCard`、`CommentsCard`、`ReviewersCard`、`ChecksCard`、`AiReviewCard`、`FindingItem`、`EmptyState`、`ErrorState`、`Skeleton`、`ErrorBoundary`（class 组件）。
 - 交互：

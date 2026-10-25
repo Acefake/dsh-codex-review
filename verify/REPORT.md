@@ -8,6 +8,8 @@
 > v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）；
 > v2.1 复跑证据：`api-probe-v21-final.json`（58 通过/0 失败/0 pending）、`page-check-v21-final.json`（4/4）、`click-panel-v21-final.json`（17 通过/0 失败/1 pending）、`v21-*.png`（见 §13）；
 > v2.2 证据：`api-probe-v22.json`（42 断言全过，safety unsafe=0/published=0）、`page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过/0 失败/1 pending）、`v22-*.png`（见 §14）；
+> v0.9 证据：`plugin/dev/check-preview.mjs` 11/11；真实 GUI `click-panel --v23` 13/13 功能断言通过、插件 consoleErrors=0（宿主 pageerror 为既有噪音）；`node --test` 246/246（见 §18）。
+> v0.8 界面改版证据：dev 预览 `plugin/dev/check-preview.mjs` 11/11 场景通过（side=224 main=1294 doc=712 details=288）；真实 GUI `page-check`（插件 consoleErrors=0）、`click-panel --v23`（v23 13/13 功能断言通过）、截图 `v08-page.png`、`v23-*.png`（见 §17）。
 > v2.3 证据：`api-probe-v23.json`（48 断言/0 失败/1 pending；safety confirmTrueSent=0/writes=0）、`page-check-v23.json`（3 通过/0 失败/2 pending）、`click-panel-v23.json`（**14 通过/0 失败/0 pending**）、`v23-reply-composer.png`、`v23-resolve-confirm.png`、`v23-comment-dialog.png`（见 §15）。
 
 ## 0. 元信息
@@ -541,6 +543,64 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 - 未触发任何 publish 请求（0 真实 GitHub 写）。
 
 **v2.4 判定：PASS（单测 246/246 + Host 0.7.0 加载；真实滚动写待用户下一次审查自然验证）。**
+
+## 17. v0.8 界面改版验收（Claude Code 桌面端风格）— **PASS**
+
+> **状态：PASS（2026-10-25 12:35；Host 0.8.0 已热重载生效）**
+> 证据：dev 预览 11/11 场景 PASS（`plugin/dev/check-preview.mjs`）；真实 GUI `page-check-v08b.json`（插件 consoleErrors=0）、`click-panel-v08.json`（v23 13/13 功能断言 PASS，工作台渲染正常）、截图 `v08-page.png`、`click-after-20261025-123544.png`、`v23-*.png`。
+> **宿主噪音**：`page-check` 记录 1 条宿主自身的 pageerror（`cannot get property "remote.session" without inject`，来自 `assets/index-BXV-oxvX.js`，DSH 宿主 bundle，与插件无关；连跑两次稳定复现），插件自身 consoleErrors=0。
+
+### 17.1 设计方向
+
+桌面应用，而不是终端：暖中性 surface（宿主 token 与暖纸色混合，深/浅主题都成立）；比例字体承担界面与正文，等宽只留给 diff/代码/路径/分支/SHA；10–14px 卡片圆角 + 1px 发丝描边；单一陶土红强调色只出现在主操作、选中和焦点上。
+
+### 17.2 程序化测量（dev 预览，1600×1100，CDP 探针）
+
+| 项 | 实测 |
+|---|---|
+| 三栏 | sidebar 224 / doc 712 / details 288（cluster gap 32，max 1072） |
+| 字体 | root Inter 13px；PR 标题 22px 比例字体；diff 12px 等宽 |
+| 形状 | tabs 6px 圆角分段控件；列表行 8px；文件卡 8px；review 卡 12px |
+| 强调色 | `#B04E2E`，白字对比度 **5.28:1**（AA） |
+| 滚动 | 仅 2 个滚动容器：`.cr-list` + `.cr-body`（6px 细滚动条）；`.cr-details` overflow visible，与文档共用一个滚动条 |
+| 输入 | composer 660×49，居中停靠在文档列下方 |
+| 渲染优化 | `.cr-file` content-visibility=auto；`.cr-finding`/`.cr-row` 同样开启 |
+
+### 17.3 性能改动
+
+- `content-visibility:auto`（`.cr-file` / `.cr-finding` / `.cr-row`）跳过视口外布局与绘制；24 文件 / 292 diff 行的 changes 场景仍 PASS。
+- `FileCard` / `DiffView` / `ChangesView` 改为 `React.memo`，并把空数组换成共享 `EMPTY_LIST`、行内回调改为稳定引用：审查轮询触发页面重渲染时，已展开的 diff 不再整棵重算。
+- 视觉层去掉大阴影/渐变，弹层阴影只保留在 overlay。
+
+### 17.4 回归
+
+- `node --test` **246/246**（UI 无新增单测；dev 预览与真实 GUI 覆盖）。
+- 真实 GUI：工作台三栏、真实 PR 列表/详情、Changes 渲染正常；v2.3 回复/解决/评论弹层 13 项断言全过且 0 写请求。
+
+**v0.8 判定：PASS（dev 11/11 + 真实 GUI 工作台 + v23 13/13；插件 0 console error；宿主 pageerror 记为环境噪音）。**
+
+## 18. v0.9 验收（颜色跟随宿主 + DSH 设置面板）— **PASS**
+
+> **状态：PASS（2026-10-25 12:5x；Host 0.9.0 已热重载）**
+> 证据：dev 预览 11/11 PASS；真实 GUI `page-check-v09.json`（插件 consoleErrors=0）、`click-panel-v09.json`（v23 13/13 功能断言 PASS，仅「无 pageerror」一条失败，来自宿主自身 `remote.session` inject 错误，见 §17 说明）；`node --test` 246/246。
+
+### 18.1 颜色
+
+- 皮肤不再有暖色底/固定陶土红：rootBg = `--dsw-alias-bg-base`（暗色实测 `rgb(24,24,24)`），文本 `--dsw-alias-label-primary`（白），主按钮 = label-primary 底 + bg 字（中性高对比，深浅主题一致）。
+- 所有 surface/border/强调色均为 `--dsw-alias-*` token 或其 color-mix，无硬编码色值（`#B04E2E` / `#E9E1D3` 均已移除）。
+
+### 18.2 设置面板
+
+- 新增 `settings.section` 注册（id `codex-review`，order 60），组件含：审查选项（depth / severityThreshold / includeGuidelines）、自动审查与发布（复用 `AutoReviewSettings`）、状态（gh / llm / version）。
+- 审查选项写 localStorage（与工作台齿轮同一 key），并派发 `codex-review:settings-changed`；工作台监听后重读，`startReview` 每次从 localStorage 读取最新选项。
+- 单测更新：注册数为 3，校验 settings.section 的 name/id/order/label 与组件类型。
+
+### 18.3 已知限制
+
+- 设置面板的实际点击导航在本无头环境中未跑通（DSH 账号菜单的 DOM 点击不触发设置弹层），因此面板的「打开→渲染」断言未纳入自动验收，需在 GUI 设置面板人工确认；注册契约与组件类型由单测覆盖，真实加载后插件 console 0 error。
+- 宿主自身 `cannot get property "remote.session" without inject` pageerror 仍存在，与本插件无关。
+
+**v0.9 判定：PASS（颜色/设置面板实现 + 246 单测 + dev 11/11 + 真实 GUI 工作台与 v23 13/13；设置面板点击断言待人工确认）。**
 
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 

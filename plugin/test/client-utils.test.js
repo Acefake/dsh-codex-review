@@ -67,7 +67,7 @@ test('apply() registers the sidebar icon and the keyed main panel', () => {
   assert.equal(typeof fake.localeRegistrations[0].dictionaries.en, 'object')
   assert.equal(typeof fake.localeRegistrations[0].dictionaries.zh, 'object')
 
-  assert.equal(fake.registrations.length, 2)
+  assert.equal(fake.registrations.length, 3)
   const panel = fake.registrations[0].options
   assert.equal(panel.name, 'sidebar.panellist')
   assert.equal(panel.id, 'codex-review')
@@ -87,6 +87,13 @@ test('apply() registers the sidebar icon and the keyed main panel', () => {
   assert.equal(fake.registrations[0].component({ size: 18, active: false }).type, 'svg')
   assert.equal(typeof fake.registrations[1].component, 'function')
   assert.equal(typeof fake.registrations[1].component({ size: 18, active: false }).type, 'function')
+
+  const settingsSection = fake.registrations[2].options
+  assert.equal(settingsSection.name, 'settings.section')
+  assert.equal(settingsSection.id, 'codex-review')
+  assert.equal(settingsSection.order, 60)
+  assert.equal(typeof settingsSection.label, 'function')
+  assert.equal(typeof fake.registrations[2].component, 'function')
 })
 
 test('locale dictionaries cover every literal t() key and match each other', () => {
