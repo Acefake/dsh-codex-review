@@ -393,13 +393,13 @@ async function probeInteractions(send, scene) {
     }
     if (scene === 'changes') {
       // Summary <-> Changes must keep each tab's scroll offset (CONTRACT §4.5.5).
-      await evaluate(`document.querySelector('.cr-body').scrollTop = 420`)
+      await evaluate(`document.querySelector('.cr-doc').scrollTop = 420`)
       await sleep(120)
       await evaluate(`document.querySelector('[data-tab="summary"]').click()`)
       await sleep(250)
       await evaluate(`document.querySelector('[data-tab="changes"]').click()`)
       await sleep(450)
-      result.scrollRestored = await evaluate(`Math.round(document.querySelector('.cr-body').scrollTop)`)
+      result.scrollRestored = await evaluate(`Math.round(document.querySelector('.cr-doc').scrollTop)`)
       if (!(typeof result.scrollRestored === 'number' && result.scrollRestored >= 360)) {
         result.invalid = `tab switch lost the scroll offset (${result.scrollRestored})`
       }
@@ -411,7 +411,7 @@ async function probeInteractions(send, scene) {
       )
       await sleep(800)
       result.jumpedToFile = await evaluate(
-        `(() => { const root = document.querySelector('[data-cr-root]'); const open = document.querySelectorAll('.cr-file--open').length; const doc = document.querySelector('.cr-body'); return (root ? root.getAttribute('data-cr-tab') : '') + ':' + open + ':' + (doc ? Math.round(doc.scrollTop) : -1) })()`,
+        `(() => { const root = document.querySelector('[data-cr-root]'); const open = document.querySelectorAll('.cr-file--open').length; const doc = document.querySelector('.cr-doc'); return (root ? root.getAttribute('data-cr-tab') : '') + ':' + open + ':' + (doc ? Math.round(doc.scrollTop) : -1) })()`,
       )
       if (!String(result.jumpedToFile).startsWith('changes:')) {
         result.invalid = 'right-column file link did not switch to Changes'

@@ -197,6 +197,7 @@
         var params = new URLSearchParams(location.search)
         var theme = params.get('theme') === 'light' ? 'light' : 'dark'
         document.body.dataset.theme = theme
+        document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark')
 
         var scene = params.get('scene') || 'default'
         var mockMode = params.get('mode') || (scene === 'review' || scene === 'v11-inline-findings' ? 'done' : scene)
@@ -476,7 +477,7 @@
         }
 
         function scrollDocTo(selector, offset) {
-          var doc = document.querySelector('.cr-body')
+          var doc = document.querySelector('.cr-doc')
           var node = document.querySelector(selector)
           if (!doc || !node) return
           var docBox = doc.getBoundingClientRect()
@@ -486,7 +487,7 @@
 
         /** Center a node (inside the doc scroller) without touching the page scroll. */
         function centerInDoc(selector, offset) {
-          var doc = document.querySelector('.cr-body')
+          var doc = document.querySelector('.cr-doc')
           var node = document.querySelector(selector)
           if (!doc || !node) return
           var docBox = doc.getBoundingClientRect()
@@ -522,7 +523,7 @@
                 return waitFor(function () {
                   return document.querySelector('[data-cr-review-state="' + wanted + '"]')
                 }, 12000).then(function () {
-                  var doc = document.querySelector('.cr-body')
+                  var doc = document.querySelector('.cr-doc')
                   if (doc) doc.scrollTop = 0
                 })
               }

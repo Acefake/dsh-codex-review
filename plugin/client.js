@@ -346,10 +346,14 @@ const EMPTY_LIST = Object.freeze([])
       publishConfirm: 'Publish review',
       publishSubmitting: 'Publishing…',
       publishSuccess: 'Published to GitHub ({n} comments)',
+      publishUpdated: 'Review updated on GitHub (no new inline comments)',
+      publishUnchanged: 'Nothing changed since the last publish',
       publishPublishedLink: 'Published · view on GitHub',
       publishPublishedBadge: 'Published',
       publishView: 'View',
       publishNotReady: 'Run the AI review first, then publish',
+      publishPartial: 'This review is incomplete (some files failed), so it cannot be published. Re-run the review.',
+      publishHeadMoved: 'The pull request has new commits; re-run the review, then publish',
       publishForbidden: 'The GitHub token has no write permission (repo scope required)',
       publishBadRequest: 'The publish request was rejected',
       publishFailed: 'Publishing the review failed',
@@ -679,10 +683,14 @@ const EMPTY_LIST = Object.freeze([])
       publishConfirm: '确认发布',
       publishSubmitting: '发布中…',
       publishSuccess: '已发布到 GitHub（{n} 条评论）',
+      publishUpdated: '已更新 GitHub 上的审查（没有新增行内评论）',
+      publishUnchanged: '和上次发布相比没有变化',
       publishPublishedLink: '已发布 · 在 GitHub 查看',
       publishPublishedBadge: '已发布',
       publishView: '查看',
       publishNotReady: '请先运行一次 AI 审查再发布',
+      publishPartial: '这次审查没有完成全部文件，结果不完整，不能发布；请重新审查后再试',
+      publishHeadMoved: 'PR 已有新提交，请重新审查后再发布',
       publishForbidden: '当前 GitHub token 没有写权限（需要 repo scope）',
       publishBadRequest: '发布请求被判定为不合法',
       publishFailed: '发布审查失败',
@@ -2084,6 +2092,12 @@ const EMPTY_LIST = Object.freeze([])
       }
       const body = typeof source.body === 'string' ? source.body.trim() : ''
       if (body !== '') request.body = body.slice(0, 4000)
+      // Bind the publish to the review the user is looking at: the Host must not
+      // pick a newer job or a different head behind the user's back.
+      const headSha = typeof source.headSha === 'string' ? source.headSha.trim() : ''
+      if (headSha !== '') request.headSha = headSha
+      const jobId = typeof source.jobId === 'string' ? source.jobId.trim() : ''
+      if (jobId !== '') request.jobId = jobId
       return request
     }
 
@@ -2113,7 +2127,12 @@ const EMPTY_LIST = Object.freeze([])
     function normalizePublishResult(value) {
       const source = value && typeof value === 'object' ? value : {}
       if (source.published !== true) return null
-      return normalizePublished(source)
+      const record = normalizePublished(source)
+      if (record === null) return null
+      const action = source.action === 'created' || source.action === 'updated' || source.action === 'unchanged'
+        ? source.action
+        : 'created'
+      return Object.assign({}, record, { action })
     }
 
     /** Locale key for a publish error code; '' means "use the Host message". */
@@ -2121,6 +2140,10 @@ const EMPTY_LIST = Object.freeze([])
       switch (String(code === undefined || code === null ? '' : code)) {
         case 'REVIEW_NOT_READY':
           return 'publishNotReady'
+        case 'REVIEW_PARTIAL':
+          return 'publishPartial'
+        case 'REVIEW_HEAD_MOVED':
+          return 'publishHeadMoved'
         case 'GH_FORBIDDEN':
           return 'publishForbidden'
         case 'BAD_REQUEST':
@@ -2133,9 +2156,22 @@ const EMPTY_LIST = Object.freeze([])
       }
     }
 
-    /** True when an error means the Host has no review-publish route. */
+    /**
+     * True when an error means the Host has no review-publish route. A GitHub
+     * GH_NOT_FOUND is not evidence of an old Host: it means the repository or PR
+     * is gone, so the button must stay available.
+     */
     function isPublishRouteMissing(error) {
-      return isAutoReviewRouteMissing(error)
+      const code = String((error && error.code) || '')
+      const message = String((error && error.message) || '')
+      if (code === 'BAD_REQUEST') {
+        return (
+          message.indexOf('路由') >= 0 ||
+          message.indexOf('route') >= 0 ||
+          message.indexOf('not found') >= 0
+        )
+      }
+      return false
     }
 
     /** Key for a published record: repo#number@headSha. */
@@ -2176,11 +2212,18 @@ const EMPTY_LIST = Object.freeze([])
     /**
      * POST a JSON payload to a Host route and decode the {ok, value|error}
      * envelope. Returns {ok:true, value} or {ok:false, error:{code, message}}.
+     * `options.timeoutMs` widens the wait for a route that legitimately performs
+     * several sequential GitHub writes (publish).
      */
-    async function post(path, payload) {
+    async function post(path, payload, options) {
+      const settings = options && typeof options === 'object' ? options : {}
+      const timeoutMs =
+        Number.isFinite(settings.timeoutMs) && settings.timeoutMs > 0
+          ? settings.timeoutMs
+          : REQUEST_TIMEOUT_MS
       const controller = typeof AbortController === 'function' ? new AbortController() : null
       const timer =
-        controller !== null ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null
+        controller !== null ? setTimeout(() => controller.abort(), timeoutMs) : null
       try {
         const response = await fetch(path, {
           method: 'POST',
@@ -2208,7 +2251,9 @@ const EMPTY_LIST = Object.freeze([])
           ok: false,
           error: {
             code: 'INTERNAL',
-            message: aborted ? '请求超时（15 秒），请重试。' : '无法连接宿主路由，请刷新页面后重试。',
+            message: aborted
+              ? `请求超时（${Math.round(timeoutMs / 1000)} 秒），请重试。`
+              : '无法连接宿主路由，请刷新页面后重试。',
           },
         }
       } finally {
@@ -2888,7 +2933,7 @@ const EMPTY_LIST = Object.freeze([])
 .cr-progress-line{display:flex;align-items:center;gap:8px;padding:10px 0;font-size:12.5px;color:var(--cr-text-3)}
 
 /* ---------------- responsive ---------------- */
-@container (max-width: 1180px){
+@container (max-width: 1240px){
   .cr-details{display:none}
   .cr-cluster{max-width:800px}
   .cr-toolbar-icons{display:none}
@@ -2903,7 +2948,7 @@ const EMPTY_LIST = Object.freeze([])
   .cr-review-label{display:none}
   .cr-review-short{display:inline}
 }
-@media (max-width: 1180px){
+@media (max-width: 1240px){
   .cr-details{display:none}
   .cr-cluster{max-width:800px}
   .cr-toolbar-icons{display:none}
@@ -2923,222 +2968,207 @@ const EMPTY_LIST = Object.freeze([])
 }
 
 /* ============================================================================
-   v0.8 skin — "Claude Code desktop" application surface
-
-   A desktop app, not a terminal: warm-neutral surfaces, proportional UI type,
-   soft 1px borders and 10-14px cards. Monospace is reserved for code paths,
-   diffs, branches and SHAs. One warm accent (terracotta) carries the live
-   action. Density is tighter than the default workbench and the document +
-   details share ONE scroll container, so the page has two scrollbars at most.
+   v1.0 — Codex desktop reference, 1:1 with recon/ui-spec.md §1–§5
+   Dark palette = colours measured from the reference screenshots; light palette
+   is the isomorphic light variant. The host theme marker selects the palette.
    ========================================================================== */
-.cr-root,.cr-panel-root{
-  --cr-bg: var(--dsw-alias-bg-base);
-  --cr-side: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--cr-bg));
-  --cr-panel: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--cr-bg));
-  --cr-card: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, var(--cr-bg));
-  --cr-raised: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, var(--cr-bg));
-  --cr-hair: color-mix(in srgb, var(--dsw-alias-label-primary) 11%, transparent);
-  --cr-hair-soft: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
-  --cr-accent: var(--dsw-alias-label-primary);
-  --cr-accent-soft: color-mix(in srgb, var(--cr-accent) 14%, transparent);
-  --cr-r-card:12px;
-  --cr-r-ctl:8px;
-  font:13px/20px ${SANS};
-  background:var(--cr-bg);
+.cr-root{
+  --cr-bg:#FFFFFF; --cr-side:#F7F7F6; --cr-panel:#FFFFFF; --cr-card:#F1F1EF;
+  --cr-raised:#E9E9E6; --cr-hover:#F2F2F0; --cr-text:#171717; --cr-text-2:#5F5F5F;
+  --cr-text-3:#6E6E6E; --cr-faint:#8A8A8A; --cr-border:#E6E6E2; --cr-border-2:#E6E6E2;
+  --cr-border-strong:#D5D5D0; --cr-green:#1F9D55; --cr-red:#D9302C; --cr-orange:#C2621F;
+  --cr-yellow:#9A7B16; --cr-blue:#2F6FDC; --cr-mono:${MONO};
+  --cr-merge-bg:#171717; --cr-merge-fg:#FFFFFF;
+  font:14px/20px ${SANS}; background:#F7F7F6; color:var(--cr-text);
+}
+body[data-ds-dark-theme] .cr-root,
+html[data-ds-theme-source="dark"] .cr-root{
+  --cr-bg:#181818; --cr-side:#1B1B1B; --cr-panel:#202020; --cr-card:#2D2D2D;
+  --cr-raised:#383838; --cr-hover:#232323; --cr-text:#FFFFFF; --cr-text-2:#AEAEAE;
+  --cr-text-3:#9E9E9E; --cr-faint:#6E6E6E; --cr-border:#2B2B2B; --cr-border-2:#2B2B2B;
+  --cr-border-strong:#3E3E3E; --cr-green:#40C977; --cr-red:#FA423E; --cr-orange:#FF8549;
+  --cr-yellow:#E3B341; --cr-blue:#7AB7FF;
+  --cr-merge-bg:#FFFFFF; --cr-merge-fg:#171717;
+  background:#202020;
 }
 .cr-root ::-webkit-scrollbar{width:6px;height:6px}
-.cr-root ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-primary) 16%,transparent);border-radius:3px}
-.cr-root ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 28%,transparent)}
-.cr-root :focus-visible{outline:2px solid color-mix(in srgb,var(--dsw-alias-label-primary) 60%,transparent);outline-offset:1px}
+.cr-root ::-webkit-scrollbar-thumb{background:#3C3C3C;border-radius:3px}
+.cr-root ::-webkit-scrollbar-thumb:hover{background:#4A4A4A}
+.cr-root ::-webkit-scrollbar-track{background:transparent}
+.cr-root :focus-visible{outline:2px solid rgba(64,201,119,.45);outline-offset:1px}
 
-/* ---- sidebar: app rail ---- */
-.cr-side{flex-basis:224px;width:224px;background:var(--cr-side);border-right:1px solid var(--cr-hair-soft)}
-.cr-side-head{padding:14px 12px 4px 16px}
-.cr-side-title{font:600 15px/20px ${SANS};letter-spacing:-.01em;color:var(--cr-text)}
-.cr-search-wrap{padding:8px 10px 9px}
-.cr-search{height:32px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid transparent;padding:0 6px 0 10px}
-.cr-search:focus-within{border-color:var(--cr-hair);background:var(--cr-panel)}
-.cr-search input{font:12.5px/18px ${SANS}}
-.cr-search-clear{width:18px;height:18px;border-radius:5px}
-.cr-list{padding:0 8px 20px;gap:1px}
-.cr-row{border-radius:var(--cr-r-ctl);padding:8px 10px 9px;border-bottom:0;content-visibility:auto;contain-intrinsic-size:auto 58px}
+/* ---- left rail: 238px, search 222×36, card 212×72 ---- */
+.cr-side{background:var(--cr-side)}
+.cr-side-head{padding:16px 13px 4px}
+.cr-side-title{font-size:24px;line-height:32px;font-weight:700;color:#E0E0E0}
+.cr-search-wrap{padding:8px 8px 9px}
+.cr-search{width:222px;max-width:100%;height:36px;border-radius:18px;background:var(--cr-card);border:0;padding:0 8px 0 12px}
+.cr-search input{font-size:14px;line-height:20px;color:#C8C8C8}
+.cr-search input::placeholder{color:#686868}
+.cr-search-icon{color:var(--cr-text-3)}
+.cr-search-clear{width:19px;height:19px;background:var(--cr-raised);color:#fff}
+.cr-list{padding:0 13px 16px;gap:8px}
+.cr-row{min-height:72px;padding:5px 10px;border-radius:12px;background:transparent}
 .cr-row:hover{background:var(--cr-hover)}
-.cr-row--active,.cr-row--active:hover{background:var(--cr-card);box-shadow:inset 0 0 0 1px var(--cr-hair-soft)}
-.cr-row-title{font:500 12.5px/18px ${SANS}}
-.cr-row-meta{margin-top:5px;font:11.5px/15px ${SANS};gap:6px}
-.cr-badge-draft{border-radius:5px;font:600 10px/14px ${SANS};padding:0 4px}
-.cr-list-state{padding:12px 10px;font:12px/18px ${SANS}}
-.cr-avatar--16{width:16px;height:16px;font-size:8px}
-.cr-avatar--22{width:22px;height:22px;font-size:9px}
+.cr-row--active,.cr-row--active:hover{background:var(--cr-card)}
+.cr-row-title{font-size:14px;line-height:20px;font-weight:500;color:#D0D0D0}
+.cr-row--active .cr-row-title{color:#E0E0E0}
+.cr-row-meta{margin-top:4px;font-size:13px;line-height:18px;color:#6E6E6E;gap:6px}
+.cr-row-meta .cr-avatar,.cr-row-meta .cr-avatar--16{width:16px;height:16px}
+.cr-row-meta .cr-relative{color:#6E6E6E}
+.cr-row-meta .cr-row-author{color:#E0E0E0;font-size:13px}
+.cr-badge-draft{border-radius:5px;font-size:10px}
+.cr-list-state{padding:12px 6px;font-size:14px;line-height:20px;color:#AEAEAE}
 
-/* ---- toolbar: segmented tabs, filled primary action ---- */
-.cr-toolbar{height:46px;padding:0 16px 0 20px;gap:12px;border-bottom:1px solid var(--cr-hair-soft)}
-.cr-tabs{background:var(--cr-panel);padding:2px;border-radius:var(--cr-r-ctl);gap:2px}
-.cr-tab{height:28px;padding:0 11px;border-radius:6px;border-bottom:0;font:12.5px/28px ${SANS};color:var(--cr-text-2)}
-.cr-tab:hover{color:var(--cr-text)}
-.cr-tab--active,.cr-tab--active:hover{background:var(--cr-raised);color:var(--cr-text);border-bottom:0;font-weight:600}
-.cr-diffstat{font:12px/16px ${SANS}}
-.cr-iconbtn{width:28px;height:28px;border-radius:7px}
-.cr-review{height:30px;border-radius:var(--cr-r-ctl);background:var(--cr-accent);border:0;color:var(--dsw-alias-bg-base)}
-.cr-review-main{padding:0 11px;font:600 12.5px/30px ${SANS};color:var(--dsw-alias-bg-base)}
-.cr-review-main:hover{background:color-mix(in srgb,var(--cr-accent) 86%,var(--dsw-alias-bg-base))}
-.cr-review-gear{width:28px;border-left:1px solid color-mix(in srgb,var(--dsw-alias-bg-base) 30%,transparent);color:var(--dsw-alias-bg-base)}
-.cr-review-gear:hover{background:color-mix(in srgb,var(--cr-accent) 86%,var(--dsw-alias-bg-base))}
-.cr-root .cr-review-main:disabled{opacity:.7}
-.cr-btn{height:30px;padding:0 12px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid var(--cr-hair-soft);font:500 12.5px/28px ${SANS}}
+/* ---- toolbar: 33px control band ---- */
+.cr-toolbar{height:49px;padding:0 20px;gap:12px}
+.cr-tabs{height:33px;padding:0;border-radius:999px;background:var(--cr-card);gap:0}
+.cr-tab{height:33px;border-radius:999px;padding:0 14px;font-size:14px;font-weight:500;color:#AEAEAE}
+.cr-tab--active,.cr-tab--active:hover{background:var(--cr-raised);color:#F5F5F5;font-weight:600}
+.cr-tab:hover{color:#D0D0D0}
+.cr-toolbar-icons{gap:0}
+.cr-iconbtn{width:30px;height:30px;border-radius:8px;color:#D0D0D0}
+.cr-review{height:33px;border-radius:999px;background:var(--cr-card)}
+.cr-review-main{padding:0 14px;font-size:14px;font-weight:500;color:#fff}
+.cr-review-main:hover{background:var(--cr-raised)}
+.cr-review-gear{width:33px;border-left:1px solid #3E3E3E;color:#fff}
+.cr-review-gear:hover{background:var(--cr-raised)}
+.cr-btn{height:33px;border-radius:999px;background:var(--cr-card);font-size:14px;font-weight:500}
 .cr-btn:hover{background:var(--cr-raised)}
-.cr-btn--ghost{height:24px;padding:0 8px;border-color:transparent;background:transparent;font-size:11.5px}
-.cr-btn--ghost:hover{border-color:var(--cr-hair-soft);background:var(--cr-hover)}
-.cr-btn--primary,.cr-btn--merge{border-color:transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
-.cr-btn--merge:hover{background:var(--dsw-alias-button-primary-fill)}
-.cr-health{font:12px/17px ${SANS};padding:7px 16px 7px 20px}
+.cr-btn--merge{height:32px;border-radius:16px;background:var(--cr-merge-bg);color:var(--cr-merge-fg);padding:0 13px}
+.cr-root .cr-btn--merge{color:var(--cr-merge-fg)}
+.cr-btn--merge:hover{background:var(--cr-merge-bg)}
+.cr-btn--ghost{height:26px;border-radius:6px;font-size:12px}
+.cr-health{padding:6px 20px;font-size:13px}
 
-/* ---- body: app canvas, one scrollbar; details flow with the document ---- */
-.cr-body{display:block;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
-.cr-cluster{display:flex;gap:32px;max-width:1072px;padding:0 20px;margin:0 auto;align-items:flex-start}
-.cr-doc{width:700px;flex:1 1 700px;overflow:visible;padding:4px 0 96px;scrollbar-gutter:auto}
-.cr-details{width:288px;flex:0 0 288px;position:static;align-self:flex-start;max-height:none;min-height:0;overflow:visible;padding:16px 0 96px}
+/* ---- body: three independent scroll columns ---- */
+.cr-doc{padding:15px 0 96px;scrollbar-gutter:auto}
+.cr-details{padding:15px 0 80px}
 
-/* ---- PR header ---- */
-.cr-pr-badges{min-height:24px;gap:8px}
-.cr-badge{height:24px;padding:0 9px;border-radius:999px;font:600 11.5px/22px ${SANS};letter-spacing:.01em}
-.cr-pr-repo{font:12px/17px ${SANS};color:var(--cr-text-2)}
-.cr-pr-title{margin-top:10px;font:600 22px/30px ${SANS};letter-spacing:-.015em}
-.cr-pr-edit{margin-top:4px}
-.cr-pr-meta{margin-top:9px;gap:7px;font:12px/17px ${SANS};color:var(--cr-text-3)}
-.cr-branches{font-family:var(--cr-mono);font-size:11px;background:var(--cr-panel);border-radius:5px;padding:1px 6px}
-.cr-branch{max-width:180px}
+/* ---- PR header (codex 93×27 badge / 28px title / 13px meta) ---- */
+.cr-pr-badges{gap:11px;min-height:27px}
+.cr-badge{height:27px;padding:0 12px;border-radius:14px;font-size:13px;font-weight:600}
+.cr-pr-repo{font-size:14px;line-height:20px;color:#AEAEAE}
+.cr-pr-title{margin:14px 0 0;font-size:28px;line-height:36px;font-weight:700;letter-spacing:-.01em}
+.cr-pr-edit{margin-top:7px;color:#5A5A5A}
+.cr-pr-meta{margin-top:12px;gap:7px;font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-pr-author{font-size:14px;color:#E6E6E6}
+.cr-pr-time{color:#AEAEAE}
+.cr-pr-dot{color:#6E6E6E}
+.cr-branches{gap:6px;font-size:13px;line-height:18px;color:#9E9E9E;font-family:var(--cr-mono)}
+.cr-branch{max-width:210px}
+.cr-pr-meta .cr-pr-arrow{color:#6E6E6E}
 
-/* ---- prose ---- */
-.cr-md{margin-top:18px;font:14px/24px ${SANS};color:var(--cr-text)}
-.cr-md p{margin:0 0 12px}
-.cr-md h2{margin:24px 0 9px;font:600 17px/25px ${SANS};letter-spacing:-.01em}
-.cr-md h3{margin:19px 0 7px;font:600 14.5px/22px ${SANS}}
-.cr-md-list li{margin:0 0 5px;line-height:24px}
-.cr-md code{font-size:12px;border-radius:5px;padding:1px 5px}
-.cr-md pre{margin:0 0 12px;padding:11px 13px;border-radius:var(--cr-r-ctl);border:1px solid var(--cr-hair-soft);font-size:12px;line-height:19px}
-.cr-md blockquote{border-left:2px solid var(--cr-accent);padding-left:12px;color:var(--cr-text-2)}
-.cr-md hr{margin:18px 0;border-top-color:var(--cr-hair-soft)}
+/* ---- summary / markdown (17/26) ---- */
+.cr-md{margin-top:22px;font-size:17px;line-height:26px;color:#FFFFFF}
+.cr-md p{margin:0 0 16px}
+.cr-md h2{margin:32px 0 12px;font-size:19px;line-height:28px;font-weight:700}
+.cr-md h3{margin:24px 0 10px;font-size:17px;line-height:25px;font-weight:700}
+.cr-md-list li{line-height:26px;margin-bottom:8px}
+.cr-md-marker{min-width:19px;color:#FFFFFF;font-weight:700}
+.cr-md-item{white-space:pre-wrap;overflow-wrap:anywhere}
+.cr-md code{font-size:13px;line-height:20px;background:#303030;border-radius:4px;padding:2px 6px}
+.cr-md pre{background:#111111;border-radius:6px;padding:12px 14px;font-size:13px;line-height:20px}
+.cr-md blockquote{border-left:2px solid #3E3E3E;color:#AEAEAE}
+.cr-md a{color:#7AB7FF}
+.cr-md hr{border-top:1px solid #2B2B2B}
 
-/* ---- review result: app card ---- */
-.cr-review-card{margin:16px 0 4px;border:1px solid var(--cr-hair-soft);border-radius:var(--cr-r-card);background:var(--cr-panel);padding:12px 14px 6px}
-.cr-review-card-title{font:600 13px/18px ${SANS}}
-.cr-review-card-meta{font:11.5px/16px ${SANS}}
-.cr-review-verdict{margin-top:7px;font:12.5px/18px ${SANS}}
-.cr-review-counts{margin-top:8px;padding:7px 0;gap:18px;border-color:var(--cr-hair-soft);font:12px/16px ${SANS}}
-.cr-review-progress{margin-top:9px;font-size:12px}
-.cr-finding{content-visibility:auto;contain-intrinsic-size:auto 128px;margin:9px 0 4px;padding:10px 12px 10px 14px;border-radius:var(--cr-r-ctl);background:var(--cr-card);border:1px solid var(--cr-hair-soft)}
-.cr-finding-title{margin-top:6px;font:600 13.5px/19px ${SANS}}
-.cr-finding-loc{margin-top:3px;font-size:11.5px}
-.cr-finding-body{margin-top:6px;font:12.5px/19px ${SANS}}
-.cr-finding-label{font-size:11px;line-height:16px;border-radius:5px;border:1px solid var(--cr-hair-soft);background:var(--cr-panel)}
-.cr-finding-actions{margin-top:8px;gap:7px}
-.cr-sev{height:18px;padding:0 7px;border-radius:5px;font-size:10.5px;letter-spacing:.02em}
-.cr-finding-cat{border-radius:5px;font-size:10.5px;padding:0 6px;line-height:17px}
-.cr-verdict{height:20px;padding:0 8px;border-radius:6px;font-size:11px;letter-spacing:.01em}
-.cr-chips{margin-top:8px;gap:5px}
-.cr-chip{height:22px;padding:0 9px;border-radius:999px;font-size:11px}
-.cr-review-meta-row{margin-top:7px;font:11.5px/16px ${SANS}}
+/* ---- review summary card (top of document, spec §4.3) ---- */
+.cr-review-card{margin:16px 0 8px;padding:0;border:0;border-radius:0;background:transparent}
+.cr-review-card-head{gap:10px;align-items:center}
+.cr-review-card-title{font-size:14px;line-height:20px;font-weight:600;color:#FFFFFF;gap:6px}
+.cr-review-card-meta{font-size:13px;line-height:18px;color:#AEAEAE;gap:8px}
+.cr-review-card-actions{gap:8px}
+.cr-review-verdict-row{margin-top:10px;gap:10px}
+.cr-verdict{height:20px;padding:0 8px;border-radius:5px;font-size:12px;letter-spacing:.01em}
+.cr-verdict-hint{font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-review-counts{margin-top:10px;padding:8px 0;gap:18px;border-top:1px solid #2B2B2B;border-bottom:1px solid #2B2B2B;font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-count b{font-size:13px}
+.cr-review-progress{font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-review-meta-row{font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-chips{margin-top:10px;gap:6px}
+.cr-chip{height:26px;padding:0 10px;border-radius:13px;border:1px solid #2B2B2B;background:transparent;font-size:13px;color:#AEAEAE}
+.cr-chip--active,.cr-chip--active:hover{background:var(--cr-card);border-color:transparent;color:#FFFFFF}
+.cr-finding{background:#202020;border:0;border-radius:10px;padding:12px 14px 12px 16px;margin:10px 0 6px}
+.cr-finding-head{gap:8px}
+.cr-sev{height:20px;padding:0 7px;border-radius:4px;font-size:12px;font-weight:600}
+.cr-finding-title{margin-top:6px;font-size:16px;line-height:22px;font-weight:600;color:#FFFFFF}
+.cr-finding-loc{margin-top:5px;font-family:var(--cr-mono);font-size:13px;line-height:18px;color:#7AB7FF}
+.cr-finding-body{margin-top:7px;font-size:14px;line-height:22px;color:#D0D0D0}
+.cr-finding-label{margin-right:6px;font-size:12px;line-height:16px;color:#AEAEAE;background:transparent;padding:0;font-weight:500}
+.cr-finding-actions{gap:8px;margin-top:9px}
+.cr-inline-card{background:#202020;border:0;border-radius:10px;padding:10px 12px 10px 14px}
+.cr-inline-comment{margin:8px 0 2px;padding:8px 10px 9px 12px;border-radius:10px;background:#202020;border:0}
 
-/* ---- changes & diff ---- */
-.cr-changes-head{margin:14px 0 9px;font:12px/17px ${SANS}}
-.cr-file{border:1px solid var(--cr-hair-soft);border-radius:var(--cr-r-ctl);margin-bottom:8px;background:var(--cr-panel);content-visibility:auto;contain-intrinsic-size:auto 200px}
-.cr-file-head{min-height:34px;padding:5px 10px 5px 8px;background:transparent;border-bottom:1px solid var(--cr-hair-soft)}
-.cr-file-head:hover{background:var(--cr-hover)}
-.cr-file--open .cr-file-head{background:var(--cr-card);border-bottom-color:var(--cr-hair-soft)}
-.cr-file-path{font:12px/17px var(--cr-mono)}
-.cr-file-status{font-size:10px}
-.cr-file-stat{font-size:11.5px}
-.cr-file-badge{height:16px;padding:0 6px;border-radius:999px;font-size:10px}
-.cr-diff{font:12px/19px var(--cr-mono)}
-.cr-diff-gutter{width:80px}
-.cr-diff-ln{width:36px;padding-right:6px}
-.cr-diff-hunk{padding:1px 11px;font-size:11px;line-height:17px}
-.cr-diff-meta{font-size:10.5px}
-.cr-diff-row--target{transition:background .35s ease}
+/* ---- changes / diff §5.5 ---- */
+.cr-changes-head{margin:14px 0 10px;font-size:13px;line-height:18px;color:#AEAEAE}
+.cr-file{border:1px solid #2B2B2B;border-radius:8px;background:#181818;margin-bottom:8px}
+.cr-file-head{min-height:36px;padding:4px 10px 4px 8px;background:#202020}
+.cr-file-head:hover{background:#232323}
+.cr-file--open .cr-file-head{background:#202020}
+.cr-file-path{font-family:var(--cr-mono);font-size:13px;line-height:18px;color:#D0D0D0}
+.cr-file-badge{height:16px;border-radius:4px;font-size:11px}
+.cr-file-stat{font-size:13px}
+.cr-diff{font-family:var(--cr-mono);font-size:13px;line-height:20px;background:#181818}
+.cr-diff-ln{width:36px;color:#6E6E6E}
+.cr-diff-sign{width:12px;color:#6E6E6E}
+.cr-diff-hunk{background:#232323;color:#AEAEAE;font-family:var(--cr-mono);font-size:12px;line-height:18px}
+.cr-diff-meta{font-size:12px;color:#6E6E6E}
+.cr-diff-row--add{background:rgba(64,201,119,.10)}
+.cr-diff-row--del{background:rgba(250,66,62,.10)}
+.cr-diff-row--add .cr-diff-sign{color:#40C977}
+.cr-diff-row--add .cr-diff-ln{color:rgba(64,201,119,.5)}
+.cr-diff-row--del .cr-diff-sign{color:#FA423E}
+.cr-diff-row--del .cr-diff-ln{color:rgba(250,66,62,.5)}
+.cr-diff-empty{font-size:13px;color:#AEAEAE}
+.cr-md-notice{font-size:13px;color:#AEAEAE}
 
-/* ---- details rail ---- */
-.cr-sec{padding:12px 0 13px;border-bottom:1px solid var(--cr-hair-soft)}
-.cr-sec-title{font:600 11.5px/16px ${SANS};letter-spacing:.01em;color:var(--cr-text-2)}
-.cr-sec-body{margin-top:7px}
-.cr-changes-row{padding:5px 6px;margin:6px -6px -4px;border-radius:6px}
-.cr-changes-row-text{font-size:12.5px}
-.cr-empty-line{font:12px/18px ${SANS};color:var(--cr-text-3)}
-.cr-stack-item{margin-top:7px}
-.cr-stack-num{width:20px;height:20px;border-radius:6px;font-size:10.5px}
-.cr-stack-title{font:12px/17px ${SANS}}
-.cr-comment{margin-top:9px;padding-top:9px}
-.cr-comment-head{font-size:11px}
-.cr-comment-body{font:12px/18px ${SANS};-webkit-line-clamp:2}
-.cr-check{margin-top:7px;font-size:11.5px}
-.cr-filelinks{margin-top:6px}
-.cr-filelink{padding:3px 5px;margin:0 -5px;border-radius:5px}
-.cr-filelink-name{font-size:11px;line-height:16px}
-.cr-filelink-badge{border-radius:4px;font-size:10px}
-.cr-publish-published{height:24px;border-radius:6px;font-size:11.5px}
+/* ---- right column: 300px, sections per §2.8 ---- */
+.cr-sec{padding:13px 0 14px;border-bottom:1px solid #2B2B2B}
+.cr-sec-title{font-size:14px;line-height:20px;font-weight:500;color:#AEAEAE;min-height:20px}
+.cr-sec-body{margin-top:8px}
+.cr-changes-row{padding:4px 6px;margin:4px -6px -4px;border-radius:6px}
+.cr-empty-line{font-size:14px;line-height:20px;color:#AEAEAE}
 
-/* ---- inline findings / comments in the diff ---- */
-.cr-inline-card{content-visibility:auto;contain-intrinsic-size:auto 92px;margin:7px 0 2px;padding:9px 11px 9px 13px;border-radius:var(--cr-r-ctl);background:var(--cr-panel);border:1px solid var(--cr-hair-soft)}
-.cr-inline-title{font:600 12.5px/18px ${SANS}}
-.cr-inline-loc{font-size:11px}
-.cr-inline-body{font:12px/18px ${SANS}}
-.cr-inline-label{border-radius:4px;font-size:10.5px}
-.cr-inline-evidence{border-radius:6px;font-size:11.5px;line-height:17px}
-.cr-inline-comment{margin:6px 0 2px;padding:8px 10px 9px 12px;border-radius:var(--cr-r-ctl);background:color-mix(in srgb,var(--cr-accent) 4%,var(--cr-panel));border:1px solid var(--cr-hair-soft)}
-.cr-inline-comment-head{font-size:11px}
-.cr-inline-comment-body{font:12px/18px ${SANS}}
-.cr-inline-actions .cr-btn{border-radius:6px}
-.cr-inline-reply textarea,.cr-comment-dialog textarea{border-radius:var(--cr-r-ctl);background:var(--cr-panel);font:12.5px/18px ${SANS}}
-.cr-inline-resolve-confirm{border-radius:var(--cr-r-ctl)}
-.cr-chip-tag{height:17px;border-radius:5px;font-size:10px;padding:0 5px}
-
-/* ---- overlays ---- */
-.cr-modal-backdrop{padding:56px 20px 20px}
-.cr-modal{border-radius:14px;background:var(--cr-card);box-shadow:0 18px 48px var(--dsw-alias-bg-mask-2);border:1px solid var(--cr-hair);padding:14px 16px}
-.cr-modal-title{font:600 13px/18px ${SANS}}
-.cr-modal-close{width:24px;height:24px;border-radius:6px}
-.cr-option{border-radius:7px;padding:5px 7px}
-.cr-option input{accent-color:var(--cr-accent)}
-.cr-modal-note{font-size:11px}
-.cr-merge-risk{border-radius:8px;font-size:11.5px}
-.cr-publish-error{border-radius:8px}
-.cr-chat{border-radius:14px;box-shadow:0 18px 48px var(--dsw-alias-bg-mask-2);bottom:calc(16px + 62px)}
-.cr-chat-body{font:12.5px/18px ${SANS}}
-.cr-chat-bubble{font-size:12.5px;line-height:18px}
-.cr-toast{bottom:calc(16px + 62px);border-radius:9px;box-shadow:0 10px 26px var(--dsw-alias-bg-mask-2);border:1px solid var(--cr-hair-soft);background:var(--cr-card);font:12px/17px ${SANS}}
-.cr-root .cr-toast--action{bottom:calc(16px + 78px)}
-.cr-skeleton{border-radius:8px}
-.cr-autoreview-toggle{font:600 12px/17px ${SANS};color:var(--cr-text-2)}
-.cr-autoreview-state{height:17px;border-radius:5px;font-size:10px}
-.cr-auto-preset{border-radius:6px;font-size:11px}
-.cr-auto-query,.cr-auto-num{border-radius:6px;background:var(--cr-panel);font:11.5px/16px ${SANS}}
-.cr-auto-note{font-size:10.5px}
-
-/* ---- input dock: one floating composer under the document column ---- */
+/* ---- composer: 557×43 pill, floating bottom-right §2.9 ---- */
 .cr-composer{
-  left:calc(224px + (100% - 224px - 288px) / 2);
-  right:auto;
-  bottom:16px;
-  transform:translateX(-50%);
-  width:min(660px, calc(100% - 224px - 288px - 48px));
-  min-height:46px;
-  border-radius:var(--cr-r-card);
-  background:var(--cr-card);
-  border:1px solid var(--cr-hair);
-  box-shadow:0 14px 36px var(--dsw-alias-bg-mask-2);
-  padding:6px 8px 6px 14px;
-  gap:8px;
-  align-items:center;
+  right:21px;bottom:21px;width:min(557px,calc(100% - 42px));min-height:43px;
+  padding:4px 6px 4px 14px;border-radius:21px;background:#363636;
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
 }
-.cr-composer-input{font:13px/19px ${SANS};max-height:120px;padding:8px 0}
-.cr-composer-send{border-radius:8px}
-@media (max-width:1180px){
-  .cr-composer{left:50%;width:min(660px,calc(100% - 48px))}
-}
-@media (max-width:900px){
-  .cr-composer{left:50%;width:calc(100% - 32px);bottom:12px}
-}
+.cr-composer-input{font-size:15px;line-height:22px;color:#E6E6E6;padding:0}
+.cr-composer-input::placeholder{color:#686868}
+.cr-composer-send{border-radius:50%}
+.cr-toast{border-radius:8px;background:#2D2D2D;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.cr-modal{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+.cr-chat{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
 
+/* ---- settings section (DSH panel) keeps host tokens ---- */
+.cr-panel-root{
+  --cr-bg:var(--dsw-alias-bg-base);
+  --cr-side:color-mix(in srgb,var(--dsw-alias-label-primary) 3%,var(--cr-bg));
+  --cr-panel:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,var(--cr-bg));
+  --cr-card:color-mix(in srgb,var(--dsw-alias-label-primary) 7%,var(--cr-bg));
+  --cr-raised:color-mix(in srgb,var(--dsw-alias-label-primary) 12%,var(--cr-bg));
+  --cr-hover:color-mix(in srgb,var(--dsw-alias-label-primary) 4.5%,var(--cr-bg));
+  --cr-hair:color-mix(in srgb,var(--dsw-alias-label-primary) 13%,transparent);
+  --cr-hair-soft:color-mix(in srgb,var(--dsw-alias-label-primary) 7%,transparent);
+  --cr-text:var(--dsw-alias-label-primary);
+  --cr-text-2:var(--dsw-alias-label-secondary);
+  --cr-text-3:var(--dsw-alias-label-tertiary);
+  --cr-faint:var(--dsw-alias-label-caption);
+  --cr-border:var(--dsw-alias-border-l1);
+  --cr-border-2:var(--dsw-alias-border-l2);
+  --cr-border-strong:var(--dsw-alias-border-l3);
+  --cr-green:var(--dsw-alias-state-success-primary);
+  --cr-red:var(--dsw-alias-state-error-primary);
+  --cr-orange:var(--dsw-alias-state-warn-primary);
+  --cr-yellow:var(--dsw-alias-state-warn-secondary);
+  --cr-blue:var(--dsw-alias-state-business-primary);
+  --cr-mono:${MONO};
+  font:13px/20px ${SANS};color:var(--cr-text);background:var(--cr-bg);
+}
+.cr-panel-root :focus-visible{outline:2px solid color-mix(in srgb,var(--cr-blue) 60%,transparent);outline-offset:1px}
 /* ---- v0.9: DSH Settings section (row-based, native settings language) ---- */
 .cr-panel-root{font:13px/20px ${SANS};color:var(--cr-text);background:var(--cr-bg)}
 .cr-panel-root :focus-visible{outline:2px solid color-mix(in srgb,var(--dsw-alias-label-primary) 60%,transparent);outline-offset:1px}
@@ -4566,6 +4596,9 @@ const EMPTY_LIST = Object.freeze([])
                   ? h('span', null, '· ' + tx(t, 'fileCount', { n: String(filesTotal) }))
                   : null,
                 model ? h('span', null, '· ' + model) : null,
+                props.finishedAt > 0
+                  ? h(RelativeTime, { iso: new Date(props.finishedAt).toISOString(), t })
+                  : null,
                 partial ? h('span', { className: 'cr-file-badge' }, tx(t, 'reviewPartial')) : null,
               )
             : null,
@@ -4759,15 +4792,6 @@ const EMPTY_LIST = Object.freeze([])
       return h(
         'div',
         { 'data-cr-summary': 'ready' },
-        h(ReviewCard, {
-          review: props.review,
-          t,
-          publish: props.publish,
-          onStart: props.onStartReview,
-          onRetry: props.onRetryReview,
-          onCancel: props.onCancelReview,
-          onLocate: props.onLocate,
-        }),
         h(Markdown, { text: detail.body || '' }),
         detail.bodyTruncated
           ? h('div', { className: 'cr-md-notice' }, tx(t, 'bodyTruncated'))
@@ -7437,6 +7461,14 @@ const EMPTY_LIST = Object.freeze([])
           onJump: () => props.onTabChange('changes'),
           onJumpFile: props.onJumpFile,
         }),
+        h(StackCard, { stack: detail.stack, t }),
+        h(CommentsCard, { comments: detail.comments, t }),
+        h(ReviewersCard, {
+          comments: detail.comments,
+          reviewDecision: (detail.summary || {}).reviewDecision,
+          t,
+        }),
+        h(ChecksCard, { checks: detail.checks, t }),
         h(AutoReviewCard, {
           t,
           state: props.autoReview,
@@ -7448,20 +7480,6 @@ const EMPTY_LIST = Object.freeze([])
           onRun: props.onAutoReviewRun,
           onJump: props.onAutoReviewJump,
           onOpenSettings: props.onOpenSettings,
-        }),
-        h(StackCard, { stack: detail.stack, t }),
-        h(CommentsCard, { comments: detail.comments, t }),
-        h(ReviewersCard, {
-          comments: detail.comments,
-          reviewDecision: (detail.summary || {}).reviewDecision,
-          t,
-        }),
-        h(ChecksCard, { checks: detail.checks, t }),
-        h(AiReviewCard, {
-          review: props.review,
-          t,
-          onStart: props.onStartReview,
-          onCancel: props.onCancelReview,
         }),
       )
     }
@@ -7816,6 +7834,8 @@ const EMPTY_LIST = Object.freeze([])
       const [pinned, setPinned] = useState(false)
       const [settings, setSettings] = useState(() => readSettings(localStore()))
       const [settingsOpen, setSettingsOpen] = useState(false)
+      /** When the current head's review finished (ms); shown in the summary header. */
+      const [reviewFinishedAt, setReviewFinishedAt] = useState(0)
       // v0.9: settings also live in the DSH Settings panel; keep this page is copy in sync
       useEffect(() => {
         const reload = () => setSettings(readSettings(localStore()))
@@ -7958,6 +7978,30 @@ const EMPTY_LIST = Object.freeze([])
           if (result.ok) setDetail({ state: 'ready', value: normalizePrDetail(result.value), error: null })
         })
       }, [])
+
+      // Remember when the current head's review finished so the summary header can
+      // show a relative timestamp (the review status payload has no finishedAt).
+      useEffect(() => {
+        if (!review || review.state !== 'done' || !review.headSha) return
+        const current = selectedRef.current
+        if (!current) return
+        const key = 'codex-review:review-time:' + current.repo + '#' + current.number + '@' + review.headSha
+        let at = 0
+        try {
+          at = Number(localStorage.getItem(key)) || 0
+        } catch {
+          at = 0
+        }
+        if (!at) {
+          at = Date.now()
+          try {
+            localStorage.setItem(key, String(at))
+          } catch {
+            /* storage is optional */
+          }
+        }
+        setReviewFinishedAt(at)
+      }, [review, selected])
 
       const selectPr = useCallback(
         (summary) => {
@@ -8920,6 +8964,10 @@ const EMPTY_LIST = Object.freeze([])
           showToast(tx(t, 'publishNotReady'))
           return
         }
+        if (currentReview.partial === true) {
+          showToast(tx(t, 'publishPartial'))
+          return
+        }
         const autoState = autoReviewRef.current
         const config =
           autoState && autoState.status && autoState.status.publish
@@ -8950,6 +8998,8 @@ const EMPTY_LIST = Object.freeze([])
         if (!current || !dialog || dialog.phase === 'submitting') return
         const request = buildPublishRequest({
           summary: current,
+          headSha: (reviewRef.current && reviewRef.current.headSha) || '',
+          jobId: (reviewRef.current && reviewRef.current.jobId) || '',
           mode: dialog.mode,
           minSeverity: dialog.minSeverity,
         })
@@ -8985,7 +9035,12 @@ const EMPTY_LIST = Object.freeze([])
               phase: 'idle',
               error: null,
             })
-            showToast(tx(t, 'publishSuccess', { n: record ? record.comments : 0 }))
+            // Tell the user what actually happened: a summary update or a no-op
+            // must not read as "N comments created".
+            const action = record ? record.action : 'created'
+            if (action === 'unchanged') showToast(tx(t, 'publishUnchanged'))
+            else if (action === 'updated') showToast(tx(t, 'publishUpdated'))
+            else showToast(tx(t, 'publishSuccess', { n: record ? record.comments : 0 }))
             return
           }
           const error = result.error || { code: 'INTERNAL', message: '' }
@@ -9116,6 +9171,18 @@ const EMPTY_LIST = Object.freeze([])
             t,
             onComment: selected ? openCommentDialog : null,
           }),
+          selected
+            ? h(ReviewCard, {
+                review: reviewValue,
+                finishedAt: reviewFinishedAt,
+                t,
+                publish: reviewPublish,
+                onStart: startReview,
+                onRetry: startReview,
+                onCancel: cancelReview,
+                onLocate: locateFinding,
+              })
+            : null,
           tab === 'changes'
             ? h(ChangesView, {
                 detail: detailValue || {},
@@ -9233,7 +9300,7 @@ const EMPTY_LIST = Object.freeze([])
           }),
           h(
             'div',
-            { className: 'cr-body', ref: docRef },
+            { className: 'cr-body' },
             h(
               'div',
               { className: 'cr-cluster' },
@@ -9241,6 +9308,7 @@ const EMPTY_LIST = Object.freeze([])
                 'div',
                 {
                   className: 'cr-doc',
+                  ref: docRef,
                   role: 'tabpanel',
                   'aria-label': tab === 'changes' ? tx(t, 'changes') : tx(t, 'summary'),
                 },
