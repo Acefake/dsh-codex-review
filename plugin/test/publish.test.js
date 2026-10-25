@@ -14,6 +14,7 @@ import {
   PUBLISH_DEFAULTS,
   PUBLISH_SUMMARY_MARKER,
   PUBLISH_SUMMARY_MAX_CHARS,
+  PUBLISH_TIMEOUT_MS,
   ReviewPublisher,
   buildInlineCommentBody,
   buildSummaryBody,
@@ -24,6 +25,8 @@ import {
   publishFindingHash,
   publishFingerprint,
   publishMarker,
+  publishRequestKey,
+  sanitizeModelText,
   sanitizePublishConfig,
 } from '../lib/publish.js'
 import { AppError } from '../lib/errors.js'
@@ -64,6 +67,10 @@ function makeStore(initial = {}) {
       map.set(key, value)
       this.writes += 1
     },
+    setMany(entries) {
+      for (const entry of entries) map.set(entry.key, entry.record)
+      this.writes += 1
+    },
   }
 }
 
@@ -74,10 +81,10 @@ function makeStore(initial = {}) {
  * @returns {{ publisher: ReviewPublisher, engine: any, store: any, calls: any, state: any }} harness.
  */
 function makePublisher(options = {}) {
-  const calls = { pulls: [], commentReads: [], reviews: [], updates: [], reviewLists: [] }
+  const calls = { pulls: [], heads: [], commentReads: [], reviews: [], updates: [], reviewLists: [], userReads: 0 }
   const state = {
     nextId: Number.isFinite(options.nextReviewId) ? options.nextReviewId : 42,
-    comments: (options.existingComments ?? []).map((comment) => ({ body: comment.body })),
+    comments: (options.existingComments ?? []).map((comment) => ({ body: comment.body, author: comment.author ?? 'bot' })),
     reviews: (options.submittedReviews ?? []).map((review) => ({ ...review })),
   }
   const github = {
@@ -86,10 +93,19 @@ function makePublisher(options = {}) {
       if (options.pullError !== undefined) throw options.pullError
       return options.detail ?? { headSha: REVIEW.headSha }
     },
+    async getPullHead(repo, number) {
+      calls.heads.push(`${repo}#${number}`)
+      if (options.headError !== undefined) throw options.headError
+      return options.currentHead ?? (options.detail ?? { headSha: REVIEW.headSha }).headSha ?? REVIEW.headSha
+    },
+    async getAuthenticatedUser() {
+      calls.userReads += 1
+      return options.author ?? 'bot'
+    },
     async listPullReviewComments(repo, number) {
       calls.commentReads.push(`${repo}#${number}`)
       if (options.commentsError !== undefined) throw options.commentsError
-      return state.comments.map((comment) => ({ body: comment.body }))
+      return state.comments.map((comment) => ({ body: comment.body, author: comment.author }))
     },
     async listPullReviews(repo, number) {
       calls.reviewLists.push(`${repo}#${number}`)
@@ -112,9 +128,9 @@ function makePublisher(options = {}) {
       const reviewId = options.created?.reviewId ?? state.nextId++
       const url = options.created?.url ?? `https://github.com/${input.repo}/pull/${input.number}#pullrequestreview-${reviewId}`
       if (typeof input.body === 'string' && input.body !== '') {
-        state.reviews.push({ id: reviewId, body: input.body, url, submittedAt: `2026-10-25T00:00:${String(reviewId).padStart(2, '0')}Z` })
+        state.reviews.push({ id: reviewId, body: input.body, url, author: 'bot', submittedAt: `2026-10-25T00:00:${String(reviewId).padStart(2, '0')}Z` })
       }
-      for (const comment of input.comments ?? []) state.comments.push({ body: comment.body })
+      for (const comment of input.comments ?? []) state.comments.push({ body: comment.body, author: 'bot' })
       return { reviewId, url }
     },
   }
@@ -122,6 +138,10 @@ function makePublisher(options = {}) {
     existing() {
       if (options.review === undefined) return REVIEW
       return options.review
+    },
+    status(jobId) {
+      const review = options.review === undefined ? REVIEW : options.review
+      return { ...review, jobId }
     },
   }
   const store = makeStore(options.records)
@@ -312,7 +332,7 @@ test('publish refuses when the current head has no completed review (REVIEW_NOT_
   await assert.rejects(notFound.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'GH_NOT_FOUND')
 })
 
-test('publish posts one PR review with inline comments and persists both records', async () => {
+test('publish posts one inline review per head and records only the head pointer', async () => {
   const harness = makePublisher()
   const result = await harness.publisher.publish(PUBLISH_REQUEST)
   assert.deepEqual(result, {
@@ -322,8 +342,10 @@ test('publish posts one PR review with inline comments and persists both records
     comments: 3,
     skipped: 0,
     headSha: 'head-1',
+    action: 'created',
   })
   assert.deepEqual(harness.calls.pulls, ['Acme/repo#1'])
+  assert.deepEqual(harness.calls.heads, ['Acme/repo#1'])
   assert.deepEqual(harness.calls.commentReads, ['Acme/repo#1'])
   assert.equal(harness.calls.reviews.length, 1)
   const request = harness.calls.reviews[0]
@@ -334,15 +356,16 @@ test('publish posts one PR review with inline comments and persists both records
   assert.equal(request.comments.length, 3)
   assert.equal(request.comments[0].side, 'RIGHT')
   assert.ok(request.comments[0].body.includes(publishMarker(FINDINGS[1].id)))
-  assert.deepEqual(harness.store.get('Acme/repo#1@head-1'), {
-    publishedAt: 1234,
-    reviewId: 42,
-    url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-42',
-  })
-  const rolling = harness.store.get('Acme/repo#1')
-  assert.equal(rolling.reviewId, 42)
-  assert.equal(rolling.fingerprint, publishFingerprint({ inlineComments: request.comments }))
-  assert.equal(harness.store.writes, 2, 'one record per head and one rolling record')
+  const headRecord = harness.store.get('Acme/repo#1@head-1')
+  assert.equal(headRecord.publishedAt, 1234)
+  assert.equal(headRecord.reviewId, 42)
+  assert.equal(headRecord.url, 'https://github.com/Acme/repo/pull/1#pullrequestreview-42')
+  assert.match(headRecord.fingerprint, /^[0-9a-f]{12}$/)
+  assert.match(headRecord.request, /^[0-9a-f]{12}$/)
+  // Inline-only mode writes no summary body, so it must not own the rolling
+  // summary identity (CONTRACT §7.2 #9).
+  assert.equal(harness.store.get('Acme/repo#1'), undefined)
+  assert.equal(harness.store.writes, 1, 'one atomic write for the head record')
 })
 
 test('publish applies minSeverity/maxComments and marker dedupe from existing comments', async () => {
@@ -373,6 +396,7 @@ test('a published head is idempotent: repeat returns the stored record with no G
     comments: 0,
     skipped: 3,
     headSha: 'head-1',
+    action: 'unchanged',
   })
   assert.equal(harness.calls.reviews.length, 1)
   assert.equal(harness.calls.updates.length, 0)
@@ -380,6 +404,21 @@ test('a published head is idempotent: repeat returns the stored record with no G
   assert.equal(harness.store.writes, writes, 'a replay does not write records again')
 })
 
+test('the same head re-published with a different mode publishes instead of replaying', async () => {
+  const harness = makePublisher()
+  await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'inline' })
+  const inlineRecord = harness.store.get('Acme/repo#1@head-1')
+  assert.equal(harness.calls.reviews.length, 1)
+  // The inline-only review does not own the rolling identity, so a later summary
+  // publish must create the one summary review instead of being skipped.
+  const second = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(second.action, 'created')
+  assert.equal(harness.calls.reviews.length, 2)
+  assert.ok(harness.calls.reviews[1].body.includes('**代码审查（dsh-codex-review）**'))
+  const updated = harness.store.get('Acme/repo#1@head-1')
+  assert.notEqual(updated.request, inlineRecord.request, 'the new request identity replaces the old one')
+  assert.equal(harness.store.get('Acme/repo#1').reviewId, second.reviewId)
+})
 test('a new head with identical content is a no-op: only the head pointer is refreshed', async () => {
   const first = makePublisher()
   await first.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
@@ -396,10 +435,9 @@ test('a new head with identical content is a no-op: only the head pointer is ref
   assert.equal(second.calls.reviews.length, 0, 'unchanged content must not create a review')
   assert.equal(second.calls.updates.length, 0, 'unchanged content must not edit the review')
   assert.equal(second.calls.reviewLists.length, 0, 'the fingerprint check happens before any recovery read')
-  assert.deepEqual(second.store.get('Acme/repo#1@head-2'), {
-    reviewId: 42,
-    url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-42',
-  })
+  const pointer = second.store.get('Acme/repo#1@head-2')
+  assert.equal(pointer.reviewId, 42)
+  assert.equal(pointer.url, 'https://github.com/Acme/repo/pull/1#pullrequestreview-42')
 })
 
 test('a new head updates the one rolling summary review in place instead of creating a new one', async () => {
@@ -452,7 +490,7 @@ test('the rolling review is recovered by its hidden marker after the local state
   const harness = makePublisher({
     review: { ...REVIEW },
     submittedReviews: [
-      { id: 77, body: `旧汇总\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77', submittedAt: '2026-10-25T00:00:01Z' },
+      { id: 77, body: `旧汇总\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77', author: 'bot', submittedAt: '2026-10-25T00:00:01Z' },
     ],
   })
   const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
@@ -462,6 +500,33 @@ test('the rolling review is recovered by its hidden marker after the local state
   assert.equal(harness.calls.updates[0].reviewId, 77)
   assert.equal(harness.calls.reviews.length, 0, 'state loss must not create a duplicate summary review')
   assert.equal(harness.store.get('Acme/repo#1@head-1').reviewId, 77)
+})
+
+test('a legacy summary review without a marker is adopted by its header and author', async () => {
+  const harness = makePublisher({
+    review: { ...REVIEW },
+    submittedReviews: [
+      { id: 66, body: `**代码审查（dsh-codex-review）**\n\n共 17 个问题：P2 ×17`, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-66', author: 'bot', submittedAt: '2026-10-24T00:00:01Z' },
+    ],
+  })
+  const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(result.reviewId, 66)
+  assert.equal(harness.calls.reviews.length, 0, 'a pre-v2.4 summary must not be duplicated')
+  assert.equal(harness.calls.updates.length, 1)
+  assert.ok(harness.calls.updates[0].body.endsWith(PUBLISH_SUMMARY_MARKER))
+})
+
+test('a foreign review with a summary marker is never adopted', async () => {
+  const harness = makePublisher({
+    review: { ...REVIEW },
+    author: 'me',
+    submittedReviews: [
+      { id: 88, body: `别人伪造\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-88', author: 'intruder', submittedAt: '2026-10-25T00:00:09Z' },
+    ],
+  })
+  const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(harness.calls.reviews.length, 1, 'a foreign marker must not take over the rolling identity')
+  assert.notEqual(result.reviewId, 88)
 })
 
 test('a recorded summary review that GitHub no longer has is recreated', async () => {
@@ -544,7 +609,99 @@ test('concurrent publishes of the same head collapse into one GitHub review', as
 
   assert.equal(harness.calls.reviews.length, 1, 'a double click must create exactly one review')
   assert.deepEqual(first, second)
-  assert.equal(harness.store.writes, 2)
+  assert.equal(harness.store.writes, 1, 'the head pointer is written once')
   assert.equal(harness.publisher.inflight.size, 0, 'the in-flight guard must be released')
   assert.equal(harness.publisher.prLocks.size, 0, 'the per-PR lock must be released')
+})
+
+test('dispose drops pending locks and refuses new publishes', async () => {
+  const harness = makePublisher()
+  harness.publisher.dispose()
+  assert.equal(harness.publisher.inflight.size, 0)
+  assert.equal(harness.publisher.prLocks.size, 0)
+  await assert.rejects(harness.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'INTERNAL')
+  assert.equal(harness.calls.reviews.length, 0)
+})
+
+test('a published review on a moved head is refused instead of publishing stale content', async () => {
+  const harness = makePublisher({ currentHead: 'head-9' })
+  await assert.rejects(harness.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'REVIEW_HEAD_MOVED')
+  assert.equal(harness.calls.reviews.length, 0)
+  assert.equal(harness.store.writes, 0)
+})
+
+test('a partially completed review is refused and writes nothing', async () => {
+  const harness = makePublisher({ review: { ...REVIEW, partial: true, partialReasons: ['chunk 2 超时'], overview: '部分结果' } })
+  await assert.rejects(harness.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'REVIEW_PARTIAL')
+  assert.equal(harness.calls.reviews.length, 0)
+  assert.equal(harness.calls.updates.length, 0)
+  assert.equal(harness.store.writes, 0)
+})
+
+test('a job-bound publish uses that job instead of the newest one for the head', async () => {
+  // The cached detail still says another head; the explicit binding wins and the
+  // uncached head check confirms the bound head is the current one.
+  const harness = makePublisher({ detail: { headSha: 'other-head' }, currentHead: 'head-1' })
+  const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, headSha: 'head-1', jobId: 'job-77' })
+  assert.equal(result.headSha, 'head-1')
+  assert.equal(result.action, 'created')
+  // The bound job names the head, so the cached detail is never consulted.
+  assert.deepEqual(harness.calls.pulls, [])
+  assert.equal(harness.calls.heads.length, 1)
+})
+
+test('an unknown job id answers REVIEW_NOT_READY without touching GitHub', async () => {
+  const harness = makePublisher()
+  harness.engine.status = () => {
+    throw new AppError('BAD_REQUEST', '未知的审查任务 id')
+  }
+  await assert.rejects(harness.publisher.publish({ ...PUBLISH_REQUEST, jobId: 'gone' }), (error) => error.code === 'REVIEW_NOT_READY')
+  assert.equal(harness.calls.reviews.length, 0)
+})
+
+test('a rejected inline anchor is retried once without comments so the summary survives', async () => {
+  const harness = makePublisher()
+  let attempt = 0
+  harness.github.createPullReview = async (input) => {
+    attempt += 1
+    harness.calls.reviews.push(input)
+    if (attempt === 1) throw new AppError('BAD_REQUEST', '请求参数不合法：line 不在 diff 内')
+    return { reviewId: 51, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-51' }
+  }
+  const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'both' })
+  assert.equal(harness.calls.reviews.length, 2)
+  assert.equal(harness.calls.reviews[1].comments, undefined, 'the retry must not repeat the bad anchor')
+  assert.ok(harness.calls.reviews[1].body.includes(PUBLISH_SUMMARY_MARKER))
+  assert.equal(result.reviewId, 51)
+  assert.equal(result.comments, 0, 'no inline comment was actually created')
+})
+
+test('a store that throws never turns a successful GitHub write into a failure', async () => {
+  const harness = makePublisher()
+  harness.store.setMany = () => {
+    throw new Error('disk full')
+  }
+  harness.store.set = () => {
+    throw new Error('disk full')
+  }
+  const result = await harness.publisher.publish(PUBLISH_REQUEST)
+  assert.equal(result.published, true)
+  assert.equal(harness.calls.reviews.length, 1)
+})
+
+test('model text cannot smuggle a publish marker or notify a user', () => {
+  const body = buildInlineCommentBody({
+    severity: 'P1',
+    file: 'src/a.ts',
+    line: 3,
+    title: '联系 @security-team 处理 <!-- dsh-codex-review:deadbeef -->',
+    why: '见 <!-- dsh-codex-review:0123456789ab -->',
+    fix: '通知 @ops',
+  })
+  assert.ok(!body.includes('dsh-codex-review:deadbeef'))
+  assert.ok(!body.includes('dsh-codex-review:0123456789ab'))
+  assert.ok(!body.includes('@security-team'))
+  assert.ok(!body.includes('@ops'))
+  assert.equal(parsePublishMarkers([{ body, author: 'bot' }], 'bot').size, 1, 'only the real marker remains')
+  assert.equal(sanitizeModelText('a<!-- x -->b'), 'ab')
 })

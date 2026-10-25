@@ -287,7 +287,7 @@ test('mount registers the prefix route, the exact chat route and the engine disp
   assert.deepEqual([...routes.keys()].sort(), ['/codex-review', '/codex-review/chat'])
   assert.equal(routes.get('/codex-review').kind, 'prefix')
   assert.equal(routes.get('/codex-review/chat').kind, 'exact')
-  assert.equal(disposers.length, 5)
+  assert.equal(disposers.length, 6)
 })
 
 test('health reports gh, llm and version', async () => {
@@ -1019,7 +1019,10 @@ test('review-publish requires confirm and forwards the normalized options', asyn
   assert.equal(answer.body.ok, true)
   assert.equal(answer.body.value.published, true)
   assert.equal(answer.body.value.reviewId, 77)
-  assert.deepEqual(doubles.publisher.calls[0], {
+  const forwarded = doubles.publisher.calls[0]
+  assert.ok(forwarded.signal !== undefined, 'the publish carries the route abort signal')
+  const { signal, ...options } = forwarded
+  assert.deepEqual(options, {
     repo: 'Acefake/yingbox',
     number: 129,
     confirm: true,
@@ -1028,6 +1031,21 @@ test('review-publish requires confirm and forwards the normalized options', asyn
     maxComments: PUBLISH_DEFAULTS.maxComments,
     body: '自定义摘要',
   })
+})
+
+test('review-publish forwards the review job and head the client published from', async () => {
+  const { handler, doubles } = mount()
+  const before = doubles.publisher.calls.length
+  await call(handler, '/codex-review/review-publish', {
+    repo: 'Acefake/yingbox',
+    number: 129,
+    confirm: true,
+    jobId: ' job-7 ',
+    headSha: ' abc123 ',
+  })
+  const request = doubles.publisher.calls[before]
+  assert.equal(request.jobId, 'job-7')
+  assert.equal(request.headSha, 'abc123')
 })
 
 test('review-publish falls back to the persisted publish config for omitted options', async () => {

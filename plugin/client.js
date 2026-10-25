@@ -17,6 +17,9 @@ window.__ModuleLoader__.load({
 /** Shared empty list so memoized rows keep reference equality on missing data. */
 const EMPTY_LIST = Object.freeze([])
     const REQUEST_TIMEOUT_MS = 15000
+    // A publish performs several sequential GitHub writes; the Host budgets
+    // PUBLISH_TIMEOUT_MS for it, so the browser must wait at least that long.
+    const PUBLISH_TIMEOUT_MS = 35000
     const MONO =
       'ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace'
     const SANS = 'Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif'
@@ -354,6 +357,7 @@ const EMPTY_LIST = Object.freeze([])
       publishNotReady: 'Run the AI review first, then publish',
       publishPartial: 'This review is incomplete (some files failed), so it cannot be published. Re-run the review.',
       publishHeadMoved: 'The pull request has new commits; re-run the review, then publish',
+      publishUnknown: 'Publish result unknown: GitHub may already have the review. Refresh the pull request before retrying.',
       publishForbidden: 'The GitHub token has no write permission (repo scope required)',
       publishBadRequest: 'The publish request was rejected',
       publishFailed: 'Publishing the review failed',
@@ -691,6 +695,7 @@ const EMPTY_LIST = Object.freeze([])
       publishNotReady: '请先运行一次 AI 审查再发布',
       publishPartial: '这次审查没有完成全部文件，结果不完整，不能发布；请重新审查后再试',
       publishHeadMoved: 'PR 已有新提交，请重新审查后再发布',
+      publishUnknown: '发布结果未知：GitHub 可能已经写入，请刷新 PR 确认后再决定是否重试',
       publishForbidden: '当前 GitHub token 没有写权限（需要 repo scope）',
       publishBadRequest: '发布请求被判定为不合法',
       publishFailed: '发布审查失败',
@@ -2144,6 +2149,8 @@ const EMPTY_LIST = Object.freeze([])
           return 'publishPartial'
         case 'REVIEW_HEAD_MOVED':
           return 'publishHeadMoved'
+        case 'PUBLISH_UNKNOWN':
+          return 'publishUnknown'
         case 'GH_FORBIDDEN':
           return 'publishForbidden'
         case 'BAD_REQUEST':
@@ -9016,7 +9023,7 @@ html[data-ds-theme-source="dark"] .cr-root{
         setPublishDialog((previous) =>
           Object.assign({}, previous, { phase: 'submitting', error: null }),
         )
-        post(ROUTE + '/review-publish', request).then((result) => {
+        post(ROUTE + '/review-publish', request, { timeoutMs: PUBLISH_TIMEOUT_MS }).then((result) => {
           if (result.ok) {
             const value = result.value || {}
             const record = normalizePublishResult(value)

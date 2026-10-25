@@ -837,7 +837,7 @@ export class ReviewEngine {
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
    * @param {string} headSha - PR head SHA.
-   * @returns {{ state: string, jobId?: string, headSha: string, findings: any[], overview?: string, error?: { code: string, message: string }, options?: any, guidelines?: any, reusedFiles?: number, verdict?: string }} review snapshot.
+   * @returns {{ state: string, jobId?: string, headSha: string, findings: any[], overview?: string, error?: { code: string, message: string }, options?: any, guidelines?: any, reusedFiles?: number, verdict?: string, partial?: boolean, partialReasons?: string[] }} review snapshot.
    */
   existing(repo, number, headSha) {
     const job = this.findLatestForPull(repo, number, headSha)
@@ -856,10 +856,12 @@ export class ReviewEngine {
       options: job.options,
       guidelines: job.guidelines,
       reusedFiles: job.reusedFiles,
+      partial: job.partial === true,
     }
     if (job.verdict !== undefined) snapshot.verdict = job.verdict
     if (job.overview !== undefined) snapshot.overview = job.overview
     if (job.error !== undefined) snapshot.error = job.error
+    if (Array.isArray(job.partialReasons) && job.partialReasons.length > 0) snapshot.partialReasons = job.partialReasons.slice()
     return snapshot
   }
 

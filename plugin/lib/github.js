@@ -75,7 +75,10 @@ const MAX_COMMENT_BODY_CHARS = 4_000
 
 /** Review-comment pages read when deduplicating a publish (CONTRACT §7.2). */
 const REVIEW_COMMENT_PAGE_SIZE = 100
-const MAX_REVIEW_COMMENT_PAGES = 3
+const MAX_REVIEW_COMMENT_PAGES = 10
+/** Review pages read when recovering the rolling summary after state loss. */
+const REVIEW_PAGE_SIZE = 100
+const MAX_REVIEW_PAGES = 20
 
 /** Character cap for one user-written comment (issue comment or reply). */
 export const WRITE_COMMENT_MAX_CHARS = 4_000
@@ -657,6 +660,8 @@ export class GitHubClient {
     this.inflight = new Map()
     /** @type {Promise<{ token: string, source: string }> | undefined} */
     this.tokenPromise = undefined
+    /** Signed-in login, cached for the life of the token. @type {Promise<string> | undefined} */
+    this.viewerPromise = undefined
     /** @type {Promise<{ kind: 'fetch', token: string } | { kind: 'cli' }> | undefined} */
     this.transportPromise = undefined
     /** @type {{ value: string, expiresAt: number } | undefined} */
@@ -716,6 +721,36 @@ export class GitHubClient {
   invalidateToken() {
     this.tokenPromise = undefined
     this.transportPromise = undefined
+    this.viewerPromise = undefined
+  }
+
+  /**
+   * Read the signed-in GitHub login once. Publish marker trust uses it so a
+   * third party cannot redirect the rolling review by posting a marker.
+   * @returns {Promise<string>} login, or '' when it cannot be resolved.
+   */
+  async getAuthenticatedUser() {
+    if (this.viewerPromise === undefined) {
+      this.viewerPromise = this.viewer().catch(() => '')
+    }
+    return this.viewerPromise
+  }
+
+  /**
+   * @returns {Promise<string>} login of the token owner.
+   */
+  async viewer() {
+    const transport = await this.transport()
+    if (transport.kind === 'fetch') {
+      const { data } = await this.fetchJson(transport.token, '/user')
+      const login = typeof data?.login === 'string' ? data.login : ''
+      if (login === '') throw new AppError('GH_NOT_LOGGED_IN')
+      return login
+    }
+    const { data } = await this.cliJson('/user')
+    const login = typeof data?.login === 'string' ? data.login : ''
+    if (login === '') throw new AppError('GH_NOT_LOGGED_IN')
+    return login
   }
 
   /**
@@ -828,15 +863,18 @@ export class GitHubClient {
         // body already gone; the status still maps the failure
       }
       let message = ''
+      /** @type {unknown} */
+      let errors
       try {
         const parsed = JSON.parse(text)
         if (typeof parsed?.message === 'string') message = parsed.message
+        if (Array.isArray(parsed?.errors)) errors = parsed.errors
       } catch {
         // non-JSON error body
       }
       const code = httpStatusToCode(response.status, headerValue(response.headers, 'x-ratelimit-remaining'), message)
       const suffix = message === '' ? '' : `（GitHub: ${message.slice(0, 200)}）`
-      throw new AppError(code, `${USER_MESSAGES[code]}${suffix}`, { details: { status: response.status } })
+      throw new AppError(code, `${USER_MESSAGES[code]}${suffix}`, { details: { status: response.status, errors } })
     }
     let text
     try {
@@ -956,6 +994,21 @@ export class GitHubClient {
       this.cache.set(key, detail, DETAIL_TTL_MS, this.now())
       return detail
     })
+  }
+
+  /**
+   * Read the PR's current head commit **without** the detail cache: a publish
+   * must target the head that is on GitHub right now, not a 60 s old snapshot.
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @param {{ signal?: AbortSignal }} [options] - request signal.
+   * @returns {Promise<string>} current head SHA, or '' when unavailable.
+   * @throws {AppError} GH_* when the request fails.
+   */
+  async getPullHead(repo, number, options = {}) {
+    const [owner, name] = splitRepo(repo)
+    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`, { signal: options.signal })
+    return typeof data?.head?.sha === 'string' ? data.head.sha : ''
   }
 
   /**
@@ -1184,7 +1237,7 @@ export class GitHubClient {
    * an optional summary body plus inline comments anchored on the RIGHT side.
    * Never cached — a write must reach GitHub. A 422 (e.g. a line outside the
    * diff) is reported as BAD_REQUEST with GitHub's reason.
-   * @param {{ repo: string, number: number, headSha?: string, body?: string, comments?: Array<{ path: string, line: number, side?: string, body: string }> }} input - review to publish.
+   * @param {{ repo: string, number: number, headSha?: string, body?: string, comments?: Array<{ path: string, line: number, side?: string, body: string }>, signal?: AbortSignal }} input - review to publish.
    * @returns {Promise<{ reviewId: number, url: string, data: any }>} created review identity.
    * @throws {AppError} GH_FORBIDDEN / GH_NOT_FOUND / GH_RATE_LIMIT / GH_NETWORK / BAD_REQUEST / INTERNAL.
    */
@@ -1216,6 +1269,7 @@ export class GitHubClient {
       const response = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`, {
         method: 'POST',
         body: payload,
+        signal: input.signal,
       })
       data = response.data !== null && typeof response.data === 'object' ? response.data : {}
     } catch (error) {
@@ -1237,7 +1291,7 @@ export class GitHubClient {
    * GitHub keeps the review id, so the PR timeline does not gain a new review
    * per commit; only the summary body is replaced. Inline comments are immutable
    * after submission and therefore never touched here.
-   * @param {{ repo: string, number: number, reviewId: number, body: string }} input - review identity and new body.
+   * @param {{ repo: string, number: number, reviewId: number, body: string, signal?: AbortSignal }} input - review identity and new body.
    * @returns {Promise<{ reviewId: number, url: string }>} updated review identity.
    * @throws {AppError} BAD_REQUEST / GH_FORBIDDEN / GH_NOT_FOUND / GH_RATE_LIMIT / GH_NETWORK / INTERNAL.
    */
@@ -1255,6 +1309,7 @@ export class GitHubClient {
       const response = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews/${reviewId}`, {
         method: 'PUT',
         body: { body },
+        signal: input.signal,
       })
       data = response.data !== null && typeof response.data === 'object' ? response.data : {}
     } catch (error) {
@@ -1268,45 +1323,55 @@ export class GitHubClient {
   }
 
   /**
-   * List the PR's submitted reviews (uncached). Used only after a Host restart
-   * lost the persisted publish identity: the rolling summary review is found by
-   * its hidden marker instead of creating a duplicate review (CONTRACT §7.2).
+   * List the PR's submitted reviews (uncached, paginated). Used after a Host
+   * restart lost the persisted publish identity: the rolling summary review is
+   * found by its hidden marker instead of creating a duplicate (CONTRACT §7.2).
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
+   * @param {{ signal?: AbortSignal }} [options] - request signal.
    * @returns {Promise<Array<{ id: number | null, body: string, url: string, author: string, state: string, submittedAt: string }>>} normalized reviews.
    */
-  async listPullReviews(repo, number) {
+  async listPullReviews(repo, number, options = {}) {
     const [owner, name] = splitRepo(repo)
     const numeric = typeof number === 'number' ? number : Number(number)
     if (!Number.isInteger(numeric) || numeric <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
-    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/reviews?per_page=100`)
-    const list = Array.isArray(data) ? data : []
-    return list.map((review) => ({
-      id: Number.isInteger(review?.id) ? review.id : null,
-      body: typeof review?.body === 'string' ? review.body : '',
-      url: typeof review?.html_url === 'string' ? review.html_url : '',
-      author: review?.user?.login ?? 'ghost',
-      state: typeof review?.state === 'string' ? review.state : 'COMMENTED',
-      submittedAt: typeof review?.submitted_at === 'string' ? review.submitted_at : '',
-    }))
+    /** @type {Array<{ id: number | null, body: string, url: string, author: string, state: string, submittedAt: string }>} */
+    const reviews = []
+    for (let page = 1; page <= MAX_REVIEW_PAGES; page += 1) {
+      const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/reviews?per_page=${REVIEW_PAGE_SIZE}&page=${page}`, { signal: options.signal })
+      const batch = Array.isArray(data) ? data : []
+      for (const review of batch) {
+        reviews.push({
+          id: Number.isInteger(review?.id) ? review.id : null,
+          body: typeof review?.body === 'string' ? review.body : '',
+          url: typeof review?.html_url === 'string' ? review.html_url : '',
+          author: review?.user?.login ?? 'ghost',
+          state: typeof review?.state === 'string' ? review.state : 'COMMENTED',
+          submittedAt: typeof review?.submitted_at === 'string' ? review.submitted_at : '',
+        })
+      }
+      if (batch.length < REVIEW_PAGE_SIZE) break
+    }
+    return reviews
   }
 
   /**
-   * List the PR's existing inline review comments (all authors, newest pages
-   * included) so a publish can skip findings whose marker already exists.
-   * This read is deliberately uncached: it runs right after a write.
+   * List the PR's existing inline review comments (all authors, paginated) so a
+   * publish can skip findings whose marker already exists. This read is
+   * deliberately uncached: it runs right after a write.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
+   * @param {{ signal?: AbortSignal }} [options] - request signal.
    * @returns {Promise<Array<{ path: string, line: number | null, body: string, author: string, createdAt: string }>>} normalized comments.
    */
-  async listPullReviewComments(repo, number) {
+  async listPullReviewComments(repo, number, options = {}) {
     const [owner, name] = splitRepo(repo)
     const numeric = typeof number === 'number' ? number : Number(number)
     if (!Number.isInteger(numeric) || numeric <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
     /** @type {Array<{ path: string, line: number | null, body: string, author: string, createdAt: string }>} */
     const comments = []
     for (let page = 1; page <= MAX_REVIEW_COMMENT_PAGES; page += 1) {
-      const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/comments?per_page=${REVIEW_COMMENT_PAGE_SIZE}&page=${page}`)
+      const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/comments?per_page=${REVIEW_COMMENT_PAGE_SIZE}&page=${page}`, { signal: options.signal })
       const batch = Array.isArray(data) ? data : []
       for (const comment of batch) {
         comments.push({
@@ -1694,7 +1759,10 @@ function mapReviewWriteError(error) {
   const message = typeof error.message === 'string' ? error.message : ''
   const suffix = message === '' ? '' : `（${message.slice(0, 200)}）`
   if (status === 422 || /HTTP 422/.test(message)) {
-    return new AppError('BAD_REQUEST', `${USER_MESSAGES.BAD_REQUEST}：GitHub 拒绝了本次发布${suffix}`)
+    // GitHub's 422 body names the offending field (usually a comment anchor), so
+    // surface it: "the publish failed" alone cannot be acted on.
+    const detail = describeReviewRejection(error.details?.errors)
+    return new AppError('BAD_REQUEST', `${USER_MESSAGES.BAD_REQUEST}：GitHub 拒绝了本次发布${detail}${suffix}`)
   }
   if (status === 429 || /HTTP 429/.test(message)) return new AppError('GH_RATE_LIMIT', message || USER_MESSAGES.GH_RATE_LIMIT)
   if (status === 403 || /HTTP 403/.test(message)) {
@@ -1704,4 +1772,22 @@ function mapReviewWriteError(error) {
   }
   if (status === 404 || /HTTP 404/.test(message)) return new AppError('GH_NOT_FOUND', message || USER_MESSAGES.GH_NOT_FOUND)
   return error
+}
+
+/**
+ * Summarize GitHub's `errors[]` for a rejected review write.
+ * @param {unknown} errors - `errors` array from the API response.
+ * @returns {string} a short `（首个原因）` suffix, or '' when nothing useful.
+ */
+function describeReviewRejection(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) return ''
+  for (const entry of errors) {
+    if (entry === null || typeof entry !== 'object') continue
+    const code = typeof entry.code === 'string' ? entry.code : ''
+    const field = typeof entry.field === 'string' ? entry.field : ''
+    const text = typeof entry.message === 'string' ? entry.message : ''
+    const parts = [field, code, text].filter((part) => part !== '')
+    if (parts.length > 0) return `（首个原因：${parts.join(' · ').slice(0, 160)}）`
+  }
+  return ''
 }

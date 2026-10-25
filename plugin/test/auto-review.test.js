@@ -13,6 +13,7 @@ import {
   AUTO_REVIEW_DEFAULTS,
   AUTO_REVIEW_RETRY_AFTER_MS,
   AutoReviewer,
+  prunePublishedMap,
   resolveAutoReviewStatePath,
   sanitizeAutoReviewConfig,
   sanitizePublishedMap,
@@ -781,6 +782,75 @@ test('sanitizeRecentList/sanitizePublishedMap keep only well-formed records', ()
   assert.deepEqual(sanitizePublishedMap(null), {})
 })
 
+test('sanitizePublishedMap drops records that could never be replayed', () => {
+  // reviewId 0 / empty url would replay as "published" with a dead link.
+  assert.deepEqual(sanitizePublishedMap({
+    'A/b#1@sha-0': { publishedAt: 5, reviewId: 0, url: 'https://x' },
+    'A/b#1@sha-1': { publishedAt: 5, reviewId: 9, url: '' },
+    'A/b#1@sha-2': { publishedAt: 5, reviewId: 9, url: 'https://x', request: 'deadbeef1234' },
+  }), {
+    'A/b#1@sha-2': { publishedAt: 5, reviewId: 9, url: 'https://x', request: 'deadbeef1234' },
+  })
+})
+
+test('prunePublishedMap keeps every rolling record and the newest head records', () => {
+  const published = {
+    'A/b#1': { publishedAt: 1, reviewId: 11, url: 'u1' },
+    'A/b#2': { publishedAt: 2, reviewId: 12, url: 'u2' },
+    'A/b#1@sha-a': { publishedAt: 10, reviewId: 11, url: 'u1' },
+    'A/b#1@sha-b': { publishedAt: 30, reviewId: 11, url: 'u1' },
+    'A/b#1@sha-c': { publishedAt: 20, reviewId: 11, url: 'u1' },
+  }
+  const pruned = prunePublishedMap(published, 2)
+  assert.deepEqual(Object.keys(pruned).sort(), ['A/b#1', 'A/b#1@sha-b', 'A/b#1@sha-c', 'A/b#2'])
+})
+
+test('shouldRetryFailedReview survives restart and recent-list eviction', async () => {
+  const dir = makeTempDir()
+  const clock = makeClock()
+  const failing = {
+    items: [makeItem(1)],
+    details: { 1: makeDetail('sha-1') },
+  }
+  const first = makeReviewer({
+    dir,
+    clock,
+    github: makeGithub(failing),
+    engine: makeEngine({ statusFor: () => ({ state: 'error', findings: [], error: { code: 'LLM_ERROR', message: 'boom' } }) }),
+    recentLimit: 1,
+  })
+  first.reviewer.updateConfig({ enabled: true })
+  await first.reviewer.runCycle({ force: false })
+  assert.equal(first.reviewer.status().recent[0].state, 'error')
+
+  // A restart rebuilds the in-memory history from the state file; the persisted
+  // cursor still knows when this head failed, even after `recent` was capped.
+  const second = makeReviewer({ dir, clock, github: makeGithub(failing), recentLimit: 1, retryAfterMs: 60_000 })
+  assert.equal(second.reviewer.shouldRetryFailedReview('Acme/repo', 1, 'sha-1'), false, 'inside the retry window')
+  clock.advance(61_000)
+  assert.equal(second.reviewer.shouldRetryFailedReview('Acme/repo', 1, 'sha-1'), true, 'after the window')
+
+  // A head that finished successfully is never retried, even if the cursor
+  // later loses its failedAt for a different head.
+  second.reviewer.recordResult({ repo: 'Acme/repo', number: 1, headSha: 'sha-1', state: 'done', findings: 0, finishedAt: clock.now() })
+  assert.equal(second.reviewer.shouldRetryFailedReview('Acme/repo', 1, 'sha-1'), false)
+})
+
+test('setPublishedMany writes the head pointer and rolling identity in one persist', () => {
+  const dir = makeTempDir()
+  const reviewer = makeReviewer({ dir }).reviewer
+  reviewer.setPublishedMany([
+    { key: 'Acme/repo#1@sha-1', record: { publishedAt: 1, reviewId: 42, url: 'https://x/42', fingerprint: 'abcdef123456', request: '0123456789ab' } },
+    { key: 'Acme/repo#1', record: { publishedAt: 1, reviewId: 42, url: 'https://x/42', fingerprint: 'abcdef123456' } },
+  ])
+  const file = JSON.parse(readFileSync(join(dir, '.codex-review', 'auto-review.json'), 'utf8'))
+  assert.equal(file.published['Acme/repo#1@sha-1'].request, '0123456789ab')
+  assert.equal(file.published['Acme/repo#1'].reviewId, 42)
+  // Unusable entries are skipped, never persisted as a dead pointer.
+  reviewer.setPublishedMany([{ key: 'Acme/repo#2@sha-2', record: { publishedAt: 2, reviewId: 0, url: '' } }])
+  assert.equal(reviewer.getPublished('Acme/repo#2@sha-2'), undefined)
+})
+
 test('publish records are persisted and readable after a restart (CONTRACT §7.2 #6)', () => {
   const dir = makeTempDir()
   const first = makeReviewer({ dir })
@@ -825,11 +895,35 @@ test('automatic publishing posts the just-reviewed head only when enabled', asyn
   reviewer.updateConfig({ enabled: true, publish: { enabled: true, mode: 'summary', minSeverity: 'P1', maxComments: 5 } })
   await reviewer.runCycle({ force: false })
   assert.equal(publisher.calls.length, 1)
-  assert.deepEqual(publisher.calls[0], { repo: 'Acme/repo', number: 1, confirm: true, mode: 'summary', minSeverity: 'P1', maxComments: 5 })
+  // The publish is bound to the head and the job this cycle just finished, so
+  // the publisher cannot drift to a newer head or a different job.
+  assert.deepEqual(publisher.calls[0], {
+    repo: 'Acme/repo',
+    number: 1,
+    confirm: true,
+    headSha: 'sha-1',
+    jobId: 'job-1',
+    mode: 'summary',
+    minSeverity: 'P1',
+    maxComments: 5,
+  })
   assert.deepEqual(reviewer.status().recent[0].published, { reviewId: 9, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-9' })
   assert.equal(reviewer.status().lastError, undefined)
   const file = JSON.parse(readFileSync(join(dir, '.codex-review', 'auto-review.json'), 'utf8'))
   assert.deepEqual(file.recent[0].published, { reviewId: 9, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-9' })
+})
+
+test('automatic publishing is skipped for a partial review and never writes to GitHub', async () => {
+  const publisher = makePublisherSpy()
+  const github = makeGithub({ items: [makeItem(1)], details: { 1: makeDetail('sha-1') } })
+  const engine = makeEngine({
+    statusFor: () => ({ state: 'done', partial: true, partialReasons: ['chunk 2 超时'], findings: [], verdict: 'approve', overview: '部分结果' }),
+  })
+  const { reviewer } = makeReviewer({ github, engine, publisher })
+  reviewer.updateConfig({ enabled: true, publish: { enabled: true } })
+  await reviewer.runCycle({ force: false })
+  assert.equal(publisher.calls.length, 0, 'an incomplete review must not publish')
+  assert.equal(reviewer.status().recent[0].partial, true, 'the partial flag is kept in the history')
 })
 
 test('a failed automatic publish only records lastError and never retries in a loop', async () => {

@@ -25,6 +25,9 @@ export const USER_MESSAGES = {
   MERGE_NOT_ALLOWED: 'PR 当前状态不允许合并',
   MERGE_HEAD_MOVED: 'PR 已有新提交，请刷新后重试',
   REVIEW_NOT_READY: '该 PR 当前提交还没有完成的 AI 审查结果，请先运行 AI 审查',
+  REVIEW_PARTIAL: '这次审查没有完成全部文件，结果不完整，不能发布；请重新审查后再试',
+  REVIEW_HEAD_MOVED: 'PR 已有新提交，请刷新并重新审查后再发布',
+  PUBLISH_UNKNOWN: '发布结果未知：GitHub 可能已经写入，请刷新 PR 确认后再决定是否重试',
   BUSY: '当前请求过多，请稍后再试',
   INTERNAL: '插件内部错误',
 }

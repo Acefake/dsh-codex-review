@@ -221,7 +221,7 @@ function mapRouteError(error, signal) {
  * a thrown AppError travels as the error envelope at HTTP 200, unknown paths
  * answer 404, and fence/content-type failures answer 403/415 without a body
  * shape the client could mistake for a route answer.
- * @param {{ routes: Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>, deadlineMs?: number, maxBodyBytes?: number, logger?: { warn?: (message: string) => void } }} options - handler wiring.
+ * @param {{ routes: Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>, deadlineMs?: number, deadlines?: Record<string, number>, maxBodyBytes?: number, logger?: { warn?: (message: string) => void } }} options - handler wiring.
  * @returns {(request: any, response: any) => Promise<void>} the node request handler.
  */
 export function createJsonRouteHandler(options) {
@@ -230,6 +230,17 @@ export function createJsonRouteHandler(options) {
   const deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS
   const maxBodyBytes = options.maxBodyBytes ?? BODY_LIMIT_BYTES
   const logger = options.logger
+  const deadlines = options.deadlines !== null && typeof options.deadlines === 'object' ? options.deadlines : {}
+  /**
+   * Per-route deadline override. A route that legitimately performs several
+   * sequential GitHub writes (publish) needs a longer budget than a read.
+   * @param {string} pathname - exact route path.
+   * @returns {number} deadline in milliseconds.
+   */
+  const routeDeadline = (pathname) => {
+    const override = Number(deadlines[pathname])
+    return Number.isFinite(override) && override > 0 ? override : deadlineMs
+  }
   return async function handler(request, response) {
     /** @type {AbortSignal | undefined} */
     let signal
@@ -264,7 +275,7 @@ export function createJsonRouteHandler(options) {
       const value = await withDeadline((deadlineSignal) => {
         signal = deadlineSignal
         return route(body.value, { signal: deadlineSignal })
-      }, { deadlineMs })
+      }, { deadlineMs: routeDeadline(pathname) })
       writeJson(response, 200, { ok: true, value })
     } catch (error) {
       const publicError = mapRouteError(error, signal)

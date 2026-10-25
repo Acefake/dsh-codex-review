@@ -170,6 +170,7 @@ export function sanitizeRecentList(raw, limit = AUTO_REVIEW_RECENT_LIMIT) {
     }
     if (typeof entry.verdict === 'string' && ['block', 'changes', 'approve'].includes(entry.verdict)) clean.verdict = entry.verdict
     if (typeof entry.overview === 'string') clean.overview = entry.overview
+    if (entry.partial === true) clean.partial = true
     if (entry.error !== null && typeof entry.error === 'object' && !Array.isArray(entry.error)) {
       const error = /** @type {Record<string, unknown>} */ (entry.error)
       if (typeof error.code === 'string' && error.code !== '') {
@@ -198,7 +199,7 @@ export function sanitizeRecentList(raw, limit = AUTO_REVIEW_RECENT_LIMIT) {
  * @returns {Record<string, { publishedAt: number, reviewId: number, url: string, fingerprint?: string }>} sanitized records.
  */
 export function sanitizePublishedMap(raw) {
-  /** @type {Record<string, { publishedAt: number, reviewId: number, url: string, fingerprint?: string }>} */
+  /** @type {Record<string, { publishedAt: number, reviewId: number, url: string, fingerprint?: string, request?: string }>} */
   const published = {}
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return published
   for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
@@ -206,27 +207,58 @@ export function sanitizePublishedMap(raw) {
     const entry = /** @type {Record<string, unknown>} */ (value)
     const publishedAt = Number(entry.publishedAt)
     const reviewId = Number(entry.reviewId)
-    if (!Number.isFinite(publishedAt) || publishedAt < 0 || !Number.isFinite(reviewId) || reviewId < 0) continue
-    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string }} */
+    if (!Number.isFinite(publishedAt) || publishedAt < 0 || !Number.isFinite(reviewId) || reviewId <= 0) continue
+    const url = typeof entry.url === 'string' ? entry.url : ''
+    if (url === '') continue
+    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string, request?: string }} */
     const record = {
       publishedAt: Math.floor(publishedAt),
       reviewId: Math.floor(reviewId),
-      url: typeof entry.url === 'string' ? entry.url : '',
+      url,
     }
     if (typeof entry.fingerprint === 'string' && /^[0-9a-f]{6,40}$/.test(entry.fingerprint)) record.fingerprint = entry.fingerprint
+    if (typeof entry.request === 'string' && /^[0-9a-f]{6,40}$/.test(entry.request)) record.request = entry.request
     published[key] = record
   }
   return published
 }
 
+/** Keep at most this many per-head publish records; the rolling record is separate. */
+export const PUBLISHED_HEAD_LIMIT = 200
+
+/**
+ * Bound the persisted publish map so the state file cannot grow without limit.
+ * The rolling record (`repo#number`) always survives; per-head records are kept
+ * newest-first up to {@link PUBLISHED_HEAD_LIMIT}.
+ * @param {Record<string, { publishedAt: number }>} published - record map.
+ * @param {number} [limit] - maximum head records.
+ * @returns {Record<string, any>} bounded copy.
+ */
+export function prunePublishedMap(published, limit = PUBLISHED_HEAD_LIMIT) {
+  const max = Number.isInteger(limit) && limit > 0 ? limit : PUBLISHED_HEAD_LIMIT
+  const rolling = {}
+  /** @type {Array<[string, any]>} */
+  const heads = []
+  for (const [key, record] of Object.entries(published ?? {})) {
+    if (key.includes('@')) heads.push([key, record])
+    else rolling[key] = record
+  }
+  heads.sort((left, right) => Number(right[1]?.publishedAt) - Number(left[1]?.publishedAt))
+  /** @type {Record<string, any>} */
+  const bounded = { ...rolling }
+  for (const [key, record] of heads.slice(0, max)) bounded[key] = record
+  return bounded
+}
+
 /**
  * Normalize the persisted `seen` map: entries need a non-empty `headSha` and a
- * usable timestamp; anything else is dropped.
+ * usable timestamp; anything else is dropped. `failedAt` (v2.5) carries the last
+ * failed attempt so retries survive both a restart and `recent` eviction.
  * @param {unknown} raw - persisted seen value.
- * @returns {Record<string, { headSha: string, at: number }>} sanitized cursor map.
+ * @returns {Record<string, { headSha: string, at: number, failedAt?: number }>} sanitized cursor map.
  */
 export function sanitizeSeenMap(raw) {
-  /** @type {Record<string, { headSha: string, at: number }>} */
+  /** @type {Record<string, { headSha: string, at: number, failedAt?: number }>} */
   const seen = {}
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return seen
   for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
@@ -235,7 +267,11 @@ export function sanitizeSeenMap(raw) {
     if (typeof entry.headSha !== 'string' || entry.headSha === '') continue
     const at = Number(entry.at)
     if (!Number.isFinite(at) || at < 0) continue
-    seen[key] = { headSha: entry.headSha, at: Math.floor(at) }
+    /** @type {{ headSha: string, at: number, failedAt?: number }} */
+    const cursor = { headSha: entry.headSha, at: Math.floor(at) }
+    const failedAt = Number(entry.failedAt)
+    if (Number.isFinite(failedAt) && failedAt >= 0) cursor.failedAt = Math.floor(failedAt)
+    seen[key] = cursor
   }
   return seen
 }
@@ -323,7 +359,7 @@ export class AutoReviewer {
   /**
    * Read one persisted publish record.
    * @param {string} key - `repo#number@headSha` (per head) or `repo#number` (rolling summary).
-   * @returns {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string } | undefined} the record.
+   * @returns {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string, request?: string } | undefined} the record.
    */
   getPublished(key) {
     return this.published[key]
@@ -333,25 +369,60 @@ export class AutoReviewer {
    * Persist one publish record (CONTRACT §7.2 #6/#8: one publish per head plus
    * the rolling summary identity, kept across reloads so a restarted Host never
    * re-publishes the same head and never duplicates the summary review). The
-   * optional fingerprint lets a later publish skip content that is already on
-   * GitHub.
+   * fingerprint records what was written and `request` records which parameters
+   * asked for it, so a repeat replays only when both still match. The whole
+   * write is one atomic file replace: a crash cannot leave a half-record.
    * @param {string} key - `repo#number@headSha` (per head) or `repo#number` (rolling summary).
-   * @param {{ publishedAt?: number, reviewId?: number, url?: string, fingerprint?: string }} record - publish identity.
+   * @param {{ publishedAt?: number, reviewId?: number, url?: string, fingerprint?: string, request?: string }} record - publish identity.
    * @returns {void}
    */
   setPublished(key, record) {
     if (typeof key !== 'string' || key === '' || record === null || typeof record !== 'object') return
     const reviewId = Number(record.reviewId)
     const publishedAt = Number(record.publishedAt)
-    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string }} */
+    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string, request?: string }} */
     const identity = {
       publishedAt: Number.isFinite(publishedAt) && publishedAt >= 0 ? Math.floor(publishedAt) : this.now(),
-      reviewId: Number.isFinite(reviewId) && reviewId >= 0 ? Math.floor(reviewId) : 0,
+      reviewId: Number.isFinite(reviewId) && reviewId > 0 ? Math.floor(reviewId) : 0,
       url: typeof record.url === 'string' ? record.url : '',
     }
     if (typeof record.fingerprint === 'string' && /^[0-9a-f]{6,40}$/.test(record.fingerprint)) identity.fingerprint = record.fingerprint
+    if (typeof record.request === 'string' && /^[0-9a-f]{6,40}$/.test(record.request)) identity.request = record.request
     this.published[key] = identity
     this.persistState()
+  }
+
+  /**
+   * Persist several publish records in one atomic write. A publish writes the
+   * per-head pointer and the rolling identity together: either both land or
+   * neither does, and the state file is rewritten once instead of twice.
+   * @param {Array<{ key: string, record: any }>} entries - records to persist.
+   * @returns {void}
+   */
+  setPublishedMany(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return
+    let changed = false
+    for (const entry of entries) {
+      const key = typeof entry?.key === 'string' ? entry.key : ''
+      const record = entry?.record
+      if (key === '' || record === null || typeof record !== 'object') continue
+      const reviewId = Number(record.reviewId)
+      if (!(reviewId > 0)) continue
+      const url = typeof record.url === 'string' ? record.url : ''
+      if (url === '') continue
+      const publishedAt = Number(record.publishedAt)
+      /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string, request?: string }} */
+      const identity = {
+        publishedAt: Number.isFinite(publishedAt) && publishedAt >= 0 ? Math.floor(publishedAt) : this.now(),
+        reviewId: Math.floor(reviewId),
+        url,
+      }
+      if (typeof record.fingerprint === 'string' && /^[0-9a-f]{6,40}$/.test(record.fingerprint)) identity.fingerprint = record.fingerprint
+      if (typeof record.request === 'string' && /^[0-9a-f]{6,40}$/.test(record.request)) identity.request = record.request
+      this.published[key] = identity
+      changed = true
+    }
+    if (changed) this.persistState()
   }
 
   /**
@@ -420,12 +491,12 @@ export class AutoReviewer {
         version: AUTO_REVIEW_VERSION,
         config: this.config,
         seen: this.seen,
-        published: this.published,
+        published: prunePublishedMap(this.published),
         recent: this.recent.slice(0, this.recentLimit),
       }
       if (this.lastCycleAt !== undefined) payload.lastCycleAt = this.lastCycleAt
       const tmpPath = `${this.statePath}.tmp-${process.pid}-${Math.floor(this.now())}`
-      writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8')
+      writeFileSync(tmpPath, JSON.stringify(payload), 'utf8')
       renameSync(tmpPath, this.statePath)
     } catch (error) {
       this.logger?.warn?.(`dsh-codex-review: cannot persist auto-review state: ${error?.message ?? error}`)
@@ -573,16 +644,20 @@ export class AutoReviewer {
 
   /**
    * Whether the last attempt for this exact head failed and its retry pause has
-   * elapsed. A finished (done/cancelled) head is never retried.
+   * elapsed. The failure timestamp is persisted in `seen` itself, so the answer
+   * survives a restart and does not depend on the capped `recent` list. A
+   * finished (done/cancelled) head is never retried.
    * @param {string} repo - `owner/name`.
    * @param {number} number - PR number.
    * @param {string} headSha - head commit.
    * @returns {boolean} true when a retry is allowed.
    */
   shouldRetryFailedReview(repo, number, headSha) {
-    const last = this.recent.find((entry) => entry.repo === repo && entry.number === number && entry.headSha === headSha)
-    if (last === undefined || last.state !== 'error') return false
-    return this.now() - last.finishedAt >= this.retryAfterMs
+    const seen = this.seen[`${repo}#${number}`]
+    if (seen === undefined || seen.headSha !== headSha) return false
+    const failedAt = Number(seen.failedAt)
+    if (!Number.isFinite(failedAt) || failedAt < 0) return false
+    return this.now() - failedAt >= this.retryAfterMs
   }
 
   /**
@@ -631,20 +706,23 @@ export class AutoReviewer {
         findings: Array.isArray(status?.findings) ? status.findings.length : 0,
         finishedAt: this.now(),
       }
+      if (status?.partial === true) entry.partial = true
       if (status?.verdict !== undefined) entry.verdict = status.verdict
       if (status?.overview !== undefined) entry.overview = status.overview
       if (state === 'error') {
         entry.error = status?.error ?? { code: 'LLM_ERROR', message: USER_MESSAGES.LLM_ERROR }
         this.logger?.warn?.(`dsh-codex-review: auto review ${key} failed: ${entry.error.message}`)
       }
-      if (state === 'done' && this.config.publish?.enabled === true && this.publisher !== undefined) {
-        // Automatic publishing targets exactly the head this cycle just
+      if (state === 'done' && entry.partial !== true && this.config.publish?.enabled === true && this.publisher !== undefined) {
+        // Automatic publishing targets exactly the head and job this cycle just
         // reviewed — never a historical head, never a backfill (CONTRACT §7.2 #8).
         try {
           const published = await this.publisher.publish({
             repo,
             number,
             confirm: true,
+            headSha,
+            jobId: started.jobId,
             mode: this.config.publish.mode,
             minSeverity: this.config.publish.minSeverity,
             maxComments: this.config.publish.maxComments,
@@ -658,6 +736,8 @@ export class AutoReviewer {
           this.lastError = toPublicError(error)
           this.logger?.warn?.(`dsh-codex-review: auto publish ${key} failed: ${this.lastError.message}`)
         }
+      } else if (state === 'done' && entry.partial === true && this.config.publish?.enabled === true) {
+        this.logger?.warn?.(`dsh-codex-review: auto publish ${key} skipped: review is partial`)
       }
       this.recordResult(entry)
       return entry
@@ -677,7 +757,12 @@ export class AutoReviewer {
    */
   recordResult(entry) {
     if (typeof entry?.headSha === 'string' && entry.headSha !== '') {
-      this.seen[`${entry.repo}#${entry.number}`] = { headSha: entry.headSha, at: entry.finishedAt }
+      /** @type {{ headSha: string, at: number, failedAt?: number }} */
+      const cursor = { headSha: entry.headSha, at: entry.finishedAt }
+      // Persist the failure time on the cursor itself: the retry decision must
+      // not depend on the capped `recent` history (CONTRACT §6.2).
+      if (entry.state === 'error') cursor.failedAt = entry.finishedAt
+      this.seen[`${entry.repo}#${entry.number}`] = cursor
     }
     this.recent.unshift(entry)
     if (this.recent.length > this.recentLimit) this.recent.length = this.recentLimit

@@ -25,6 +25,7 @@ import {
   PUBLISH_MODES,
   PUBLISH_SEVERITIES,
   PUBLISH_SUMMARY_MAX_CHARS,
+  PUBLISH_TIMEOUT_MS,
   ReviewPublisher,
 } from './lib/publish.js'
 import { ROUTE_PREFIX, createChatRouteHandler, createJsonRouteHandler } from './lib/http.js'
@@ -47,7 +48,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.9.1'
+export const VERSION = '0.10.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -235,6 +236,9 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       set: (key, record) => {
         if (typeof reviewer.setPublished === 'function') reviewer.setPublished(key, record)
       },
+      setMany: (entries) => {
+        if (typeof reviewer.setPublishedMany === 'function') reviewer.setPublishedMany(entries)
+      },
     },
   })
   if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
@@ -252,6 +256,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const handler = createJsonRouteHandler({
     routes,
     deadlineMs: config.requestTimeoutMs,
+    deadlines: { [PATHS.reviewPublish]: PUBLISH_TIMEOUT_MS + 5_000 },
     logger,
   })
   const chatHandler = createChatRouteHandler({
@@ -280,6 +285,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   // A plugin dispose must stop every live chat stream, not just its listeners.
   ctx.effect(() => () => chatLimiter.abortAll(new AppError('INTERNAL', '插件已卸载')), 'dsh-codex-review: chat streams')
   ctx.effect(() => () => reviewer.dispose(), 'dsh-codex-review: auto-review scheduler')
+  // Drop pending publish locks so a reload never leaves callers chained forever.
+  ctx.effect(() => () => {
+    if (typeof publisher.dispose === 'function') publisher.dispose()
+  }, 'dsh-codex-review: review publisher')
 }
 
 /**
@@ -439,12 +448,19 @@ export function createRoutes(wiring) {
         await engine.waitForCompletion(jobId)
         const finished = engine.status(jobId)
         if (finished?.state !== 'done') return
+        // A partially completed review must never be published as complete.
+        if (finished.partial === true) {
+          logger?.warn?.(`dsh-codex-review: auto publish skipped ${repo}#${number}: review is partial`)
+          return
+        }
         const publishConfig = reviewer?.status?.()?.publish
         if (publishConfig?.enabled !== true) return
         await publisher.publish({
           repo,
           number,
           confirm: true,
+          headSha: finished.headSha,
+          jobId,
           mode: publishConfig.mode,
           minSeverity: publishConfig.minSeverity,
           maxComments: publishConfig.maxComments,
@@ -675,7 +691,7 @@ export function createRoutes(wiring) {
       return reviewer.runOnce({ force: payload.force === true })
     },
 
-    [PATHS.reviewPublish]: async (payload) => {
+    [PATHS.reviewPublish]: async (payload, context) => {
       const { repo, number } = requirePullRef(payload)
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
@@ -693,14 +709,19 @@ export function createRoutes(wiring) {
         if (trimmed !== '') customBody = trimmed
       }
       if (publisher === undefined) throw new AppError('INTERNAL', '发布器未初始化')
+      const jobId = typeof payload.jobId === 'string' ? payload.jobId.trim() : ''
+      const headSha = typeof payload.headSha === 'string' ? payload.headSha.trim() : ''
       return publisher.publish({
         repo,
         number,
         confirm: true,
+        ...(jobId === '' ? {} : { jobId }),
+        ...(headSha === '' ? {} : { headSha }),
         mode,
         minSeverity,
         maxComments: publishConfig.maxComments ?? PUBLISH_DEFAULTS.maxComments,
         body: customBody,
+        signal: context?.signal,
       })
     },
 

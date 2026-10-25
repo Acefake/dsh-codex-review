@@ -113,6 +113,25 @@
 - **颜色修正**：界面不再使用暖色硬编码或固定品牌色，所有 surface/text/border/强调色都来自宿主 `--dsw-alias-*` token（或在其上做 color-mix）；主按钮改为中性高对比（label-primary 底 + bg 字），深浅主题都跟随 DSH。
 - 版本 0.9.1；测试 246 例；dev 预览 11/11 场景通过（另含设置页 `?scene=settings` 渲染场景）。
 
+## v2.5 加固（0.10.0）：发布链路的 19 个漏洞与不完善点
+
+审计 v2.4 滚动发布实现后发现的问题，逐个修掉（契约见 CONTRACT.md §7.6）：
+
+- **不完整审查不再发布**：`partial` 的审查在宿主与客户端都被拦住（`REVIEW_PARTIAL`），不会把漏审文件的结论当成完整结果写进 PR。
+- **发布绑定到具体那次审查**：请求与自动发布都带上 `headSha`/`jobId`，发布前用未缓存的接口复核 head；变了就 `REVIEW_HEAD_MOVED`，不再可能把 A 次审查的结果发到 B 个 head 上。
+- **同 head 幂等只在同一请求内成立**：head 记录里加 `request` 指纹，改了 mode/最低严重度/摘要正文会真的重新发布，而不是静默返回"0 条评论"。
+- **纯行内发布不再抢走滚动身份**：只有带汇总 body 的 review 才能写 `repo#number`，时间线不会出现两条带 summary marker 的 review。
+- **汇总不再被 `maxComments` 截断**：摘要列出全部满足严重度阈值的问题，`maxComments` 只限制行内条数。
+- **恢复只信自己**：marker 与滚动 review 的 `author` 必须是当前 token 用户；同时兼容 v2.4 之前没有 marker 的历史汇总（固定标题 + 作者），升级后不会给老 PR 再建一条。
+- **分页读全**：reviews 20×100、review comments 10×100，状态丢失后旧 marker 不会漏。
+- **记录不再回放空链接**：`reviewId <= 0` 或 `url` 为空的记录不落盘；head + rolling 两条记录一次原子写入。
+- **状态文件有界、失败可重试**：`published` 只留最新 200 条 head 记录（滚动记录全留），失败重试由持久化的 `failedAt` 决定，不依赖会被挤出的 `recent`。
+- **发布有 30 秒预算**：路由 deadline 是 35 秒、客户端也等 35 秒；预算耗尽返回 `PUBLISH_UNKNOWN`，明确告诉用户 GitHub 上可能已经写入。
+- **422 不再一条不发**：行内锚点被 GitHub 拒绝时去掉评论重试一次，至少保住汇总，并返回真实的评论数。
+- **模型文本净化**：发布前剥掉 HTML 注释、转义 `@`，模型输出既不能伪造 marker，也不能误 @ 真人。
+- **UI 不再误报**：成功提示区分「已创建 / 已更新 / 无变化」；`GH_NOT_FOUND` 不再被当成"旧宿主没有发布路由"而把按钮藏掉。
+- 版本 0.10.0；测试 267 例。
+
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
 
 ```yaml
@@ -146,29 +165,30 @@ lib/github.js      gh token→fetch + gh CLI 兜底、缓存、截断、stack �
 lib/review.js      v1.1：审查选项/深度预设、文件级增量缓存、分块并发、复核轮、证据校验、job 状态机
 lib/chat.js        v2：PR 对话上下文拼装、SSE 帧编码、并发限流、错误映射
 lib/auto-review.js v2.1：自动审查调度器（定时扫描、seen 游标、状态持久化、配置夹取、自动发布）
-lib/publish.js     v2.2/v2.4：发布审查到 GitHub（finding→评论映射、marker 去重、幂等记录、并发去重、滚动汇总 review 原地更新）
+lib/publish.js     v2.2/v2.4/v2.5：发布审查到 GitHub（finding→评论映射、marker 去重、幂等记录、并发去重、滚动汇总 review 原地更新、partial/head 绑定/超时预算/422 降级）
 lib/config.js      Standard Schema（Schemastery 三路解析或自带兜底）+ 代码级 resolveConfig
 lib/errors.js      错误码与面向用户的中文文案
 client.js          浏览器半边（module-loader bundle，React.createElement）：三栏工作台 + 行内发现卡 + 设置弹层 + 合并确认 + PR 对话 + 发布弹层
-test/              node --test：合并守卫/对话/自动审查/发布/SSE 编码等 246 例
+test/              node --test：合并守卫/对话/自动审查/发布/SSE 编码等 267 例
 dev/               开发预览（preview.html + mock 路由 + Edge/CDP 截图校验），不进安装产物
 locale/            Plugin Manager 显示元数据（zh/en）
 ```
 
 ## 验证
 
-- `node --test` → **246/246**（v1 74 → v1.1 115 → v2 163 → v2.1 186 → v2.2 228 → v2.3 238 → v2.4 246；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码、自动审查调度与持久化、发布映射/marker 去重/并发去重/滚动更新、评论写校验与 GraphQL 线程映射）；`node --check` 全部通过。
+- `node --test` → **267/267**（v1 74 → v1.1 115 → v2 163 → v2.1 186 → v2.2 228 → v2.3 238 → v2.4 246 → v2.5 267；含真实 gh 冒烟、指引读取、缓存/选项/复核、合并守卫、对话上下文/SSE 编码、自动审查调度与持久化、发布映射/marker 去重/并发去重/滚动更新、partial 拦截/head 绑定/请求指纹/分页/原子持久化、评论写校验与 GraphQL 线程映射）；`node --check` 全部通过。
 - 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12、v2.1 见 REPORT §13、v2.2 见 REPORT §14、v2.3 见 REPORT §15，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
 - AI 审查实测：v1.1 `depth=fast` 真实运行 + 同设置 `cached=true`；`severityThreshold=P0` 服务端过滤；文件级复用 `reusedFiles=24` 且 0 次额外模型调用（见 REPORT）。
 - 合并：**只做守卫测试，未对真实 PR 执行合并**（避免误操作）；对话：真实流式问答验证（SSE delta→done，1.4s 返回 603 字上下文相关回答）。
 - 发布：装置侧校验分支与页面取消路径 **0 写入**；功能侧做过一次真实自动发布验证（2026-10-25：#139 → review `5640905093` / 19 条行内评论，#141 → 13 条），未合并。
 - 评论写操作：**只做校验分支与页面取消路径验证，未真实回复/解决/发评论**（`--v23` 硬约束：confirmTrueSent=0、writes=0）。
 - 滚动发布（v2.4）：单测覆盖原地更新/无变化不写/marker 找回/404 回退/并发；**未主动对用户 PR 发写请求**，真实滚动更新会在你下一次审查（自动发布开启时）自然发生。
+- 发布加固（v2.5）：14 项修复都有单测（partial 拦截、head 绑定、请求指纹、纯行内不抢滚动身份、摘要不再被 maxComments 截断、marker/review 作者校验、分页、空记录不回放、原子持久化、状态有界、30s 预算、422 降级、模型文本净化、dispose 清理）；真实侧只做只读验证（`getPullHead` / `getAuthenticatedUser` / 分页读 reviews 与 comments / 汇总 review 找回），**没有新增任何 GitHub 写请求**。
 
 ## 已知限制
 
 - 合并：需要 GitHub 仓库写权限；受保护分支/合并队列策略由 GitHub 决定，失败会回显 code/message。成功后不自动推送本地分支。
-- 发布：需要 GitHub token 有 `repo` 写权限（只读 token 会返回 `GH_FORBIDDEN`）；finding 的 `line` 必须落在 diff 的 RIGHT 行，GitHub 对越界行会拒绝整条 review（回显 `BAD_REQUEST`）。发布记录（每个 head + 该 PR 的滚动 review）存在本机状态文件，多机不同步；同一 head 重复发布只回放记录；同一 PR 后续审查原地更新汇总 review（内容相同则 0 写入）。
+- 发布：需要 GitHub token 有 `repo` 写权限（只读 token 会返回 `GH_FORBIDDEN`）；finding 的 `line` 必须落在 diff 的 RIGHT 行，越界时 GitHub 会拒绝整条 review——v2.5 起自动去掉行内评论重试一次保住汇总，并在错误信息里回显 GitHub 给出的首个原因。发布记录（每个 head + 该 PR 的滚动 review）存在本机状态文件，多机不同步；同一 head 同一请求重复发布只回放记录；同一 PR 后续审查原地更新汇总 review（内容相同则 0 写入）。
 - 自动发布默认关闭；开启后，之后完成的 AI 审查会真实写入 GitHub：首次创建一条汇总 review，后续原地更新，只有新行内问题会补发。可在「审查设置」里随时关闭。
 - 发布不做 auto-fix：不会修改代码、不会向分支推送提交（另行评估）。
 - 对话：回答基于 PR 上下文（元信息/正文/文件清单/最近审查摘要/当前文件 patch），不是全仓库检索；上下文预算 24k 字。

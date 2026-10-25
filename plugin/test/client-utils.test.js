@@ -1294,3 +1294,72 @@ test('autoReviewDoneToastText prefers findings count and falls back to clean', (
   )
   assert.equal(api.autoReviewDoneToastText(null, t), '')
 })
+
+// ---------------------------------------------------------------------------
+// v2.5: publish request binding, result action, route-missing classification
+// ---------------------------------------------------------------------------
+
+test('buildPublishRequest carries the head and job the user published from', () => {
+  const request = api.buildPublishRequest({
+    summary: { repo: 'Acme/repo', number: 7 },
+    headSha: ' abc123 ',
+    jobId: ' job-9 ',
+    mode: 'both',
+    minSeverity: 'P1',
+  })
+  assert.deepEqual(request, {
+    repo: 'Acme/repo',
+    number: 7,
+    mode: 'both',
+    minSeverity: 'P1',
+    confirm: true,
+    headSha: 'abc123',
+    jobId: 'job-9',
+  })
+  // Missing binding is still a valid request: the Host falls back to the current
+  // head, which keeps an older client working.
+  const bare = api.buildPublishRequest({ summary: { repo: 'Acme/repo', number: 7 } })
+  assert.equal(bare.headSha, undefined)
+  assert.equal(bare.jobId, undefined)
+  assert.equal(api.buildPublishRequest({}), null)
+})
+
+test('normalizePublishResult keeps the Host action so the toast can tell them apart', () => {
+  const base = {
+    published: true,
+    reviewId: 12,
+    url: 'https://github.com/Acme/repo/pull/7#pullrequestreview-12',
+    comments: 0,
+    skipped: 2,
+  }
+  assert.equal(api.normalizePublishResult({ ...base, action: 'updated' }).action, 'updated')
+  assert.equal(api.normalizePublishResult({ ...base, action: 'unchanged' }).action, 'unchanged')
+  assert.equal(api.normalizePublishResult({ ...base, action: 'created' }).action, 'created')
+  // An older Host sends no action: treat it as a create.
+  assert.equal(api.normalizePublishResult(base).action, 'created')
+  assert.equal(api.normalizePublishResult({ ...base, action: 'weird' }).action, 'created')
+  assert.equal(api.normalizePublishResult({ published: false }), null)
+})
+
+test('isPublishRouteMissing treats GH_NOT_FOUND as a real error, not an old Host', () => {
+  // A deleted repository / inaccessible PR must not hide the publish button.
+  assert.equal(api.isPublishRouteMissing({ code: 'GH_NOT_FOUND', message: '没有这个仓库' }), false)
+  assert.equal(api.isPublishRouteMissing({ code: 'GH_FORBIDDEN', message: 'forbidden' }), false)
+  assert.equal(api.isPublishRouteMissing({ code: 'REVIEW_PARTIAL', message: '不完整' }), false)
+  // A host that predates the route answers with a route-shaped BAD_REQUEST.
+  assert.equal(api.isPublishRouteMissing({ code: 'BAD_REQUEST', message: '没有这个路由' }), true)
+  assert.equal(api.isPublishRouteMissing({ code: 'BAD_REQUEST', message: 'route missing' }), true)
+  assert.equal(api.isPublishRouteMissing({ code: 'BAD_REQUEST', message: 'invalid patch' }), false)
+  assert.equal(api.isPublishRouteMissing(null), false)
+})
+
+test('publishErrorKey maps the new publish failures to their own sentences', () => {
+  assert.equal(api.publishErrorKey('REVIEW_PARTIAL'), 'publishPartial')
+  assert.equal(api.publishErrorKey('REVIEW_HEAD_MOVED'), 'publishHeadMoved')
+  assert.equal(api.publishErrorKey('REVIEW_NOT_READY'), 'publishNotReady')
+  assert.equal(api.publishErrorKey('PUBLISH_UNKNOWN'), 'publishUnknown')
+  for (const key of ['publishPartial', 'publishHeadMoved', 'publishUnknown', 'publishUpdated', 'publishUnchanged']) {
+    assert.equal(typeof api.locales.zh[key], 'string')
+    assert.equal(typeof api.locales.en[key], 'string')
+  }
+})

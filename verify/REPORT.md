@@ -638,6 +638,56 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 - 顶部汇总卡在「无审查结果」时不渲染（符合规格 idle 语义）；宿主重启后 review 状态为空，触发一次「用 AI 审查」即可看到。
 - 版本号保持 0.9.1（`index.js` 正被并发会话修改，避免提交其半成品）。
 
+## 20. v2.5 发布加固验收（CONTRACT §7.6）— **单测 PASS + 只读真实探测 PASS；真实写未执行**
+
+> **状态：PASS（2026-10-25 16:2x；`node --test` 267/267；真实 GitHub 只读探测 6/6）**
+> 说明：本轮修的是「发布链路把不完整/过期/别人的结果写到 PR 上」这一类问题。按契约 §7.4 第 2 条与用户约束，**没有对任何 PR 发起写请求**；真实验证只读，写路径由 tripwire 拦截（命中即 FAIL）。
+
+### 20.1 单测（`node --test` → 267/267）
+
+| # | 断言 | 结果 |
+|---|---|---|
+| 1 | `partial` 审查被拒绝（`REVIEW_PARTIAL`），0 次 GitHub 写；自动发布同样跳过并记日志 | PASS |
+| 2 | 请求带 `jobId`/`headSha` 时用该 job，不再"找最新 job"；未知 jobId → `REVIEW_NOT_READY` | PASS |
+| 3 | head 已不是当前 head → `REVIEW_HEAD_MOVED`，不发布 | PASS |
+| 4 | 同 head + 同请求 → 回放 0 写；同 head 换 mode → 真的发布（不再静默 0 写） | PASS |
+| 5 | 纯行内发布不写 `repo#number` 滚动记录（避免两条 summary review） | PASS |
+| 6 | 汇总列出全部 eligible findings，不被 `maxComments` 截断 | PASS |
+| 7 | marker 去重只认本人评论；别人的 marker 不压制 finding | PASS |
+| 8 | 滚动 review 找回只认同作者；无 marker 的历史汇总按"固定标题 + 作者"采纳 | PASS |
+| 9 | `reviewId <= 0` / `url` 为空 → 不解析、不落盘、不回放 | PASS |
+| 10 | 分页读全：reviews 20×100、comments 10×100 | PASS |
+| 11 | `setPublishedMany` 一次原子写入 head + rolling 两条记录 | PASS |
+| 12 | `prunePublishedMap` 保留全部滚动记录 + 最新 200 条 head 记录 | PASS |
+| 13 | 失败重试由持久化 `failedAt` 决定，重启 + `recent` 挤占后仍成立 | PASS |
+| 14 | 422 拒绝行内锚点 → 去掉评论重试一次，`comments` 报实际落地数 | PASS |
+| 15 | 模型文本里的 HTML 注释被剥掉、`@` 被转义，无法伪造 marker / 误 @ | PASS |
+| 16 | `dispose()` 清空 in-flight 与 per-PR 锁并拒绝后续发布 | PASS |
+| 17 | 客户端：`buildPublishRequest` 带 `headSha`/`jobId`；`action` 映射到 created/updated/unchanged；`GH_NOT_FOUND` 不再被判成"无路由" | PASS |
+
+### 20.2 只读真实探测（`node verify/v25-publish-probe.mjs` → 6/6）
+
+```
+PASS  同请求 + 已发布 head → 直接回放，0 次 GitHub 调用  (action=unchanged comments=0 reviewId=5641606932 tripwires=0)
+PASS  partial 审查被拒绝（REVIEW_PARTIAL）  (code=REVIEW_PARTIAL tripwires=0)
+PASS  过期 head 被拒绝（REVIEW_HEAD_MOVED）  (code=REVIEW_HEAD_MOVED tripwires=0)
+PASS  不同请求参数的旧记录不会回放（会真的走发布路径）  (reachedWrite=true tripwires=1)
+PASS  真实 PR 上能找回唯一一条汇总 review  (reviews=23 summary=5641606932)
+PASS  行内 marker 只认本人评论  (own=19 foreign=0 comments=38)
+
+6/6 passed; tripwires hit: 1 (1 expected), unexpected: 0
+```
+
+补充只读观察（Acefake/yingbox，`gh` 实测）：
+
+| PR | reviews | 找回的汇总 review | 带本人 marker 的评论 |
+|---|---|---|---|
+| #139 | 23 | 5641606932 | 19 |
+| #141 | 19 | 5641711856（另有 5641425505 为 v2.4 前无 marker 历史汇总，按固定标题+作者也可采纳） | 13 |
+| #145 | 4 | 5641592279 | 0 |
+
+**v2.5 判定：PASS（单测 267/267 + 只读真实探测 6/6；0 真实 GitHub 写；真实滚动更新仍待用户下一次开启自动发布的审查自然发生）。**
+
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。

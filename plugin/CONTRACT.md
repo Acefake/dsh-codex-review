@@ -561,29 +561,43 @@ type PublishRequest = {
   mode?: 'inline' | 'summary' | 'both'   // 默认 config.publish.mode
   minSeverity?: 'P0' | 'P1' | 'P2'       // 默认 config.publish.minSeverity
   body?: string                          // 可选：覆盖摘要正文（≤4000）
+  headSha?: string                       // v2.5：绑定到用户看到的那次审查的 head
+  jobId?: string                         // v2.5：绑定到具体 job，取该 job 的结果而不是"最新 job"
   confirm: true                          // 必填
 }
-// 成功 → { published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string }
+// 成功 → { published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string, action: 'created' | 'updated' | 'unchanged' }
 ```
 
 行为：
 1. `confirm !== true` → `BAD_REQUEST`；`mode`/`minSeverity` 非法 → `BAD_REQUEST`。
-2. 取当前 PR headSha；在 engine 里找该 head 已完成（`done`）的审查结果；没有 → `REVIEW_NOT_READY`（“请先运行 AI 审查”）。
-3. 过滤：`severity` 按 P0>P1>P2 不弱于 `minSeverity`；`file` 非空、`line` 正整数；按严重度/file/line 排序；最多 `maxComments` 条。
-4. 去重：先拉该 PR 已有 review comments，解析 marker `<!-- dsh-codex-review:<findingHash> -->`；命中 marker 的 finding 跳过（`skipped` 计数）。`findingHash = sha1(file:line:title)` 同 review 内的 id。
+2. 确定 head 与审查结果：带 `jobId` 时用该 job 的 `status()`（未知 id → `REVIEW_NOT_READY`），否则取当前 PR headSha 后在 engine 里找该 head 已完成（`done`）的结果；没有 → `REVIEW_NOT_READY`。head 不一致 → `REVIEW_NOT_READY`。
+   - v2.5：`partial === true` 的审查不能发布 → `REVIEW_PARTIAL`（结果不完整时不允许当作完整结论写进 PR）。
+   - v2.5：发布前用**未缓存**的接口重新读一次 head，与目标 head 不同 → `REVIEW_HEAD_MOVED`（60 秒缓存里的 head 可能已经过期）。
+3. 过滤：`severity` 按 P0>P1>P2 不弱于 `minSeverity`；`file` 非空、`line` 正整数；按严重度/file/line 排序；行内评论最多 `maxComments` 条。
+4. 去重：先拉该 PR 已有 review comments，解析 marker `<!-- dsh-codex-review:<findingHash> -->`；**只信任当前 token 登录用户写的评论**（v2.5：别人伪造的 marker 不能压制 finding）；命中 marker 的 finding 跳过（`skipped` 计数）。`findingHash = sha1(file:line:title)` 同 review 内的 id。
 5. 构造并提交 GitHub review：`POST /repos/{o}/{r}/pulls/{n}/reviews`，`event: 'COMMENT'`；
-   - `mode` 含 inline：`comments: [{ path, line, side: 'RIGHT', body }]`，body = `**[P1] 标题**\n\n为什么：…\n\n建议：…\n\n<!-- dsh-codex-review:<hash> -->`（每条 ≤2000 字；标题/why/fix 截断）；
-   - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（列出**全部可发布 findings**，不因行内 marker 去重而减少），末尾固定追加隐藏 marker `\n\n<!-- dsh-codex-review:summary -->`（总长 ≤4000 字，含 marker）；若请求带 `body` 则用它覆盖生成内容（同样追加 marker）。
-6. 记录已发布（v2.4 起两套记录，都持久化在 auto-review 状态文件）：`repo#number@headSha` → `{publishedAt, reviewId, url}`（同一 head 幂等，重复调用直接回放、0 写请求）；`repo#number` → `{publishedAt, reviewId, url, fingerprint}`（该 PR 的滚动汇总 review 身份 + 本次内容指纹，供重启后继续原地更新）。
-7. 错误码：`BAD_REQUEST`、`REVIEW_NOT_READY`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`INTERNAL`。
+   - `mode` 含 inline：`comments: [{ path, line, side: 'RIGHT', body }]`，body = `**[P1] 标题**\n\n为什么：…\n\n建议：…\n\n<!-- dsh-codex-review:<hash> -->`（每条 ≤2000 字；标题/why/fix 截断；v2.5：模型文本里的 HTML 注释被剥掉、`@` 转义，避免伪造 marker 或误 @ 通知）；
+   - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（v2.5：列出**全部满足严重度阈值的 findings**，既不受行内 marker 去重影响、也不受 `maxComments` 截断；`maxComments` 只限制行内评论条数），末尾固定追加隐藏 marker `\n\n<!-- dsh-codex-review:summary -->`（总长 ≤4000 字，含 marker）；若请求带 `body` 则用它覆盖生成内容（同样追加 marker）。
+   - v2.5：一次 `POST` 被 GitHub 422 拒绝（典型原因：行内评论的 `line` 不在 diff 内）时，自动去掉行内评论重试一次，保住汇总；此时 `comments: 0`。错误信息带上 GitHub `errors[]` 里的首个原因。
+6. 记录已发布（v2.4 起两套记录，都持久化在 auto-review 状态文件）：`repo#number@headSha` → `{publishedAt, reviewId, url, fingerprint, request}`（同一 head + 同一请求参数幂等，重复调用直接回放、0 次 GitHub 读与写；v2.5：`request = sha1(mode+minSeverity+maxComments+body)`，参数变了就必须真的发布，不能被同 head 的旧记录挡掉）；`repo#number` → `{publishedAt, reviewId, url, fingerprint}`（该 PR 的滚动汇总 review 身份 + 本次内容指纹，供重启后继续原地更新）。
+   - v2.5：两条记录用**一次**状态文件原子替换写入（`setPublishedMany`），避免交错写入留下半条记录；`reviewId <= 0` 或 `url` 为空的记录不落盘（否则会永久回放一个空链接）。
+7. 错误码：`BAD_REQUEST`、`REVIEW_NOT_READY`、`REVIEW_PARTIAL`、`REVIEW_HEAD_MOVED`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`PUBLISH_UNKNOWN`、`INTERNAL`。`PUBLISH_UNKNOWN` 只在发布自身的 30 秒预算耗尽时返回：写请求可能已经落库，提示用户先刷新 PR 再决定重试。
 8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/滚动更新）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。0.5.1 起同一自定发布逻辑也适用于**手动 `review-start`** 产生的 job：完成后（`done`）在后台自动发布，fire-and-forget、失败只记日志，发布前重新读取开关（审查期间关掉则不发布）。
+   - v2.5：自动发布把当次 cycle 的 `headSha` 与 `jobId` 一起传下去，发布器不再自己去猜"最新 job"；`partial` 的审查直接跳过并记日志。
 9. 滚动更新（v2.4）：同一 PR 只保留**一条**汇总 review。首次发布 `POST` 创建；之后内容变化时 `PUT /repos/{o}/{r}/pulls/{n}/reviews/{id}` 只替换 body，不新增 review 条目（GitHub 时间线只标记 edited）。`fingerprint = sha1(summaryBody + 行内评论 bodies)` 与 `repo#number` 记录相同 → 不写 GitHub（新 head 只刷新本地 head 记录）。行内评论提交后 GitHub 不允许追加：只有从未发布过的 finding 会以一条无 body 的新 review 补发，汇总 review 的 id 保持不变。状态文件丢失时先 `GET /pulls/{n}/reviews`，按 `<!-- dsh-codex-review:summary -->` 找回既有汇总 review 再更新，绝不重复创建；本地记录的 review 在 GitHub 已不存在（404）时才回退为新建。同一 PR 的不同 head 发布串行（per-PR lock），避免滚动记录竞争。
+   - v2.5：找回时**只认当前 token 用户本人**的 review（`author` 必须匹配），且兼容 v2.4 之前没有 marker 的历史汇总 review（以固定标题 `**代码审查（dsh-codex-review）**` 开头 + 作者匹配即可采纳，采纳后立即补上 marker）。别人写的带 marker 的 review 不会被接管、也不会被 `PUT` 改写。
+   - v2.5：只有真正带汇总 body 的 review 才写入 `repo#number` 滚动记录；纯行内发布（无 body）不再覆盖滚动身份，避免时间线上出现两条带 marker 的 review。
+   - v2.5：`listPullReviews` / `listPullReviewComments` 都翻页读完（review 最多 20 页 × 100，评论最多 10 页 × 100），状态丢失后旧 marker 不会因为分页而漏掉。
+   - v2.5：发布器在 dispose 时清空 in-flight 与 per-PR 锁，插件重载不会让排队中的发布永远等待。
 
 ### 7.3 客户端
 
 - 审查卡：`done` 且有点 `findings` 时显示「发布到 GitHub」；点击弹确认弹层（mode 三选、最低严重度、预计评论数=过滤后条数、「这会真的在 PR 上创建 review 评论」警告、发布/取消）；成功 → 按钮变「已发布 · 在 GitHub 查看」（新窗口打开 url）；已有发布记录时显示已发布徽章。
+- v2.5：请求体会带上当前审查的 `headSha` 与 `jobId`；发布请求的超时预算放宽到 35 秒（宿主内是 30 秒，多出来的时间留给响应回传）。
+- v2.5：成功提示按 `action` 区分：`created` → 「已发布到 GitHub（N 条评论）」、`updated` → 「已更新 GitHub 上的审查（没有新增行内评论）」、`unchanged` → 「和上次发布相比没有变化」。不再用 `comments: 0` 冒充失败。
+- v2.5：`partial` 的审查在客户端就拦下来（提示重新审查），不留到宿上报错。
 - 自动审查设置区：新增「发布审查到 GitHub」开关（默认关）+ mode/minSeverity/maxComments；打开开关时二次确认（写操作警告：一个 PR 会保留一条汇总 review，后续审查原地更新它，只有新行内问题会补发）。
-- 错误：`REVIEW_NOT_READY` → 提示先审查；`GH_FORBIDDEN` → 提示 token 权限；旧 Host 无路由 → 按钮隐藏并降级。
+- 错误：`REVIEW_NOT_READY` → 提示先审查；`REVIEW_PARTIAL` → 提示审查不完整需重跑；`REVIEW_HEAD_MOVED` → 提示重新审查；`PUBLISH_UNKNOWN` → 提示先刷新 PR 确认；`GH_FORBIDDEN` → 提示 token 权限；旧 Host 无路由 → 按钮隐藏并降级（v2.5：`GH_NOT_FOUND` 不再被当成"旧 Host 无路由"，仓库/PR 不存在时按钮要留着）。
 
 ### 7.4 v2.2 验收
 
@@ -596,6 +610,29 @@ type PublishRequest = {
 
 1. 单测：`publishFingerprint` 稳定性/变化；同一 PR 新 head 内容未变 → 0 次 create/update；内容变化 → 1 次 `updatePullReview`（reviewId 不变、无新 review）；`both` 模式新 finding → 更新汇总 + 一条无 body 的新 review（只含新评论）；状态丢失后按 summary marker 找回并更新；记录中的 review 404 → 回退新建；同 head 并发仍只写一次；不同 head 串行（per-PR lock 释放）。
 2. 真实环境：默认仍只验证「同 head 回放 0 写」与 health/version；不主动对用户 PR 发写请求。真实滚动更新在用户下一次审查（自动发布开启时）自然发生，可在 PR 时间线确认只有一条 review 被 edited。
+
+### 7.6 v2.5 验收（发布链路的正确性与不变量）
+
+针对 v2.4 审计出的 19 项问题，逐项落地并验收：
+
+1. `partial` 的审查不可发布：`publish()` 与两处自动发布都在 `done` 之外再检查 `partial`，命中 → `REVIEW_PARTIAL`，0 次 GitHub 写。快照（`engine.existing`）与 `engine.status` 都带上 `partial`/`partialReasons`，UI 在打开发布弹层前就拦住。
+2. 发布绑定到具体 job/head：请求可带 `headSha`/`jobId`（客户端一定带）；自动发布传当次 cycle 的 `headSha` 与 `jobId`。发布前用未缓存的 `getPullHead` 复核 head，变了 → `REVIEW_HEAD_MOVED`。
+3. 同 head 幂等只在"同一请求"成立：head 记录存 `request = sha1(mode+minSeverity+maxComments+body)`，改 mode/严重度/正文后会重新发布，不再静默 0 写。
+4. 纯行内发布不再接管滚动身份：只有带汇总 body 的 review 写 `repo#number`，避免时间线上出现两条带 marker 的 review。
+5. 汇总完整：`preparePublish` 用未截断的 `eligible` 渲染 summary，`maxComments` 只限制行内条数。
+6. 摘要恢复只信任本人：`findPublishedSummaryReview(reviews, author)` 校验 `author`；并兼容 v2.4 之前无 marker 的历史汇总（固定标题 + 作者）。
+7. 行内去重只信任本人 marker：`parsePublishMarkers(comments, author)`。
+8. 空记录不再回放：`sanitizePublishedMap` / `setPublished` / `setPublishedMany` 要求 `reviewId > 0` 且 `url != ''`。
+9. 分页读全：`listPullReviews`（20×100）、`listPullReviewComments`（10×100）。
+10. 原子持久化：`setPublishedMany` 一次写好 head + rolling 记录；`persistState` 用临时文件 + rename，且不再 pretty-print。
+11. 状态文件有界：`prunePublishedMap` 保留全部滚动记录 + 最新 200 条 head 记录；失败重试改由 `seen[key].failedAt` 决定，不再依赖会被挤掉的 `recent`。
+12. 发布有时间预算：发布器 `PUBLISH_TIMEOUT_MS = 30s`，路由 deadline 为 35s，客户端等待 35s；预算耗尽 → `PUBLISH_UNKNOWN`（写可能已落库）。
+13. 422 降级：去掉行内评论重试一次保住汇总，`comments` 报实际落地的数量；错误信息带 GitHub `errors[]` 首个原因。
+14. 模型文本净化：`sanitizeModelText` 去掉 HTML 注释、转义 `@`。
+15. 客户端不再把 `GH_NOT_FOUND` 当成"旧 Host 无路由"；成功提示按 `action` 区分 created/updated/unchanged。
+16. dispose 清理：`ReviewPublisher.dispose()` 清空 in-flight 与 per-PR 锁，并拒绝后续发布。
+
+真实验证（只读）：`getPullHead` / `getAuthenticatedUser` / 分页 `listPullReviews` / `listPullReviewComments` 在 Acefake/yingbox 上跑通；PR #139（23 reviews）、#141（19）、#145（4）都只解析出**一条**汇总 review，`findPublishedSummaryReview` 与本地 `repo#number` 记录一致；#141 的历史汇总（无 marker，id 5641425505）被"固定标题 + 作者"规则识别。#139/#141 的 marker 均属于当前 token 用户，伪造作者时解析结果为 0（`foreignMarkers=0`）。
 
 ## 8. v2.3 契约：评论写操作（2026-10-25 第六轮迭代，版本 0.6.0）
 
