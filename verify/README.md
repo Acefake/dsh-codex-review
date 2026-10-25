@@ -306,6 +306,53 @@ node $V\click-panel.mjs --target 代码审查 --v22 --out-dir $V\out --report cl
 | 一个 **done 审查且 findings>0** 的 PR | 发布按钮不出现 → 弹层字段/切换/取消三项 pending（自动发布区断言仍执行） |
 | `/auto-review-status` 返回**顶层** `publish`（客户端读它；只放在 `config.publish` 时 `publishConfig=null`） | 发布按钮与自动发布区都不渲染 → 「按钮」与「设置区」两条断言失败，细节里会打印 `publishTopLevel` / `publishInConfig` |
 
+### 4.10 v2.3 验收扩展（CONTRACT §8.4：评论写操作）
+
+v1/v1.1/v2/v2.1/v2.2 命令保持不变（默认不加 `--v23` 即不跑新断言）。v2.3 断言通过显式开关启用：
+
+```powershell
+# A) 路由就绪 + 3 组校验守卫 + 安全计数（绝不发送 confirm:true）
+node $V\api-probe.mjs --skip-ai --v23 --out-dir $V\out --report api-probe-v23.json
+# B) 页面：PR 头「评论」按钮、行内回复/解决入口存在（v23-page-check.png）
+node $V\page-check.mjs --v23 --out-dir $V\out --report page-check-v23.json
+# C) 页面端到端：回复编辑器/解决确认/评论弹层 打开→取消（0 写请求、v23-*.png）
+node $V\click-panel.mjs --target 代码审查 --v23 --out-dir $V\out --report click-panel-v23.json
+```
+
+**评论写操作安全红线（装置内硬约束）**：
+
+- 装置**从不发送 `confirm:true`**：路由就绪探测与全部守卫探测都用缺 `confirm` 或 `confirm:false`，Host 的 confirm 守卫会在触达 GitHub 之前拒绝，**不可能创建评论/回复/解决**。
+- 因此 `report.v23.safety` 断言 `confirmTrueSent === 0`、`writes === 0`（没有任何 `ok:true` 写响应）。
+- 字段级守卫（`body` 空/超长、`commentId` 非正整数、`threadId` 空/超长）按契约位于 confirm 之后；不发 `confirm:true` 就无法单独触达，装置把这一条记为 **pending** 并写明原因（受控 mock Host 可覆盖优先级，不碰 GitHub）。
+- 页面流程只允许：点「回复」打开编辑器→取消、点「解决」打开确认→取消、点 PR 头「评论」打开弹层→取消；**绝不点发送/确认**，并用 Network 断言整个流程 `/codex-review/(comment|reply|resolve)` 请求数为 **0**。
+
+**断言（`api-probe --v23`）**：
+
+- 路由就绪：`comment`/`reply`/`resolve` 各返回合法 `{ok:...}` 信封；旧 Host 无该路由（HTTP 404 → 非信封）时对应分组全部记 pending，不误报失败。
+- `comment` 守卫：`confirm:false`、缺 `confirm`、`body` 空、`body` 4001 字、`repo` 非法、`number` 非正整数 → 全部 `BAD_REQUEST`。
+- `reply` 守卫：`confirm:false`、缺 `confirm`、`commentId:0`、`body` 4001 字 → `BAD_REQUEST`。
+- `resolve` 守卫：`confirm:false`、缺 `confirm`、`threadId` 空、`threadId` 201 字 → `BAD_REQUEST`。
+- 安全计数（`report.v23.safety`）：`requests` / `confirmTrueSent` / `acceptedResponses` / `writes` / `badRequest`；断言 `confirmTrueSent === 0`、`writes === 0`，并额外记一条 pending 说明字段级优先级未覆盖。
+
+**页面断言（`page-check --v23`，截图 `v23-page-check.png`）**：工作台出现 PR 头「评论」按钮（`[data-action="pr-comment"]`）；有行内评论时出现「回复」按钮（`[data-action="inline-reply"]`），带 `threadId` 的评论出现「解决」按钮（`[data-action="inline-resolve"]`）；没有行内评论/可解决线程时记 pending 并说明；console/pageerror=0。
+
+**页面断言（`click-panel --v23`，截图 `v23-reply-composer.png` / `v23-resolve-confirm.png` / `v23-comment-dialog.png`）**：
+
+- 从 `/prs` + `/pr` 自动挑一个有行内评论（优先带 `threadId`）的 PR 并在列表选中；
+- 点 `[data-action="inline-reply"]` → `[data-inline-reply-composer="ready"]` 出现 → 点取消 → 编辑器关闭，0 个 `reply` 请求；
+- 有可解决线程时点 `[data-action="inline-resolve"]` → `[data-inline-resolve-confirm="ready"]` 出现 → 点取消 → 确认块关闭，0 个 `resolve` 请求；
+- 点 `[data-action="pr-comment"]` → `[data-cr-comment-dialog="open"]` 出现、含 textarea、`data-comment-phase=idle` → 点取消 → 弹层关闭（`closed`），0 个 `comment` 请求；
+- 全程 console/pageerror=0。
+
+**依赖运行环境的断言**（对应项记 `pending` 是正常结果，不是失败）：
+
+| 依赖 | 缺失时的影响 |
+|---|---|
+| Host 已实现 v2.3 三条路由 | 路由就绪/守卫断言按分组 pending（旧 Host 404） |
+| 至少一个带行内评论的 open PR | `page-check` 回复/解决入口、`click-panel` 回复/解决流程 pending |
+| 行内评论带 `threadId` 且未解决 | 「解决」按钮不渲染 → 解决确认流程 pending |
+| 工作台能选中 PR 并加载详情 | PR 评论弹层流程 pending（按钮不出现） |
+
 ---
 
 ## 5. 退出码约定

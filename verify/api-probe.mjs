@@ -71,7 +71,8 @@ const USAGE = `用法: node verify/api-probe.mjs [选项]
   --v2-pr <ref>             v2 守卫/chat 的目标 PR（如 Acefake/s-skills#18）；默认自动选列表第一个 open PR
   --v21                     启用 v2.1 自动审查断言：status 默认/config 夹取/force 真实 cycle/seen 去重/无 GitHub 写
   --v21-skip-force          跳过 v2.1 的真实 force cycle（只测 status/config/run 守卫）
-  --v22                     启用 v2.2 发布断言：review-publish 路由/守卫 + REVIEW_NOT_READY 分支（绝不真实发布）
+  --v22                    启用 v2.2 发布断言：review-publish 路由/守卫 + REVIEW_NOT_READY 分支（绝不真实发布）
+  --v23                    启用 v2.3 评论写操作断言：comment/reply/resolve 校验守卫（绝不发送 confirm:true）
   --out-dir <dir>           报告目录（默认 verify/out）
   --report <json>           报告路径（默认 <out-dir>/api-probe-<时间>.json）
   --json                    只输出 JSON 摘要
@@ -105,6 +106,7 @@ function parseCli() {
         v21: { type: 'boolean', default: false },
         'v21-skip-force': { type: 'boolean', default: false },
         v22: { type: 'boolean', default: false },
+        v23: { type: 'boolean', default: false },
         'out-dir': { type: 'string', default: OUT_ROOT },
         report: { type: 'string' },
         json: { type: 'boolean', default: false },
@@ -151,6 +153,7 @@ function parseCli() {
     v21: values.v21,
     v21SkipForce: values['v21-skip-force'],
     v22: values.v22,
+    v23: values.v23,
     reportPath: path.resolve(outDir, values.report ?? `api-probe-${timestampForFile()}.json`),
     jsonOnly: values.json,
   }
@@ -2016,6 +2019,276 @@ if (options.v22) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.3 assertions (CONTRACT §8.4): comment write operations — post a PR issue
+// comment, reply to an inline review comment, resolve a review thread.
+//
+// SAFETY (hard rules, mirrored in verify/README.md §4.10):
+//   1. This harness NEVER sends `confirm:true`. Every probe omits confirm or
+//      sends `confirm:false`, so the Host guard rejects it before any GitHub
+//      access: no comment/reply/resolve can ever be created by this script.
+//   2. The field-level guards (body/commentId/threadId) sit *after* the confirm
+//      guard by contract, so they cannot be isolated without confirm:true. The
+//      report therefore records that limitation as one explicit pending
+//      instead of pretending they were covered.
+//   3. `safety.confirmTrueSent` and `safety.writes` must both stay 0.
+// ---------------------------------------------------------------------------
+const COMMENT_BODY_MAX_CHARS = 4_000
+const THREAD_ID_MAX_CHARS = 200
+
+if (options.v23) {
+  const v23 = {
+    enabled: true,
+    active: null,
+    routeStatus: {},
+    checks: [],
+    requests: [],
+    safety: {},
+  }
+  report.v23 = v23
+  const v23Start = checks.length
+  const writeRequests = []
+  v23.requests = writeRequests
+
+  /**
+   * POST one comment-write probe. The entry records exactly what was sent so
+   * the report proves the safety claim after the run.
+   * @param {'comment'|'reply'|'resolve'} route
+   * @param {Record<string, unknown>} body
+   * @param {string} label
+   * @returns {Promise<any>} recorded request entry
+   */
+  const writeProbe = async (route, body, label) => {
+    const entry = {
+      label,
+      route,
+      request: {
+        repo: body.repo,
+        number: body.number,
+        confirm: body.confirm,
+        bodyLength: typeof body.body === 'string' ? body.body.length : null,
+        commentId: body.commentId === undefined ? null : body.commentId,
+        threadId: typeof body.threadId === 'string'
+          ? `${body.threadId.slice(0, 24)}…（长度 ${body.threadId.length}）`
+          : null,
+      },
+      confirmTrue: body.confirm === true,
+      sentAt: isoTimestamp(),
+      response: null,
+    }
+    writeRequests.push(entry)
+    const response = await client.post(`codex-review/${route}`, body, { timeoutMs: 30_000 })
+    const envelope = parseEnvelope(response)
+    entry.response = {
+      status: response.status,
+      elapsedMs: response.elapsedMs,
+      envelope: envelope.envelope,
+      ok: envelope.envelope ? envelope.ok : null,
+      code: envelope.error?.code ?? null,
+      message: typeof envelope.error?.message === 'string' ? envelope.error.message.slice(0, 300) : '',
+      value: envelope.ok ? envelope.value : null,
+    }
+    return entry
+  }
+
+  /**
+   * Assert one probe ended in BAD_REQUEST and record its wire detail.
+   * @param {'comment'|'reply'|'resolve'} route
+   * @param {Record<string, unknown>} body
+   * @param {string} name
+   * @param {string} label
+   * @returns {Promise<any>} recorded request entry
+   */
+  const expectBadRequest = async (route, body, name, label) => {
+    const entry = await writeProbe(route, body, label)
+    check(
+      name,
+      entry.response.code === 'BAD_REQUEST',
+      `route=${route}；HTTP ${entry.response.status}；code=${entry.response.code ?? '-'}；message=${entry.response.message || '-'}`,
+    )
+    return entry
+  }
+
+  /** Record the whole group as pending (route missing / not an envelope). */
+  const pendingGroup = (names, detail) => {
+    for (const name of names) checkPending(name, detail)
+  }
+
+  const COMMENT_CHECKS = [
+    'v2.3 守卫(comment): confirm:false → BAD_REQUEST',
+    'v2.3 守卫(comment): 缺 confirm → BAD_REQUEST',
+    'v2.3 守卫(comment): body 空 → BAD_REQUEST',
+    'v2.3 守卫(comment): body 超 4000 → BAD_REQUEST',
+    'v2.3 守卫: repo 非法 → BAD_REQUEST',
+    'v2.3 守卫: number 非正整数 → BAD_REQUEST',
+  ]
+  const REPLY_CHECKS = [
+    'v2.3 守卫(reply): confirm:false → BAD_REQUEST',
+    'v2.3 守卫(reply): 缺 confirm → BAD_REQUEST',
+    'v2.3 守卫(reply): commentId 非正整数 → BAD_REQUEST',
+    'v2.3 守卫(reply): body 超 4000 → BAD_REQUEST',
+  ]
+  const RESOLVE_CHECKS = [
+    'v2.3 守卫(resolve): confirm:false → BAD_REQUEST',
+    'v2.3 守卫(resolve): 缺 confirm → BAD_REQUEST',
+    'v2.3 守卫(resolve): threadId 空 → BAD_REQUEST',
+    'v2.3 守卫(resolve): threadId 超 200 → BAD_REQUEST',
+  ]
+
+  try {
+    const base = { repo: options.pr.repo, number: options.pr.number }
+
+    /**
+     * Probe one route's readiness with `confirm:false` (never a write).
+     * @param {'comment'|'reply'|'resolve'} route
+     * @param {string} label
+     * @returns {Promise<any>} recorded entry
+     */
+    const readyProbe = async (route, label) => {
+      const entry = await writeProbe(route, { ...base, confirm: false }, label)
+      v23.routeStatus[route] = {
+        status: entry.response.status,
+        envelope: entry.response.envelope,
+        code: entry.response.code,
+      }
+      return entry
+    }
+
+    const commentReady = await readyProbe('comment', 'comment-route-ready')
+    const replyReady = await readyProbe('reply', 'reply-route-ready')
+    const resolveReady = await readyProbe('resolve', 'resolve-route-ready')
+
+    /**
+     * Record one route-readiness assertion the same way as v2.2: a Host without
+     * the route (404/405) records pending instead of failing; a 200 without the
+     * envelope is a real failure.
+     * @param {string} name
+     * @param {any} entry
+     * @returns {boolean} whether the route is usable
+     */
+    const readinessCheck = (name, entry) => {
+      const status = entry.response.status
+      if (status === 404 || status === 405) {
+        checkPending(name, `Host 无该路由（HTTP ${status}）；v2.3 对应分组记 pending`)
+        return false
+      }
+      if (status === 200 && entry.response.envelope === true) {
+        check(name, true, `HTTP 200；code=${entry.response.code ?? '-'}，${entry.response.elapsedMs}ms`)
+        return true
+      }
+      check(name, false, `HTTP ${status}，但响应不是 {ok:...} 信封`)
+      return false
+    }
+    const commentReadyOk = readinessCheck('v2.3 路由就绪: POST /codex-review/comment 返回 JSON 信封', commentReady)
+    const replyReadyOk = readinessCheck('v2.3 路由就绪: POST /codex-review/reply 返回 JSON 信封', replyReady)
+    const resolveReadyOk = readinessCheck('v2.3 路由就绪: POST /codex-review/resolve 返回 JSON 信封', resolveReady)
+    v23.active = commentReadyOk && replyReadyOk && resolveReadyOk
+
+    // --- comment guards (issue comment) ------------------------------------
+    if (!commentReadyOk) {
+      pendingGroup(COMMENT_CHECKS, `comment 路由未就绪（HTTP ${commentReady.response.status}）`)
+    } else {
+      await expectBadRequest('comment', { ...base, confirm: false }, COMMENT_CHECKS[0], 'comment-confirm-false')
+      await expectBadRequest('comment', { ...base }, COMMENT_CHECKS[1], 'comment-confirm-missing')
+      await expectBadRequest('comment', { ...base, body: '', confirm: false }, COMMENT_CHECKS[2], 'comment-body-empty')
+      await expectBadRequest(
+        'comment',
+        { ...base, body: 'x'.repeat(COMMENT_BODY_MAX_CHARS + 1), confirm: false },
+        COMMENT_CHECKS[3],
+        'comment-body-long',
+      )
+      await expectBadRequest(
+        'comment',
+        { repo: 'not-a-repo', number: base.number, body: '正常文本', confirm: false },
+        COMMENT_CHECKS[4],
+        'comment-bad-repo',
+      )
+      await expectBadRequest(
+        'comment',
+        { ...base, number: -1, body: '正常文本', confirm: false },
+        COMMENT_CHECKS[5],
+        'comment-bad-number',
+      )
+    }
+
+    // --- reply guards (inline review comment reply) ------------------------
+    if (!replyReadyOk) {
+      pendingGroup(REPLY_CHECKS, `reply 路由未就绪（HTTP ${replyReady.response.status}）`)
+    } else {
+      await expectBadRequest('reply', { ...base, confirm: false }, REPLY_CHECKS[0], 'reply-confirm-false')
+      await expectBadRequest('reply', { ...base }, REPLY_CHECKS[1], 'reply-confirm-missing')
+      await expectBadRequest(
+        'reply',
+        { ...base, commentId: 0, body: '正常文本', confirm: false },
+        REPLY_CHECKS[2],
+        'reply-bad-comment-id',
+      )
+      await expectBadRequest(
+        'reply',
+        { ...base, commentId: 1, body: 'x'.repeat(COMMENT_BODY_MAX_CHARS + 1), confirm: false },
+        REPLY_CHECKS[3],
+        'reply-body-long',
+      )
+    }
+
+    // --- resolve guards (review thread) ------------------------------------
+    if (!resolveReadyOk) {
+      pendingGroup(RESOLVE_CHECKS, `resolve 路由未就绪（HTTP ${resolveReady.response.status}）`)
+    } else {
+      await expectBadRequest('resolve', { ...base, confirm: false }, RESOLVE_CHECKS[0], 'resolve-confirm-false')
+      await expectBadRequest('resolve', { ...base }, RESOLVE_CHECKS[1], 'resolve-confirm-missing')
+      await expectBadRequest(
+        'resolve',
+        { ...base, threadId: '', confirm: false },
+        RESOLVE_CHECKS[2],
+        'resolve-thread-empty',
+      )
+      await expectBadRequest(
+        'resolve',
+        { ...base, threadId: 'x'.repeat(THREAD_ID_MAX_CHARS + 1), confirm: false },
+        RESOLVE_CHECKS[3],
+        'resolve-thread-long',
+      )
+    }
+
+    checkPending(
+      'v2.3 字段级守卫（body/commentId/threadId 的独立错误信息）',
+      '安全红线要求 confirmTrueSent=0：这些守卫按契约位于 confirm 之后，只有 confirm:true 才能触达；本装置不发 confirm:true，故记为 pending（受控 mock Host 可覆盖优先级，不触碰 GitHub）',
+    )
+
+    // --- safety ledger -----------------------------------------------------
+    const sentConfirm = writeRequests.filter((entry) => entry.confirmTrue)
+    const accepted = writeRequests.filter((entry) => entry.response?.ok === true)
+    const writes = accepted.filter((entry) => {
+      const value = entry.response?.value
+      return isObject(value) && (isPositiveInt(value.id) || value.resolved === true || isNonEmptyString(value.url))
+    })
+    v23.safety = {
+      requests: writeRequests.length,
+      confirmTrueSent: sentConfirm.length,
+      acceptedResponses: accepted.length,
+      writes: writes.length,
+      badRequest: writeRequests.filter((entry) => entry.response?.code === 'BAD_REQUEST').length,
+    }
+    check(
+      'v2.3 安全: confirmTrueSent=0（从未发送 confirm:true）',
+      sentConfirm.length === 0,
+      `${sentConfirm.length}/${writeRequests.length} 个请求带 confirm:true`,
+    )
+    check(
+      'v2.3 安全: writes=0（没有任何写响应被 Host 接受）',
+      accepted.length === 0 && writes.length === 0,
+      `ok:true 响应 ${accepted.length} 个，写结果 ${writes.length} 个`,
+    )
+  } catch (error) {
+    check('v2.3 评论写操作守卫流程执行', false, error instanceof Error ? error.message : String(error))
+    v23.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  }
+  v23.checks = checks.slice(v23Start)
+  v23.pendingCount = v23.checks.filter((entry) => entry.pending === true).length
+  v23.failedCount = v23.checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
+// ---------------------------------------------------------------------------
 // trust fence probes (local-only loopback server must reject these)
 // ---------------------------------------------------------------------------
 if (!options.skipSecurity) {
@@ -2090,6 +2363,12 @@ const summary = {
   v22Requests: report.v22?.safety?.summary?.requests ?? null,
   v22SentConfirm: report.v22?.safety?.summary?.sentConfirm ?? null,
   v22Published: report.v22?.safety?.summary?.published ?? null,
+  v23Active: report.v23?.active ?? null,
+  v23Pending: report.v23?.pendingCount ?? 0,
+  v23Failed: report.v23?.failedCount ?? 0,
+  v23Requests: report.v23?.safety?.requests ?? null,
+  v23ConfirmTrue: report.v23?.safety?.confirmTrueSent ?? null,
+  v23Writes: report.v23?.safety?.writes ?? null,
 }
 if (options.jsonOnly) console.log(JSON.stringify(summary))
 else {

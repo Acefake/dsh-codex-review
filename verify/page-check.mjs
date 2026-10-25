@@ -19,6 +19,7 @@ import { v11Surface } from './lib/v11-dom.mjs'
 import { v2Surface } from './lib/v2-dom.mjs'
 import { v21Surface, autoCardProbe, autoSettingsProbe } from './lib/v21-dom.mjs'
 import { autoPublishProbe, v22Surface } from './lib/v22-dom.mjs'
+import { v23Surface } from './lib/v23-dom.mjs'
 import {
   cookieForUrl,
   EXIT,
@@ -50,6 +51,7 @@ const USAGE = `用法: node verify/page-check.mjs [选项]
   --v2                    启用 v2 页面断言：合并按钮可点、对话输入框 placeholder、截图 v2-page-check.png
   --v21                   启用 v2.1 页面断言：自动审查卡/设置区存在、截图 v21-page-check.png
   --v22                   启用 v2.2 页面断言：发布能力属性/自动发布设置区存在、截图 v22-page-check.png
+  --v23                   启用 v2.3 页面断言：PR 评论按钮/行内回复与解决入口存在（只读）、截图 v23-page-check.png
   --json                  只输出 JSON 摘要
   -h, --help              显示本帮助`
 
@@ -75,6 +77,7 @@ function parseCli() {
         v2: { type: 'boolean', default: false },
         v21: { type: 'boolean', default: false },
         v22: { type: 'boolean', default: false },
+        v23: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -116,6 +119,8 @@ function parseCli() {
     v21ShotPath: path.resolve(outDir, 'v21-page-check.png'),
     v22: values.v22,
     v22ShotPath: path.resolve(outDir, 'v22-page-check.png'),
+    v23: values.v23,
+    v23ShotPath: path.resolve(outDir, 'v23-page-check.png'),
     jsonOnly: values.json,
   }
 }
@@ -449,6 +454,84 @@ try {
     report.verdict.v22Pending = v22.pendingCount
   }
 
+  // -------------------------------------------------------------------------
+  // v2.3 page assertions (CONTRACT §8.3): the comment writers exist — the PR
+  // header 「评论」 trigger and the inline reply/resolve entry points — without
+  // opening a write flow. Read-only probes; no send button is ever clicked.
+  // -------------------------------------------------------------------------
+  if (options.v23) {
+    const v23Checks = []
+    const v23 = { enabled: true, checks: v23Checks, screenshots: {} }
+    report.v23 = v23
+    const v23Check = (name, pass, detail = '') => v23Checks.push({ name, pass: Boolean(pass), detail })
+    const v23Pending = (name, detail) => v23Checks.push({ name, pass: null, pending: true, detail })
+    try {
+      const rootReady = await page.evaluate(`Boolean(document.querySelector('[data-cr-root]'))`)
+      if (!rootReady) {
+        const entryLookup = await page.evaluate(findSidebarTargets(['代码审查', 'Code Review']))
+        const entry = entryLookup.targets?.[0]
+        if (entry) {
+          await page.click(entry.rect.x + entry.rect.width / 2, entry.rect.y + entry.rect.height / 2)
+          await page.waitForNetworkIdle({ timeoutMs: 20_000, idleMs: 700 }).catch(() => false)
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+        }
+      }
+      await page.waitFor(
+        'document.querySelector("[data-cr-detail=\\"ready\\"]") !== null',
+        { timeoutMs: 25_000, label: 'PR 详情加载' },
+      ).catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      const surface = await page.evaluate(v23Surface())
+      v23.surface = surface
+      v23Check(
+        'v2.3 工作台渲染 PR 头「评论」按钮（[data-action="pr-comment"]）',
+        Boolean(surface.commentButton),
+        JSON.stringify({
+          rootReady: surface.rootReady,
+          detailReady: surface.detailReady,
+          commentDialog: surface.commentDialog,
+          button: surface.commentButton,
+        }).slice(0, 320),
+      )
+      if (surface.inlineCommentCards > 0) {
+        v23Check(
+          'v2.3 行内评论卡含「回复」按钮（[data-action="inline-reply"]）',
+          surface.replyButtons > 0,
+          JSON.stringify({ cards: surface.inlineCommentCards, visibleCards: surface.visibleInlineCards, reply: surface.replyButtons }).slice(0, 240),
+        )
+        if (surface.resolveButtons > 0) {
+          v23Check(
+            'v2.3 带 threadId 的评论含「解决」按钮（[data-action="inline-resolve"]）',
+            true,
+            JSON.stringify({ resolve: surface.resolveButtons }).slice(0, 160),
+          )
+        } else {
+          v23Pending(
+            'v2.3 带 threadId 的评论含「解决」按钮（[data-action="inline-resolve"]）',
+            '当前 PR 的行内评论没有 threadId 或已全部解决（客户端只对可解决线程渲染该按钮）',
+          )
+        }
+      } else {
+        v23Pending('v2.3 行内评论卡含「回复」按钮（[data-action="inline-reply"]）', '当前 PR 没有行内评论；需要选一个带 inline comments 的 PR')
+        v23Pending('v2.3 带 threadId 的评论含「解决」按钮（[data-action="inline-resolve"]）', '同上')
+      }
+      await page.screenshot(options.v23ShotPath)
+      v23.screenshots.page = options.v23ShotPath
+      const v23ConsoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
+      const v23PageErrors = page.pageErrors
+      v23Check('v2.3 页面流程期间无 console.error', v23ConsoleErrors.length === 0, `${v23ConsoleErrors.length} 条`)
+      v23Check('v2.3 页面流程期间无 pageerror', v23PageErrors.length === 0, `${v23PageErrors.length} 条`)
+    } catch (error) {
+      v23Check('v2.3 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    }
+    v23.pendingCount = v23Checks.filter((check) => check.pending === true).length
+    v23.failedCount = v23Checks.filter((check) => check.pending !== true && check.pass === false).length
+    ok = ok && v23.failedCount === 0
+    report.verdict.ok = ok
+    report.verdict.v23Failed = v23.failedCount
+    report.verdict.v23Pending = v23.pendingCount
+  }
+
   report.screenshotBytes = statSync(options.shotPath).size
   writeJson(options.reportPath, report)
   await page.close()
@@ -497,6 +580,18 @@ try {
           publishSupported: report.v22?.surface?.supported ?? null,
           autoPublishSection: Boolean(report.v22?.autoPublish?.open),
           checks: (report.v22?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass })),
+        }
+      : null,
+    v23: options.v23
+      ? {
+          failedCount: report.v23?.failedCount ?? 0,
+          pendingCount: report.v23?.pendingCount ?? 0,
+          screenshot: report.v23?.screenshots?.page ?? null,
+          commentButton: Boolean(report.v23?.surface?.commentButton),
+          inlineCards: report.v23?.surface?.inlineCommentCards ?? null,
+          replyButtons: report.v23?.surface?.replyButtons ?? null,
+          resolveButtons: report.v23?.surface?.resolveButtons ?? null,
+          checks: (report.v23?.checks ?? []).map((check) => ({ name: check.name, pass: check.pass, pending: check.pending === true })),
         }
       : null,
   }

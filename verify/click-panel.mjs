@@ -74,6 +74,18 @@ import {
   v22Surface,
 } from './lib/v22-dom.mjs'
 import {
+  inlineReplyCancelTarget,
+  inlineReplyComposerProbe,
+  inlineReplyTarget,
+  inlineResolveCancelTarget,
+  inlineResolveConfirmProbe,
+  inlineResolveTarget,
+  prCommentCancelTarget,
+  prCommentDialogProbe,
+  prCommentTriggerTarget,
+  v23Surface,
+} from './lib/v23-dom.mjs'
+import {
   cookieForUrl,
   EXIT,
   fail,
@@ -109,6 +121,7 @@ const USAGE = `用法: node verify/click-panel.mjs [选项]
   --v2-select <text>      v2 断言使用的 PR 列表标题关键字（默认用当前自动选中的 open PR）
   --v21                   启用 v2.1 页面断言：自动审查设置区/开关 config 请求/立即检查/状态卡/徽章/toast、v21-*.png
   --v22                   启用 v2.2 页面断言：发布弹层字段/取消（0 发布请求）、自动发布二次确认/取消、v22-*.png
+  --v23                   启用 v2.3 页面断言：回复/解决/PR 评论弹层的打开→取消（0 写请求）、v23-*.png
   --token <token>         DSH 启动 URL 里的 token（不传则用本机凭据自动认证）
   --no-auth               不注入 DSH 浏览器会话 cookie
   --headful               有窗口模式启动 Edge
@@ -143,6 +156,7 @@ function parseCli() {
         'v2-select': { type: 'string', default: '' },
         v21: { type: 'boolean', default: false },
         v22: { type: 'boolean', default: false },
+        v23: { type: 'boolean', default: false },
         token: { type: 'string' },
         'no-auth': { type: 'boolean', default: false },
         headful: { type: 'boolean', default: false },
@@ -203,6 +217,12 @@ function parseCli() {
       dialog: path.resolve(outDir, 'v22-publish-dialog.png'),
       cancel: path.resolve(outDir, 'v22-publish-cancel.png'),
       autoPublish: path.resolve(outDir, 'v22-auto-publish-confirm.png'),
+    },
+    v23: values.v23,
+    v23Paths: {
+      replyComposer: path.resolve(outDir, 'v23-reply-composer.png'),
+      resolveConfirm: path.resolve(outDir, 'v23-resolve-confirm.png'),
+      commentDialog: path.resolve(outDir, 'v23-comment-dialog.png'),
     },
     v2Paths: {
       mergeDialog: path.resolve(outDir, 'v2-merge-dialog.png'),
@@ -1380,6 +1400,348 @@ async function runV22Checks() {
   v22.failedCount = v22Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
 }
 
+// ---------------------------------------------------------------------------
+// v2.3 page checks (CONTRACT §8.3): comment write entry points. The harness
+// may only OPEN each flow and then CANCEL it:
+//   * inline reply: [data-action="inline-reply"] → composer → cancel
+//   * resolve thread: [data-action="inline-resolve"] → confirm block → cancel
+//   * PR comment: [data-action="pr-comment"] → dialog → cancel
+//
+// SAFETY: no send/confirm button is ever clicked and the Network log must show
+// ZERO /codex-review/comment|reply|resolve requests for the whole section.
+// ---------------------------------------------------------------------------
+const v23Checks = []
+function v23Check(name, pass, detail = '') {
+  v23Checks.push({ name, pass: Boolean(pass), detail })
+}
+function v23Pending(name, detail) {
+  v23Checks.push({ name, pass: null, pending: true, detail })
+}
+
+/**
+ * Find an open PR that has at least one inline review comment (the reply and
+ * resolve entry points only exist on those cards). Returns how many of its
+ * comments carry a resolvable threadId so the caller can decide between a real
+ * assertion and a pending.
+ * @param {GuiClient} apiClient
+ * @returns {Promise<{pick: any | null, scan: Array<Record<string, unknown>>}>} target + scan trail.
+ */
+async function findInlineCommentPr(apiClient) {
+  const scan = []
+  const listResponse = await apiClient.post('codex-review/prs', { query: 'is:open author:@me', limit: 30 }, { timeoutMs: 20_000 })
+  const items = Array.isArray(listResponse.json?.value?.items) ? listResponse.json.value.items : []
+  for (const item of items.slice(0, 10)) {
+    const detail = await apiClient.post('codex-review/pr', { repo: item.repo, number: item.number }, { timeoutMs: 30_000 })
+    const value = detail.json?.value
+    const inline = Array.isArray(value?.comments?.inline) ? value.comments.inline : []
+    const threadable = inline.filter((comment) => (
+      typeof comment?.threadId === 'string' && comment.threadId.trim() !== '' && comment.resolved !== true
+    ))
+    scan.push({ repo: item.repo, number: item.number, title: String(item.title ?? ''), inline: inline.length, threadable: threadable.length })
+    if (inline.length > 0) {
+      return {
+        pick: {
+          repo: item.repo,
+          number: item.number,
+          title: String(item.title ?? ''),
+          inlineCount: inline.length,
+          threadCount: threadable.length,
+        },
+        scan,
+      }
+    }
+  }
+  return { pick: null, scan }
+}
+
+/**
+ * Run the v2.3 page checks on the already-open workbench page.
+ * @returns {Promise<void>} resolves when every assertion is recorded.
+ */
+async function runV23Checks() {
+  const v23 = { enabled: true, checks: v23Checks, screenshots: {}, network: {}, api: {}, target: null }
+  report.v23 = v23
+  const apiClient = new GuiClient(options.url, { token: options.token })
+
+  /**
+   * PR conversation dialog flow: open → inspect → cancel with zero writes. It
+   * does not depend on inline comments, so it also runs when no PR has any.
+   * @param {number} netBefore - networkRequests length before the flow.
+   * @returns {Promise<void>} resolves when the assertions are recorded.
+   */
+  const checkPrCommentDialog = async (netBefore) => {
+    const trigger = await page.evaluate(prCommentTriggerTarget())
+    v23.commentTrigger = trigger
+    if (!trigger.found) {
+      v23Pending('v2.3 点击 PR 头「评论」打开弹层', '未找到 [data-action="pr-comment"] 按钮')
+      v23Pending('v2.3 评论弹层含 textarea', '按钮不存在')
+      v23Pending('v2.3 取消后评论弹层关闭且 0 个 comment 请求', '按钮不存在')
+      return
+    }
+    await clickRect(page, trigger.rect)
+    await page.waitFor(
+      'document.querySelector("[data-cr-comment-dialog=\\"open\\"]") !== null',
+      { timeoutMs: 8000, label: 'PR 评论弹层' },
+    ).catch(() => {})
+    await delay(700)
+    const dialog = await page.evaluate(prCommentDialogProbe())
+    v23.commentDialog = dialog
+    v23Check(
+      'v2.3 点击 PR 头「评论」打开弹层',
+      Boolean(dialog.open),
+      JSON.stringify({
+        open: dialog.open,
+        phase: dialog.phase,
+        hasTextarea: dialog.hasTextarea,
+        send: Boolean(dialog.send),
+        cancel: Boolean(dialog.cancel),
+      }).slice(0, 360),
+    )
+    if (!dialog.open) {
+      v23Pending('v2.3 评论弹层含 textarea', '弹层未打开')
+      v23Pending('v2.3 取消后评论弹层关闭且 0 个 comment 请求', '弹层未打开')
+      return
+    }
+    v23Check('v2.3 评论弹层含 textarea', dialog.hasTextarea, JSON.stringify({ textarea: dialog.textarea }).slice(0, 240))
+    await page.screenshot(options.v23Paths.commentDialog)
+    v23.screenshots.commentDialog = options.v23Paths.commentDialog
+    const cancelTarget = await page.evaluate(prCommentCancelTarget())
+    const cancel = cancelTarget.found ? cancelTarget : dialog.cancel
+    if (cancel) {
+      await clickRect(page, cancel.rect)
+      await delay(700)
+    }
+    const after = await page.evaluate(prCommentDialogProbe())
+    v23.commentAfterCancel = after
+    v23Check('v2.3 取消后评论弹层关闭', !after.open, JSON.stringify({ open: after.open }).slice(0, 200))
+    const commentRequests = page.networkRequests
+      .slice(netBefore)
+      .filter((request) => request.url.includes('/codex-review/comment'))
+    v23.network.commentRequests = commentRequests.map((request) => ({ url: request.url, postData: request.postData ?? null }))
+    v23Check(
+      'v2.3 取消后评论弹层 0 个 /codex-review/comment 请求',
+      commentRequests.length === 0,
+      JSON.stringify(commentRequests.map((request) => request.url)),
+    )
+  }
+
+  /**
+   * Open one PR from the left list and wait for its detail to render.
+   * @param {{ repo: string, number: number, title?: string }} target - PR to open.
+   * @returns {Promise<void>} resolves once the detail call settled.
+   */
+  const selectWorkbenchPr = async (target) => {
+    const row = await page.evaluate(findPrRow(String(target.title ?? '').slice(0, 12)))
+    v23.row = row
+    if (row.found) {
+      await clickRect(page, row.rect)
+      await page.waitForNetworkIdle({ timeoutMs: 15_000, idleMs: 600 }).catch(() => false)
+      await delay(800)
+    }
+    await page.waitFor(
+      'document.querySelector("[data-cr-detail=\\"ready\\"]") !== null',
+      { timeoutMs: 20_000, label: `PR #${target.number} 详情` },
+    ).catch(() => {})
+  }
+
+  /**
+   * Aggregate guard: the whole page section must not issue any comment write.
+   * @param {number} netBefore - networkRequests length before the section.
+   * @returns {void}
+   */
+  const guardWriteRequests = (netBefore) => {
+    const writeRequests = page.networkRequests
+      .slice(netBefore)
+      .filter((request) => (
+        request.url.includes('/codex-review/comment')
+        || request.url.includes('/codex-review/reply')
+        || request.url.includes('/codex-review/resolve')
+      ))
+    v23.network.writeRequests = writeRequests.map((request) => ({ url: request.url, postData: request.postData ?? null }))
+    v23Check(
+      'v2.3 页面流程 0 个 comment/reply/resolve 网络请求（无写操作）',
+      writeRequests.length === 0,
+      JSON.stringify(writeRequests.map((request) => request.url)),
+    )
+  }
+  try {
+    // --- 1) pick a PR that actually has inline comments --------------------
+    const { pick, scan } = await findInlineCommentPr(apiClient)
+    v23.scan = scan
+    v23.target = pick
+    if (!pick) {
+      const detail = `当前 open PR 中找不到带行内评论的目标（扫描 ${scan.length} 个：${scan.map((entry) => `#${entry.number}:inline=${entry.inline}`).join('，') || '无 open PR'}）`
+      v23Pending('v2.3 行内评论卡含「回复」按钮', detail)
+      v23Pending('v2.3 点击「回复」打开行内回复编辑器', detail)
+      v23Pending('v2.3 取消后行内回复编辑器关闭且 0 个 reply 请求', detail)
+      v23Pending('v2.3 解决线程确认块（打开→取消）', detail)
+      v23Pending('v2.3 取消解决确认后 0 个 resolve 请求', detail)
+      // The PR conversation dialog does not depend on inline comments: open the
+      // first available PR and run that flow anyway.
+      if (scan.length > 0) {
+        await selectWorkbenchPr(scan[0])
+        const netBefore = page.networkRequests.length
+        await checkPrCommentDialog(netBefore)
+        guardWriteRequests(netBefore)
+      } else {
+        v23Pending('v2.3 点击 PR 头「评论」打开弹层', '当前没有 open PR，无法打开工作台详情')
+        v23Pending('v2.3 评论弹层含 textarea', '当前没有 open PR')
+        v23Pending('v2.3 取消后评论弹层关闭且 0 个 comment 请求', '当前没有 open PR')
+      }
+    } else {
+      await selectWorkbenchPr(pick)
+      // GitHub inline comments render inside expanded file cards (v1.1
+      // behaviour): click "全部展开" so the reply/resolve cards are mounted.
+      const expandAll = await page.evaluate(pressableByText('全部展开|Expand all|展开全部'))
+      if (expandAll.length > 0) {
+        await clickRect(page, expandAll[0].rect)
+        await delay(700)
+      }
+      await page.waitFor(
+        'document.querySelectorAll("[data-inline-comment]").length > 0',
+        { timeoutMs: 20_000, label: '行内评论卡' },
+      ).catch(() => {})
+      await delay(700)
+
+      const netBefore = page.networkRequests.length
+      const surface = await page.evaluate(v23Surface())
+      v23.surface = surface
+      v23Check(
+        'v2.3 行内评论卡含「回复」按钮',
+        surface.replyButtons > 0,
+        JSON.stringify({ cards: surface.inlineCommentCards, visible: surface.visibleInlineCards, reply: surface.replyButtons, rowFound: row.found }).slice(0, 320),
+      )
+
+      // --- 2) inline reply: open the composer, then cancel -----------------
+      const replyTarget = await page.evaluate(inlineReplyTarget())
+      v23.replyTarget = replyTarget
+      if (!replyTarget.found) {
+        v23Pending('v2.3 点击「回复」打开行内回复编辑器', `未找到回复按钮（${replyTarget.reason ?? 'unknown'}）`)
+        v23Pending('v2.3 取消后行内回复编辑器关闭且 0 个 reply 请求', '回复按钮不存在')
+      } else {
+        await clickRect(page, replyTarget.rect)
+        await page.waitFor(
+          'document.querySelector("[data-inline-reply-composer=\\"ready\\"]") !== null',
+          { timeoutMs: 8000, label: '行内回复编辑器' },
+        ).catch(() => {})
+        await delay(600)
+        const composer = await page.evaluate(inlineReplyComposerProbe())
+        v23.replyComposer = composer
+        v23Check(
+          'v2.3 点击「回复」打开行内回复编辑器',
+          Boolean(composer.open),
+          JSON.stringify({
+            open: composer.open,
+            textarea: Boolean(composer.textarea),
+            send: Boolean(composer.send),
+            cancel: Boolean(composer.cancel),
+            text: String(composer.text ?? '').slice(0, 160),
+          }).slice(0, 420),
+        )
+        if (composer.open) {
+          await page.screenshot(options.v23Paths.replyComposer)
+          v23.screenshots.replyComposer = options.v23Paths.replyComposer
+          const cancelTarget = await page.evaluate(inlineReplyCancelTarget())
+          const cancel = cancelTarget.found ? cancelTarget : composer.cancel
+          if (cancel) {
+            await clickRect(page, cancel.rect)
+            await delay(700)
+          }
+          const after = await page.evaluate(inlineReplyComposerProbe())
+          v23.replyAfterCancel = after
+          v23Check('v2.3 取消后行内回复编辑器关闭', !after.open, JSON.stringify({ open: after.open }).slice(0, 160))
+          const replyRequests = page.networkRequests
+            .slice(netBefore)
+            .filter((request) => request.url.includes('/codex-review/reply'))
+          v23.network.replyRequests = replyRequests.map((request) => ({ url: request.url, postData: request.postData ?? null }))
+          v23Check(
+            'v2.3 回复编辑器 打开→取消 全程 0 个 /codex-review/reply 请求',
+            replyRequests.length === 0,
+            JSON.stringify(replyRequests.map((request) => request.url)),
+          )
+        } else {
+          v23Pending('v2.3 取消后行内回复编辑器关闭', '编辑器未打开')
+        }
+      }
+
+      // --- 3) resolve thread: open the confirmation, then cancel -----------
+      const resolveTarget = await page.evaluate(inlineResolveTarget())
+      v23.resolveTarget = resolveTarget
+      if (!resolveTarget.found) {
+        v23Pending(
+          'v2.3 解决线程确认块（打开→取消）',
+          pick.threadCount === 0
+            ? '该 PR 的行内评论没有 threadId（或已全部解决），客户端不会渲染「解决」按钮'
+            : '未找到「解决」按钮',
+        )
+        v23Pending('v2.3 取消解决确认后 0 个 resolve 请求', '「解决」按钮不存在')
+      } else {
+        await clickRect(page, resolveTarget.rect)
+        await page.waitFor(
+          'document.querySelector("[data-inline-resolve-confirm=\\"ready\\"]") !== null',
+          { timeoutMs: 8000, label: '解决确认块' },
+        ).catch(() => {})
+        await delay(600)
+        const confirm = await page.evaluate(inlineResolveConfirmProbe())
+        v23.resolveConfirm = confirm
+        v23Check(
+          'v2.3 解决线程确认块（打开→取消）',
+          Boolean(confirm.open),
+          JSON.stringify({
+            open: confirm.open,
+            confirm: Boolean(confirm.confirm),
+            cancel: Boolean(confirm.cancel),
+            text: String(confirm.text ?? '').slice(0, 160),
+          }).slice(0, 420),
+        )
+        if (confirm.open) {
+          await page.screenshot(options.v23Paths.resolveConfirm)
+          v23.screenshots.resolveConfirm = options.v23Paths.resolveConfirm
+          const cancelTarget = await page.evaluate(inlineResolveCancelTarget())
+          const cancel = cancelTarget.found ? cancelTarget : confirm.cancel
+          if (cancel) {
+            await clickRect(page, cancel.rect)
+            await delay(700)
+          }
+          const after = await page.evaluate(inlineResolveConfirmProbe())
+          v23.resolveAfterCancel = after
+          v23Check('v2.3 取消解决确认后确认块关闭', !after.open, JSON.stringify({ open: after.open }).slice(0, 160))
+          const resolveRequests = page.networkRequests
+            .slice(netBefore)
+            .filter((request) => request.url.includes('/codex-review/resolve'))
+          v23.network.resolveRequests = resolveRequests.map((request) => ({ url: request.url, postData: request.postData ?? null }))
+          v23Check(
+            'v2.3 取消解决确认后 0 个 /codex-review/resolve 请求',
+            resolveRequests.length === 0,
+            JSON.stringify(resolveRequests.map((request) => request.url)),
+          )
+        } else {
+          v23Pending('v2.3 取消解决确认后 0 个 resolve 请求', '确认块未打开')
+        }
+      }
+
+      // --- 4) PR comment dialog (independent of inline comments) -----------
+      await checkPrCommentDialog(netBefore)
+
+      // --- 5) one aggregate network guard over the whole section -----------
+      guardWriteRequests(netBefore)
+    }
+
+    const errors = page.consoleMessages.filter((message) => message.type === 'error')
+    const pageErrors = page.pageErrors
+    report.consoleMessages = page.consoleMessages
+    report.consoleErrors = errors
+    report.pageErrors = pageErrors
+    v23Check('v2.3 页面流程期间无 console.error', errors.length === 0, `${errors.length} 条`)
+    v23Check('v2.3 页面流程期间无 pageerror', pageErrors.length === 0, `${pageErrors.length} 条`)
+  } catch (error) {
+    v23Check('v2.3 页面流程执行', false, error instanceof Error ? error.message : String(error))
+    v23.error = error instanceof Error ? { message: error.message, stack: error.stack } : { message: String(error) }
+  }
+  v23.pendingCount = v23Checks.filter((entry) => entry.pending === true).length
+  v23.failedCount = v23Checks.filter((entry) => entry.pending !== true && entry.pass === false).length
+}
+
 const options = parseCli()
 const startedAt = Date.now()
 const report = {
@@ -1524,6 +1886,8 @@ try {
   if (options.v21) await runV21Checks()
   // v2.2 page checks (opt-in): publish dialog (cancel only) + auto-publish confirmation.
   if (options.v22) await runV22Checks()
+  // v2.3 page checks (opt-in): reply/resolve/PR-comment entry points, open → cancel only.
+  if (options.v23) await runV23Checks()
   const finalConsoleErrors = page.consoleMessages.filter((message) => message.type === 'error')
   const finalConsoleWarnings = page.consoleMessages.filter((message) => message.type === 'warning')
   const finalPageErrors = page.pageErrors
@@ -1555,6 +1919,7 @@ try {
     ...v2Checks,
     ...v21Checks,
     ...v22Checks,
+    ...v23Checks,
   ]
   const decisive = checks.filter((check) => check.pending !== true)
   const ok = decisive.every((check) => check.pass)

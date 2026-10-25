@@ -7,7 +7,8 @@
 > v1.1 证据：`api-probe-v11-final.json`（90/90）、`click-panel-v11.json`、`page-check-v11.json`、`v11-*.png`（见 §11）；
 > v2 证据：`api-probe-v2.json`（53 通过/1 pending）、`click-panel-v2.json`、`page-check-v2.json`、`v2-*.png`（见 §12）；
 > v2.1 复跑证据：`api-probe-v21-final.json`（58 通过/0 失败/0 pending）、`page-check-v21-final.json`（4/4）、`click-panel-v21-final.json`（17 通过/0 失败/1 pending）、`v21-*.png`（见 §13）；
-> v2.2 证据：`api-probe-v22.json`（42 断言全过，safety unsafe=0/published=0）、`page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过/0 失败/1 pending）、`v22-*.png`（见 §14）。
+> v2.2 证据：`api-probe-v22.json`（42 断言全过，safety unsafe=0/published=0）、`page-check-v22.json`（4/4）、`click-panel-v22.json`（20 通过/0 失败/1 pending）、`v22-*.png`（见 §14）；
+> v2.3 证据：`api-probe-v23.json`（48 断言/0 失败/1 pending；safety confirmTrueSent=0/writes=0）、`page-check-v23.json`（3 通过/0 失败/2 pending）、`click-panel-v23.json`（7 通过/0 失败/5 pending）、`v23-comment-dialog.png`（见 §15）。
 
 ## 0. 元信息
 
@@ -463,7 +464,48 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 - 验证：`node --test` **231/231**（新增 2 条：开关开启时手动审查完成会发布一次且参数取自配置；`review-status` 带 published 记录）。**验证过程未做真实发布**（保持红线），真实发布由用户下一次审查触发。
 - 当前本机配置：`publish.enabled=true`、`mode=inline`、`minSeverity=P2`、`maxComments=20`；自动审查本身仍关闭（`enabled=false`）。
 
-## 附录 A · 复跑命令（同 §2 / README §4.6–§4.9）与判定速查
+## 15. v2.3 验收章节（CONTRACT §8.4：评论写操作）— **PASS（校验与页面取消路径；真实写未执行）**
+
+> **状态：PASS（2026-10-25 09:12 复跑；Host 0.6.0 已生效，client.js 随热重载生效）**
+> 证据：`api-probe-v23.json`（**48 断言通过 / 0 失败 / 1 pending**；`report.v23.safety` = requests 17 / **confirmTrueSent 0** / acceptedResponses 0 / **writes 0** / badRequest 17）、
+> `page-check-v23.json`（**3 通过 / 0 失败 / 2 pending**）、`click-panel-v23.json`（**7 通过 / 0 失败 / 5 pending**）、截图 `v23-page-check.png`、`v23-comment-dialog.png`。
+> **安全**：装置从不发送 `confirm:true`，不产生任何真实评论/回复/解决；页面流程只「打开 → 取消」，Network 断言 0 个写请求。
+
+### 15.1 路由断言（`api-probe --skip-ai --v23`）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | comment / reply / resolve 三条路由就绪并返回合法信封 | PASS | 缺 confirm 探测返回 `BAD_REQUEST` |
+| 2 | 缺 confirm / `confirm:false` → `BAD_REQUEST` | PASS | comment/reply/resolve 各覆盖 |
+| 3 | 非法 repo / number → `BAD_REQUEST` | PASS | — |
+| 4 | 全流程安全计数：`confirmTrueSent=0`、`writes=0` | PASS | `report.v23.safety`（17 请求全部 400，accepted=0） |
+| 5 | 字段级守卫（body/commentId/threadId 的独立错误信息） | pending | 契约要求这些校验在 `confirm` 之后；装置坚持不发 `confirm:true`（避免任何写入），单测已覆盖 |
+
+### 15.2 页面（`page-check --v23` 3/0/2；`click-panel --v23` 7/0/5）
+
+| # | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | PR 头渲染 `[data-action="pr-comment"]` | PASS | `v23-page-check.png` |
+| 2 | 点「评论」→ 弹层打开（repo 上下文、textarea、发送/取消齐全，`data-comment-phase=idle`） | PASS | `v23-comment-dialog.png` |
+| 3 | 点取消 → 弹层关闭，Network **0 个 `/codex-review/comment` 请求** | PASS | click-panel `network.commentRequests=[]` |
+| 4 | 整个 v2.3 页面流程 0 个 comment/reply/resolve 请求 | PASS | click-panel `network.writeRequests=[]` |
+| 5 | console.error / pageerror = 0 | PASS | 两个报告 |
+| 6 | 行内评论「回复」按钮、行内编辑器打开→取消 | pending | 当前 2 个 open PR（#141/#139）`inline=0`，客户端不渲染评论卡；等自动/手动发布产生行内评论后重跑 `click-panel --v23` 即可闭环 |
+| 7 | 「解决线程」确认块打开→取消 | pending | 同上（还需要带 threadId 且未解决的评论） |
+
+### 15.3 本轮修复的装置问题
+
+- `click-panel --v23` 原先把「PR 评论弹层」流程放在「找到带行内评论的 PR」分支内：没有行内评论时评论弹层也被跳过（首跑仅 2 条断言）。已把评论弹层拆成独立 helper 并改为**总是执行**；复跑后该流程 4 条断言全部通过（打开/字段/取消/0 请求）。
+
+### 15.4 已知限制与 pending 关闭方式
+
+- 行内「回复 / 解决」页面流程 pending 属数据条件：`publish.enabled=true` 已开启，下一次审查发布后就会在对应 PR 产生行内评论，再跑 `click-panel --v23` 即可验证回复/解决 UI。
+- 解决讨论依赖 GraphQL 权限（`resolveReviewThread`）；GraphQL 不可用时客户端只显示「回复」。
+- 真实写评论 / 回复 / 解决默认不做（需用户明确要求）；若执行，在报告记录 URL。
+
+**v2.3 判定：PASS（48 路由断言 0 失败 + 页面 10/12 通过、0 失败 + 8 environment pending + 0 真实写）。**
+
+## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
 - AI 终态关键字段：`review-status.state==="done"`、`partial!==true`、`findings[]` 每条 schema 合法；
