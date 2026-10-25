@@ -91,3 +91,7 @@ node plugin/dev/shots.mjs                # 重出全部截图（另开一个终�
   check-preview 每个场景前都会 `dev-reset`（配置回到默认关闭）。
 - 预览页的标题栏、左侧图标 rails、`PREVIEW` 角标只存在于 `preview.html`，`client.js` 不渲染它们。
 - `mock/`、`vendor/`、`shots/`、本文件都不应进入安装包 `files`（Host 侧 package.json 负责）。
+
+## 跨平台 UI 回归
+
+`python plugin/dev/check-ui.py` 使用 Python Playwright 驱动 Chromium，覆盖深浅主题、长标题、列表行高度、窄屏 PR 切换及 13 个预览场景（含 920/952px 边界和桌面宿主内的 800px 面板）。先启动上面的预览服务；浏览器路径可通过 `CHROMIUM_PATH` 指定，服务地址可通过 `PREVIEW_BASE` 指定。此脚本依赖开发环境已有的 Playwright，不是插件运行依赖。截图写入被忽略的 `verify/out/ui-refactor/`。克隆后若缺少被忽略的 `vendor/react/`，需准备 React 18.3.1 与 react-dom 18.3.1 的同名 UMD development 文件再启动浏览器检查。

@@ -1525,24 +1525,26 @@ export class GitHubClient {
     // head SHA / base ref: start every independent read right away so the cold
     // path costs one round trip instead of two.
     const pullPromise = this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`)
-    const filesPromise = this.loadFiles(owner, name, number, '')
-    const issueCommentsPromise = this.loadIssueComments(owner, name, number)
-    const reviewsPromise = this.loadReviews(owner, name, number)
-    const inlinePromise = this.loadInlineComments(owner, name, number)
-    const threadsPromise = this.loadReviewThreads(owner, name, number)
+    // Attach rejection handlers immediately, even if the primary read fails.
+    const secondaryPromise = Promise.allSettled([
+      this.loadFiles(owner, name, number, ''),
+      this.loadIssueComments(owner, name, number),
+      this.loadReviews(owner, name, number),
+      this.loadInlineComments(owner, name, number),
+      this.loadReviewThreads(owner, name, number),
+    ])
     const { data: pull } = await pullPromise
     if (pull === null || typeof pull !== 'object') throw new AppError('GH_NOT_FOUND')
     const headSha = typeof pull?.head?.sha === 'string' ? pull.head.sha : ''
     const baseRefName = typeof pull?.base?.ref === 'string' ? pull.base.ref : ''
-    const results = await Promise.allSettled([
-      filesPromise,
-      issueCommentsPromise,
-      reviewsPromise,
-      inlinePromise,
-      this.loadChecks(owner, name, headSha),
-      this.loadStack(owner, name, baseRefName, pull?.body),
-      threadsPromise,
+    const [secondary, dependent] = await Promise.all([
+      secondaryPromise,
+      Promise.allSettled([
+        this.loadChecks(owner, name, headSha),
+        this.loadStack(owner, name, baseRefName, pull?.body),
+      ]),
     ])
+    const results = [...secondary.slice(0, 4), ...dependent, secondary[4]]
     const files = settled(results[0], { files: [], filesTruncated: false })
     const issueComments = settled(results[1], [])
     const reviews = settled(results[2], [])

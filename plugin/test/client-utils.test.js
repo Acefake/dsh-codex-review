@@ -20,6 +20,8 @@ import {
   createFakeCtx,
   listRequiredModules,
   loadPlugin,
+  loadBundle,
+  createReactStub,
 } from '../dev/loader-stub.mjs'
 
 const loaded = loadPlugin()
@@ -1362,4 +1364,166 @@ test('publishErrorKey maps the new publish failures to their own sentences', () 
     assert.equal(typeof api.locales.zh[key], 'string')
     assert.equal(typeof api.locales.en[key], 'string')
   }
+})
+
+test('threads keep REST roots and replies together when GraphQL is unavailable', () => {
+  const threads = api.groupCommentThreads([
+    { id: 10, body: '**[P1] Root**', author: 'a' },
+    { id: 11, inReplyToId: 10, body: 'Reply', author: 'b' },
+    { id: 12, body: 'Separate', author: 'c' },
+  ])
+  assert.equal(threads.length, 2)
+  assert.equal(threads[0].replies, 1)
+  assert.equal(threads[0].root.id, 10)
+})
+
+test('threads still group by GraphQL id and carry resolved state', () => {
+  const threads = api.groupCommentThreads([
+    { id: 10, threadId: 't1', body: 'Root' },
+    { id: 11, threadId: 't1', body: 'Reply', isResolved: true },
+  ])
+  assert.equal(threads.length, 1)
+  assert.equal(threads[0].resolved, true)
+  assert.equal(threads[0].replies, 1)
+})
+
+function componentHarness() {
+  const bundle = loadBundle()
+  const react = createReactStub()
+  const states = []
+  const refs = []
+  const callbacks = []
+  let cursor = 0
+  react.useState = initial => {
+    const index = cursor++
+    if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial
+    return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value }]
+  }
+  react.useRef = initial => {
+    const index = cursor++
+    if (!(index in states)) states[index] = { current: initial }
+    refs.push(states[index])
+    return states[index]
+  }
+  react.useCallback = callback => { callbacks.push(callback); return callback }
+  const api = bundle.definitions[0].factory(() => react).__test
+  return { api, states, refs, callbacks, bundle, render(component, props) { cursor = 0; return component(props) } }
+}
+
+function nodes(tree) {
+  if (!tree || typeof tree !== 'object') return []
+  return [tree, ...(tree.props?.children || []).flat(Infinity).flatMap(nodes)]
+}
+
+test('expanded comments retain a working collapse button; unavailable threads cannot resolve', () => {
+  const harness = componentHarness()
+  const props = { comments: { inline: Array.from({ length: 6 }, (_, id) => ({ id, body: 'Comment' })) }, onResolve() {} }
+  let tree = harness.render(harness.api.CommentsCard, props)
+  const more = nodes(tree).find(node => node.props?.['data-action'] === 'comments-more')
+  assert.ok(more)
+  assert.equal(nodes(tree).filter(node => node.props?.['data-action'] === 'thread-resolve').length, 0)
+  more.props.onClick()
+  tree = harness.render(harness.api.CommentsCard, props)
+  const collapse = nodes(tree).find(node => node.props?.['data-action'] === 'comments-more')
+  assert.ok(collapse)
+  assert.equal(nodes(tree).filter(node => node.props?.['data-cr-thread']).length, 6)
+  collapse.props.onClick()
+  tree = harness.render(harness.api.CommentsCard, props)
+  assert.equal(nodes(tree).filter(node => node.props?.['data-cr-thread']).length, 5)
+})
+
+test('starting, completing and cancelling reviews invalidate cached review snapshots', async () => {
+  for (const action of ['start', 'complete', 'cancel']) {
+    const harness = componentHarness()
+    harness.states[4] = { repo: 'a/b', number: 1 }
+    harness.bundle.sandbox.fetch = async () => ({
+      ok: true,
+      async json() { return { ok: true, value: { state: 'done', findings: [] } } },
+    })
+    if (action === 'start') harness.bundle.sandbox.fetch = async () => ({
+      async json() { return { ok: false, error: { code: 'INTERNAL' } } },
+    })
+    harness.render(harness.api.Workbench, {})
+    const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+    cache.set('a/b#1', { value: { review: { state: 'none' } }, at: Date.now() })
+    if (action === 'start') {
+      harness.callbacks.find(fn => String(fn).includes("'/review-start'"))()
+    } else if (action === 'cancel') {
+      harness.callbacks.find(fn => String(fn).includes("'/review-cancel'"))()
+    } else {
+      const poll = harness.callbacks.find(fn => String(fn).includes("'/review-status'"))
+      const running = poll(0, 'job-1', harness.states[4])
+      // Simulate a detail fetch caching the running review during polling.
+      cache.set('a/b#1', { value: { review: { state: 'running' } }, at: Date.now() })
+      await running
+    }
+    assert.equal(cache.has('a/b#1'), false, action)
+  }
+})
+
+test('resuming cached review B invalidates B even before the selection ref rerenders', async () => {
+  const harness = componentHarness()
+  harness.states[4] = { repo: 'a/b', number: 1 }
+  harness.bundle.sandbox.fetch = async () => ({
+    async json() { return { ok: true, value: { state: 'done', headSha: 'bbb', findings: [] } } },
+  })
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  const originalA = { value: { review: { state: 'none' } }, at: Date.now() }
+  cache.set('a/b#1', originalA)
+  cache.set('a/b#2', { value: { review: { state: 'running', jobId: 'job-B' } }, at: Date.now() })
+  harness.callbacks.find(fn => String(fn).includes('setSelected(summary)'))({ repo: 'a/b', number: 2 })
+  await new Promise(resolve => setTimeout(resolve, 900))
+  assert.equal(harness.states[9].state, 'done')
+  assert.equal(cache.get('a/b#1'), originalA)
+  assert.equal(cache.has('a/b#2'), false)
+})
+
+test('invalidated detail responses join the fresh request without restoring stale reviews', async () => {
+  const harness = componentHarness()
+  const summary = { repo: 'a/b', number: 1 }
+  harness.states[4] = summary
+  const responses = []
+  harness.bundle.sandbox.fetch = async () => ({
+    json: () => new Promise(resolve => responses.push(resolve)),
+  })
+  harness.render(harness.api.Workbench, {})
+  const cache = harness.refs.find(ref => ref.current && typeof ref.current.set === 'function').current
+  const fetchDetail = harness.callbacks.find(fn => String(fn).includes('detailInflight.current.get(key)'))
+  const invalidate = harness.callbacks.find(fn => String(fn).includes('detailVersions.current.set(key,'))
+  const old = fetchDetail(summary)
+  await new Promise(resolve => setImmediate(resolve))
+  invalidate(summary)
+  const fresh = fetchDetail(summary)
+  await new Promise(resolve => setImmediate(resolve))
+  responses[0]({ ok: true, value: { summary, review: { state: 'none' } } })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cache.has('a/b#1'), false)
+  assert.equal(fetchDetail(summary), fresh, 'obsolete cleanup must not remove the newer in-flight request')
+  responses[1]({ ok: true, value: { summary, review: { state: 'done', jobId: 'new' } } })
+  const [oldResult, freshResult] = await Promise.all([old, fresh])
+  assert.equal(oldResult.value.review.jobId, 'new')
+  assert.equal(freshResult.value.review.jobId, 'new')
+  assert.equal(cache.get('a/b#1').value.review.jobId, 'new')
+})
+
+test('a delayed refresh cannot replace the latest detail after review invalidation', async () => {
+  const harness = componentHarness()
+  const summary = { repo: 'a/b', number: 1 }
+  harness.states[4] = summary
+  const responses = []
+  harness.bundle.sandbox.fetch = async () => ({ json: () => new Promise(resolve => responses.push(resolve)) })
+  harness.render(harness.api.Workbench, {})
+  const refresh = harness.callbacks.find(fn => String(fn).includes('invalidateDetail(summary)') && String(fn).includes('setDetail({ state:'))
+  const invalidate = harness.callbacks.find(fn => String(fn).includes('detailVersions.current.set(key,'))
+  refresh(summary)
+  await new Promise(resolve => setImmediate(resolve))
+  invalidate(summary)
+  responses[0]({ ok: true, value: { summary, review: { state: 'none' }, body: 'old' } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(responses.length, 2, 'refresh retries with the current epoch')
+  responses[1]({ ok: true, value: { summary, review: { state: 'done' }, body: 'new' } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(harness.states[5].value.body, 'new')
 })

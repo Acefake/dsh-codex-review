@@ -1427,7 +1427,7 @@ const EMPTY_LIST = Object.freeze([])
           typeof comment.threadId === 'string' && comment.threadId !== ''
             ? 't:' + comment.threadId
             : Number.isInteger(comment.inReplyToId) && comment.inReplyToId > 0
-              ? 'r:' + comment.inReplyToId
+              ? 'c:' + comment.inReplyToId
               : 'c:' + String(comment.id)
         const existing = byKey[key]
         if (existing) {
@@ -2522,6 +2522,7 @@ const EMPTY_LIST = Object.freeze([])
   font:14px/20px ${SANS};
   -webkit-font-smoothing:antialiased;
 }
+.cr-layout{display:flex;flex:1;min-width:0;min-height:0}
 .cr-root *,.cr-root *::before,.cr-root *::after{box-sizing:border-box}
 .cr-root button{font:inherit;color:inherit}
 .cr-root ::-webkit-scrollbar{width:6px;height:6px}
@@ -3005,28 +3006,7 @@ const EMPTY_LIST = Object.freeze([])
   .cr-cluster{max-width:800px}
   .cr-toolbar-icons{display:none}
 }
-@container (max-width: 900px){
-  .cr-side{display:none}
-  .cr-cluster{padding:0 16px}
-  .cr-toolbar{height:46px;padding:0 12px}
-  .cr-pr-title{font-size:23px}
-}
 @container (max-width: 860px){
-  .cr-review-label{display:none}
-  .cr-review-short{display:inline}
-}
-@media (max-width: 1240px){
-  .cr-details{display:none}
-  .cr-cluster{max-width:800px}
-  .cr-toolbar-icons{display:none}
-}
-@media (max-width: 900px){
-  .cr-side{display:none}
-  .cr-cluster{padding:0 16px}
-  .cr-toolbar{height:46px;padding:0 12px}
-  .cr-pr-title{font-size:23px}
-}
-@media (max-width: 860px){
   .cr-review-label{display:none}
   .cr-review-short{display:inline}
 }
@@ -3034,181 +3014,89 @@ const EMPTY_LIST = Object.freeze([])
   .cr-root *,.cr-root *::before,.cr-root *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
 }
 
-/* ============================================================================
-   v1.0 — Codex desktop reference, 1:1 with recon/ui-spec.md §1–§5
-   Dark palette = colours measured from the reference screenshots; light palette
-   is the isomorphic light variant. The host theme marker selects the palette.
-   ========================================================================== */
-.cr-root{
-  --cr-bg:#FFFFFF; --cr-side:#F7F7F6; --cr-panel:#FFFFFF; --cr-card:#F1F1EF;
-  --cr-raised:#E9E9E6; --cr-hover:#F2F2F0; --cr-text:#171717; --cr-text-2:#5F5F5F;
-  --cr-text-3:#6E6E6E; --cr-faint:#8A8A8A; --cr-border:#E6E6E2; --cr-border-2:#E6E6E2;
-  --cr-border-strong:#D5D5D0; --cr-green:#1F9D55; --cr-red:#D9302C; --cr-orange:#C2621F;
-  --cr-yellow:#9A7B16; --cr-blue:#2F6FDC; --cr-mono:${MONO};
-  --cr-merge-bg:#171717; --cr-merge-fg:#FFFFFF;
-  font:14px/20px ${SANS}; background:#F7F7F6; color:var(--cr-text);
-}
-body[data-ds-dark-theme] .cr-root,
-html[data-ds-theme-source="dark"] .cr-root{
-  --cr-bg:#181818; --cr-side:#1B1B1B; --cr-panel:#202020; --cr-card:#2D2D2D;
-  --cr-raised:#383838; --cr-hover:#232323; --cr-text:#FFFFFF; --cr-text-2:#AEAEAE;
-  --cr-text-3:#9E9E9E; --cr-faint:#6E6E6E; --cr-border:#2B2B2B; --cr-border-2:#2B2B2B;
-  --cr-border-strong:#3E3E3E; --cr-green:#40C977; --cr-red:#FA423E; --cr-orange:#FF8549;
-  --cr-yellow:#E3B341; --cr-blue:#7AB7FF;
-  --cr-merge-bg:#FFFFFF; --cr-merge-fg:#171717;
-  background:#202020;
-}
-.cr-root ::-webkit-scrollbar{width:6px;height:6px}
-.cr-root ::-webkit-scrollbar-thumb{background:#3C3C3C;border-radius:3px}
-.cr-root ::-webkit-scrollbar-thumb:hover{background:#4A4A4A}
-.cr-root ::-webkit-scrollbar-track{background:transparent}
-.cr-root :focus-visible{outline:2px solid rgba(64,201,119,.45);outline-offset:1px}
-
-/* ---- left rail: 238px, search 222×36, card 212×72 ---- */
-.cr-side{background:var(--cr-side)}
-.cr-side-head{padding:16px 13px 4px}
-.cr-side-title{font-size:24px;line-height:32px;font-weight:700;color:#E0E0E0}
-.cr-search-wrap{padding:8px 8px 9px}
-.cr-search{width:222px;max-width:100%;height:36px;border-radius:18px;background:var(--cr-card);border:0;padding:0 8px 0 12px}
-.cr-search input{font-size:14px;line-height:20px;color:#C8C8C8}
-.cr-search input::placeholder{color:#686868}
-.cr-search-icon{color:var(--cr-text-3)}
-.cr-search-clear{width:19px;height:19px;background:var(--cr-raised);color:#fff}
-.cr-list{padding:0 13px 16px;gap:8px}
-.cr-row{min-height:72px;padding:5px 10px;border-radius:12px;background:transparent}
-.cr-row:hover{background:var(--cr-hover)}
-.cr-row--active,.cr-row--active:hover{background:var(--cr-card)}
-.cr-row-title{font-size:14px;line-height:20px;font-weight:500;color:#D0D0D0}
-.cr-row--active .cr-row-title{color:#E0E0E0}
-.cr-row-meta{margin-top:4px;font-size:13px;line-height:18px;color:#6E6E6E;gap:6px}
-.cr-row-meta .cr-avatar,.cr-row-meta .cr-avatar--16{width:16px;height:16px}
-.cr-row-meta .cr-relative{color:#6E6E6E}
-.cr-row-meta .cr-row-author{color:#E0E0E0;font-size:13px}
-.cr-badge-draft{border-radius:5px;font-size:10px}
-.cr-list-state{padding:12px 6px;font-size:14px;line-height:20px;color:#AEAEAE}
-
-/* ---- toolbar: 33px control band ---- */
-.cr-toolbar{height:49px;padding:0 20px;gap:12px}
-.cr-tabs{height:33px;padding:0;border-radius:999px;background:var(--cr-card);gap:0}
-.cr-tab{height:33px;border-radius:999px;padding:0 14px;font-size:14px;font-weight:500;color:#AEAEAE}
-.cr-tab--active,.cr-tab--active:hover{background:var(--cr-raised);color:#F5F5F5;font-weight:600}
-.cr-tab:hover{color:#D0D0D0}
-.cr-toolbar-icons{gap:0}
-.cr-iconbtn{width:30px;height:30px;border-radius:8px;color:#D0D0D0}
-.cr-review{height:33px;border-radius:999px;background:var(--cr-card)}
-.cr-review-main{padding:0 14px;font-size:14px;font-weight:500;color:#fff}
-.cr-review-main:hover{background:var(--cr-raised)}
-.cr-review-gear{width:33px;border-left:1px solid #3E3E3E;color:#fff}
-.cr-review-gear:hover{background:var(--cr-raised)}
-.cr-btn{height:33px;border-radius:999px;background:var(--cr-card);font-size:14px;font-weight:500}
-.cr-btn:hover{background:var(--cr-raised)}
-.cr-btn--merge{height:32px;border-radius:16px;background:var(--cr-merge-bg);color:var(--cr-merge-fg);padding:0 13px}
+/* Workbench hierarchy: navigation, review document, supporting context. */
+.cr-root{--cr-merge-bg:var(--dsw-alias-button-primary-fill);--cr-merge-fg:var(--dsw-alias-label-primary-foreground);font:14px/20px ${SANS}}
+.cr-root ::selection{background:color-mix(in srgb,var(--cr-blue) 28%,transparent);color:var(--cr-text)}
+.cr-root{scrollbar-color:var(--cr-raised) transparent;scrollbar-width:thin}
+.cr-root input,.cr-root textarea{caret-color:var(--cr-blue)}
+.cr-root a{text-underline-offset:3px}
+.cr-side{border-right:1px solid var(--cr-border)}
+.cr-side-head{padding:20px 16px 8px}
+.cr-side-title{font-size:18px;line-height:26px;font-weight:650}
+.cr-search-wrap{padding:8px 12px 16px}
+.cr-search{width:100%;border-radius:8px;background:var(--cr-bg);border:1px solid var(--cr-border-strong)}
+.cr-list{padding:0 8px 16px;gap:4px}
+.cr-row{flex-shrink:0;min-height:104px;padding:12px;border-radius:8px}
+.cr-row--active,.cr-row--active:hover{background:var(--cr-card);box-shadow:inset 0 0 0 1px var(--cr-border-strong)}
+.cr-row-context{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--cr-text-2);font-size:11px;line-height:16px}
+.cr-row-context span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cr-row-title{font-size:13px;line-height:19px;color:var(--cr-text)}
+.cr-row-meta{margin-top:8px;font-size:11px;color:var(--cr-text-2)}
+.cr-row-author{color:var(--cr-text-2)}
+.cr-toolbar{min-height:60px;height:auto;padding:12px 24px;gap:12px;border-bottom:1px solid var(--cr-border)}
+.cr-tabs{border-radius:8px;padding:3px;background:var(--cr-panel)}
+.cr-tab{height:30px;border-radius:6px;font-size:13px}
+.cr-tab--active,.cr-tab--active:hover{background:var(--cr-raised);color:var(--cr-text)}
+.cr-review{border-radius:8px;height:34px}
+.cr-review-main{font-size:13px}
+.cr-btn{border-radius:8px;font-size:13px}
+.cr-btn--merge{background:var(--cr-merge-bg)}
 .cr-root .cr-btn--merge{color:var(--cr-merge-fg)}
-.cr-btn--merge:hover{background:var(--cr-merge-bg)}
-.cr-btn--ghost{height:26px;border-radius:6px;font-size:12px}
-.cr-health{padding:6px 20px;font-size:13px}
-
-/* ---- body: three independent scroll columns ---- */
-.cr-doc{padding:15px 0 96px;scrollbar-gutter:auto}
-.cr-details{padding:15px 0 80px}
-
-/* ---- PR header (codex 93×27 badge / 28px title / 13px meta) ---- */
-.cr-pr-badges{gap:11px;min-height:27px}
-.cr-badge{height:27px;padding:0 12px;border-radius:14px;font-size:13px;font-weight:600}
-.cr-pr-repo{font-size:14px;line-height:20px;color:#AEAEAE}
-.cr-pr-title{margin:14px 0 0;font-size:28px;line-height:36px;font-weight:700;letter-spacing:-.01em}
-.cr-pr-edit{margin-top:7px;color:#5A5A5A}
-.cr-pr-meta{margin-top:12px;gap:7px;font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-pr-author{font-size:14px;color:#E6E6E6}
-.cr-pr-time{color:#AEAEAE}
-.cr-pr-dot{color:#6E6E6E}
-.cr-branches{gap:6px;font-size:13px;line-height:18px;color:#9E9E9E;font-family:var(--cr-mono)}
-.cr-branch{max-width:210px}
-.cr-pr-meta .cr-pr-arrow{color:#6E6E6E}
-
-/* ---- summary / markdown (17/26) ---- */
-.cr-md{margin-top:22px;font-size:17px;line-height:26px;color:#FFFFFF}
+.cr-root .cr-btn--merge:hover{background:var(--dsw-alias-button-primary-hover)}
+.cr-cluster{gap:32px;max-width:1240px;padding:0 24px}
+.cr-doc{flex:1;width:auto;max-width:820px;padding:28px 0 112px;scrollbar-gutter:stable}
+.cr-details{width:272px;padding:16px 0 88px}
+.cr-pr-badges{gap:10px}
+.cr-pr-repo{font-size:12px;color:var(--cr-text-2)}
+.cr-pr-title{margin:16px 0 12px;font-size:26px;line-height:1.35;font-weight:650;letter-spacing:-.02em;overflow-wrap:anywhere}
+.cr-pr-meta{flex-wrap:wrap;gap:8px;font-size:12px;color:var(--cr-text-2)}
+.cr-branches{font-size:11px;min-width:0}
+.cr-branch{max-width:180px}
+.cr-md{margin-top:32px;font-size:15px;line-height:1.75;color:var(--cr-text);max-width:75ch}
 .cr-md p{margin:0 0 16px}
-.cr-md h2{margin:32px 0 12px;font-size:19px;line-height:28px;font-weight:700}
-.cr-md h3{margin:24px 0 10px;font-size:17px;line-height:25px;font-weight:700}
-.cr-md-list li{line-height:26px;margin-bottom:8px}
-.cr-md-marker{min-width:19px;color:#FFFFFF;font-weight:700}
-.cr-md-item{white-space:pre-wrap;overflow-wrap:anywhere}
-.cr-md code{font-size:13px;line-height:20px;background:#303030;border-radius:4px;padding:2px 6px}
-.cr-md pre{background:#111111;border-radius:6px;padding:12px 14px;font-size:13px;line-height:20px}
-.cr-md blockquote{border-left:2px solid #3E3E3E;color:#AEAEAE}
-.cr-md a{color:#7AB7FF}
-.cr-md hr{border-top:1px solid #2B2B2B}
-
-/* ---- review summary card (top of document, spec §4.3) ---- */
-.cr-review-card{margin:16px 0 8px;padding:0;border:0;border-radius:0;background:transparent}
-.cr-review-card-head{gap:10px;align-items:center}
-.cr-review-card-title{font-size:14px;line-height:20px;font-weight:600;color:#FFFFFF;gap:6px}
-.cr-review-card-meta{font-size:13px;line-height:18px;color:#AEAEAE;gap:8px}
-.cr-review-card-actions{gap:8px}
-.cr-review-verdict-row{margin-top:10px;gap:10px}
-.cr-verdict{height:20px;padding:0 8px;border-radius:5px;font-size:12px;letter-spacing:.01em}
-.cr-verdict-hint{font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-review-counts{margin-top:10px;padding:8px 0;gap:18px;border-top:1px solid #2B2B2B;border-bottom:1px solid #2B2B2B;font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-count b{font-size:13px}
-.cr-review-progress{font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-review-meta-row{font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-chips{margin-top:10px;gap:6px}
-.cr-chip{height:26px;padding:0 10px;border-radius:13px;border:1px solid #2B2B2B;background:transparent;font-size:13px;color:#AEAEAE}
-.cr-chip--active,.cr-chip--active:hover{background:var(--cr-card);border-color:transparent;color:#FFFFFF}
-.cr-finding{background:#202020;border:0;border-radius:10px;padding:12px 14px 12px 16px;margin:10px 0 6px}
+.cr-md h2{margin:32px 0 12px;font-size:20px;line-height:1.4}
+.cr-md h3{margin:24px 0 8px;font-size:17px;line-height:1.5}
+.cr-md-list li{line-height:1.75;margin-bottom:8px}
+.cr-md code{background:var(--dsw-alias-markdown-inline-code,var(--cr-card));color:var(--cr-text);font-size:12px}
+.cr-md pre{background:var(--dsw-alias-markdown-code-block,var(--cr-panel));color:var(--cr-text);padding:16px;border-radius:8px}
+.cr-md a{color:var(--cr-blue)}
+.cr-review-card{margin:28px 0 8px;padding:20px 0;border:0;border-top:1px solid var(--cr-border);border-bottom:1px solid var(--cr-border);border-radius:0;background:transparent}
+.cr-review-card-head{align-items:flex-start;gap:12px;flex-wrap:wrap}
+.cr-review-card-title{font-size:14px;color:var(--cr-text)}
+.cr-review-card-meta{font-size:12px;color:var(--cr-text-2);flex-wrap:wrap;gap:6px}
+.cr-review-card-actions{gap:6px;flex-wrap:wrap}
+.cr-review-verdict-row{margin-top:16px;gap:10px;flex-wrap:wrap}
+.cr-verdict-hint{font-size:12px;color:var(--cr-text-2)}
+.cr-review-counts{margin-top:16px;padding:12px 0;border-top:1px solid var(--cr-border);border-bottom:0;gap:24px;font-size:12px;font-variant-numeric:tabular-nums}
+.cr-review-meta-row{flex-wrap:wrap;font-size:12px;color:var(--cr-text-2)}
+.cr-chips{gap:6px;margin-top:16px}
+.cr-chip{height:28px;border-radius:6px;border-color:var(--cr-border-strong);font-size:12px}
+.cr-chip--active,.cr-chip--active:hover{background:var(--cr-raised);color:var(--cr-text);border-color:var(--cr-border-strong)}
+.cr-finding{margin:0;padding:20px 0;border:0;border-bottom:1px solid var(--cr-border);border-radius:0;background:transparent}
+.cr-finding::before{display:none}
+.cr-finding:last-child{border-bottom:0;padding-bottom:0}
 .cr-finding-head{gap:8px}
-.cr-sev{height:20px;padding:0 7px;border-radius:4px;font-size:12px;font-weight:600}
-.cr-finding-title{margin-top:6px;font-size:16px;line-height:22px;font-weight:600;color:#FFFFFF}
-.cr-finding-loc{margin-top:5px;font-family:var(--cr-mono);font-size:13px;line-height:18px;color:#7AB7FF}
-.cr-finding-body{margin-top:7px;font-size:14px;line-height:22px;color:#D0D0D0}
-.cr-finding-label{margin-right:6px;font-size:12px;line-height:16px;color:#AEAEAE;background:transparent;padding:0;font-weight:500}
-.cr-finding-actions{gap:8px;margin-top:9px}
-.cr-inline-card{background:#202020;border:0;border-radius:10px;padding:10px 12px 10px 14px}
-.cr-inline-comment{margin:8px 0 2px;padding:8px 10px 9px 12px;border-radius:10px;background:#202020;border:0}
-
-/* ---- changes / diff §5.5 ---- */
-.cr-changes-head{margin:14px 0 10px;font-size:13px;line-height:18px;color:#AEAEAE}
-.cr-file{border:1px solid #2B2B2B;border-radius:8px;background:#181818;margin-bottom:8px}
-.cr-file-head{min-height:36px;padding:4px 10px 4px 8px;background:#202020}
-.cr-file-head:hover{background:#232323}
-.cr-file--open .cr-file-head{background:#202020}
-.cr-file-path{font-family:var(--cr-mono);font-size:13px;line-height:18px;color:#D0D0D0}
-.cr-file-badge{height:16px;border-radius:4px;font-size:11px}
-.cr-file-stat{font-size:13px}
-.cr-diff{font-family:var(--cr-mono);font-size:13px;line-height:20px;background:#181818}
-.cr-diff-ln{width:36px;color:#6E6E6E}
-.cr-diff-sign{width:12px;color:#6E6E6E}
-.cr-diff-hunk{background:#232323;color:#AEAEAE;font-family:var(--cr-mono);font-size:12px;line-height:18px}
-.cr-diff-meta{font-size:12px;color:#6E6E6E}
-.cr-diff-row--add{background:rgba(64,201,119,.10)}
-.cr-diff-row--del{background:rgba(250,66,62,.10)}
-.cr-diff-row--add .cr-diff-sign{color:#40C977}
-.cr-diff-row--add .cr-diff-ln{color:rgba(64,201,119,.5)}
-.cr-diff-row--del .cr-diff-sign{color:#FA423E}
-.cr-diff-row--del .cr-diff-ln{color:rgba(250,66,62,.5)}
-.cr-diff-empty{font-size:13px;color:#AEAEAE}
-.cr-md-notice{font-size:13px;color:#AEAEAE}
-
-/* ---- right column: 300px, sections per §2.8 ---- */
-.cr-sec{padding:13px 0 14px;border-bottom:1px solid #2B2B2B}
-.cr-sec-title{font-size:14px;line-height:20px;font-weight:500;color:#AEAEAE;min-height:20px}
-.cr-sec-body{margin-top:8px}
-.cr-changes-row{padding:4px 6px;margin:4px -6px -4px;border-radius:6px}
-.cr-empty-line{font-size:14px;line-height:20px;color:#AEAEAE}
-
-/* ---- composer: 557×43 pill, floating bottom-right §2.9 ---- */
-.cr-composer{
-  right:21px;bottom:21px;width:min(557px,calc(100% - 42px));min-height:43px;
-  padding:4px 6px 4px 14px;border-radius:21px;background:#363636;
-  box-shadow:0 8px 24px rgba(0,0,0,.35);
-}
-.cr-composer-input{font-size:15px;line-height:22px;color:#E6E6E6;padding:0}
-.cr-composer-input::placeholder{color:#686868}
-.cr-composer-send{border-radius:50%}
-.cr-toast{border-radius:8px;background:#2D2D2D;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-.cr-modal{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
-.cr-chat{border-radius:12px;background:#2D2D2D;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+.cr-finding-title{margin-top:8px;font-size:15px;line-height:23px;font-weight:600;color:var(--cr-text)}
+.cr-finding-loc{margin-top:6px;font-size:11px;line-height:18px;color:var(--cr-blue);overflow-wrap:anywhere}
+.cr-finding-body{margin-top:12px;font-size:13px;line-height:22px;color:var(--cr-text-2)}
+.cr-finding-label{font-size:12px;font-weight:600;color:var(--cr-text);background:transparent}
+.cr-finding-actions{margin-top:12px}
+.cr-inline-card,.cr-inline-comment{background:var(--cr-panel);border:1px solid var(--cr-border);border-radius:8px}
+.cr-file{border-color:var(--cr-border);border-radius:8px;background:var(--cr-bg)}
+.cr-file-head{min-height:42px;background:var(--cr-panel)}
+.cr-file--open .cr-file-head{background:var(--cr-panel)}
+.cr-file-path{color:var(--cr-text-2)}
+.cr-diff{background:var(--cr-bg);font-size:12px;line-height:20px}
+.cr-diff-hunk{background:var(--cr-panel);color:var(--cr-text-2)}
+.cr-sec{padding:20px 0;border-bottom:1px solid var(--cr-border)}
+.cr-sec-title{font-size:12px;font-weight:600;color:var(--cr-text)}
+.cr-sec-body{margin-top:12px}
+.cr-thread-dot{border-color:var(--cr-border-strong)}
+.cr-thread-resolve:hover{background:var(--cr-hover)}
+.cr-empty-line{font-size:12px;color:var(--cr-text-2)}
+.cr-composer{border:1px solid var(--cr-border-strong);border-radius:12px;background:var(--cr-panel);box-shadow:0 8px 24px var(--dsw-alias-bg-mask-2)}
+.cr-composer-input{font-size:13px}
+.cr-modal,.cr-chat{background:var(--cr-panel)}
 
 /* ---- real GitHub avatars ---- */
 .cr-avatar{position:relative;overflow:hidden}
@@ -3218,18 +3106,18 @@ html[data-ds-theme-source="dark"] .cr-root{
 
 /* ---- comments: inline threads ---- */
 .cr-threads{display:flex;flex-direction:column;gap:1px;margin:6px -6px 0}
-.cr-thread{display:flex;align-items:center;gap:8px;min-height:34px;padding:5px 6px;border-radius:6px;cursor:pointer;color:var(--cr-text-2)}
+.cr-thread{display:flex;align-items:flex-start;gap:8px;min-height:40px;padding:8px 6px;border-radius:6px;cursor:pointer;color:var(--cr-text-2)}
 .cr-thread:hover{background:var(--cr-hover);color:var(--cr-text)}
 .cr-thread:focus-visible{outline:2px solid rgba(64,201,119,.45);outline-offset:0}
 .cr-thread--resolved{color:var(--cr-text-3)}
 .cr-thread-state{flex:none;display:grid;place-items:center;width:16px;height:16px;border-radius:50%;color:var(--cr-green)}
 .cr-thread--resolved .cr-thread-state{color:var(--cr-green)}
-.cr-thread-dot{width:13px;height:13px;border:1.5px solid #4A4A4A;border-radius:50%}
-.cr-thread-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px}
+.cr-thread-dot{width:13px;height:13px;border:1.5px solid var(--cr-border-strong);border-radius:50%}
+.cr-thread-title{flex:1;min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere;font-size:12px;line-height:18px}
 .cr-thread--resolved .cr-thread-title{text-decoration:line-through;text-decoration-color:rgba(174,174,174,.5)}
 .cr-thread-count{flex:none;font-size:11.5px;color:var(--cr-text-3)}
 .cr-thread-resolve{flex:none;height:22px;padding:0 8px;border:0;border-radius:6px;background:var(--cr-raised);color:var(--cr-text);font-size:11.5px;cursor:pointer;display:inline-flex;align-items:center}
-.cr-thread-resolve:hover{background:#3E3E3E}
+.cr-thread-resolve:hover{background:var(--cr-hover)}
 .cr-thread-resolve:disabled{opacity:.6;cursor:default}
 .cr-thread-resolved{flex:none;font-size:11.5px;color:var(--cr-text-3)}
 .cr-comment-issue-list{margin-top:8px;display:flex;flex-direction:column;gap:2px}
@@ -3240,6 +3128,37 @@ html[data-ds-theme-source="dark"] .cr-root{
 .cr-changes-count{color:var(--cr-text);font-weight:500}
 .cr-stat--add{color:var(--cr-green)}
 .cr-stat--del{color:var(--cr-red)}
+
+/* Compact screens keep PR navigation available above the document. */
+@container (max-width:900px){
+  .cr-layout{flex-direction:column}
+  .cr-side{display:flex;flex:0 0 176px;width:100%;border-right:0;border-bottom:1px solid var(--cr-border)}
+  .cr-side-head{padding:8px 16px 0}
+  .cr-side-title{font-size:15px;line-height:22px}
+  .cr-search-wrap{padding:4px 16px 8px}
+  .cr-search{height:30px}
+  .cr-list{flex-direction:row;padding:0 12px 8px;overflow-x:auto;overflow-y:hidden;gap:8px}
+  .cr-row{flex:0 0 224px;min-height:0;padding:8px 10px}
+  .cr-row-context{margin-bottom:2px}
+  .cr-row-title{-webkit-line-clamp:1}
+  .cr-row-meta{margin-top:4px}
+  .cr-main{flex:1;min-height:0}
+  .cr-toolbar{min-height:52px;padding:8px 12px;gap:6px;flex-wrap:wrap}
+  .cr-cluster{padding:0 16px}
+  .cr-doc{padding-top:20px}
+  .cr-pr-title{font-size:22px}
+  .cr-details{display:none}
+  .cr-review-card{margin-top:20px}
+  .cr-composer{bottom:12px}
+}
+@container (max-width:480px){
+  .cr-tab{padding:0 8px;font-size:12px}
+  .cr-toolbar .cr-btn--merge{padding:0 8px;font-size:12px}
+  .cr-review-main{padding:0 8px;font-size:12px}
+  .cr-review-gear{width:28px}
+  .cr-review-card-actions{width:100%}
+  .cr-review-counts{gap:16px}
+}
 
 /* ---- settings section (DSH panel) keeps host tokens ---- */
 .cr-panel-root{
@@ -3586,6 +3505,10 @@ html[data-ds-theme-source="dark"] .cr-root{
             if (typeof props.onPrefetch === 'function') props.onPrefetch(pr)
           },
         },
+        h('span', { className: 'cr-row-context' },
+          h('span', null, String(pr.repo || '')),
+          h('span', null, '#' + String(pr.number || '')),
+        ),
         h('span', { className: 'cr-row-title' }, pr.title || '(untitled)'),
         h(
           'span',
@@ -3940,7 +3863,6 @@ html[data-ds-theme-source="dark"] .cr-root{
           'h1',
           { className: 'cr-pr-title' },
           h('span', { className: 'cr-pr-title-text' }, summary.title || '(untitled)'),
-          h('span', { className: 'cr-pr-edit', title: tx(t, 'readOnly'), 'aria-hidden': 'true' }, Icon('pencil', 13)),
         ),
         h(
           'div',
@@ -5511,7 +5433,7 @@ html[data-ds-theme-source="dark"] .cr-root{
                     'data-cr-thread': resolved ? 'resolved' : 'open',
                     onClick: () => locate(thread),
                     onKeyDown: (event) => {
-                      if (event && (event.key === 'Enter' || event.key === ' ')) {
+                      if (event && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
                         event.preventDefault()
                         locate(thread)
                       }
@@ -5524,7 +5446,7 @@ html[data-ds-theme-source="dark"] .cr-root{
                     : null,
                   h('span', { className: 'cr-thread-title' }, String(thread.title || '')),
                   thread.replies > 0 ? h('span', { className: 'cr-thread-count' }, '+' + thread.replies) : null,
-                  canResolve && !resolved
+                  canResolve && thread.threadId !== '' && !resolved
                     ? h(
                         'button',
                         {
@@ -5568,7 +5490,7 @@ html[data-ds-theme-source="dark"] .cr-root{
               ),
             )
           : null,
-        threads.length + issue.length > visibleThreads.length + visibleIssue.length
+        threads.length > 5 || issue.length > 3
           ? h(
               'button',
               {
@@ -8147,6 +8069,8 @@ html[data-ds-theme-source="dark"] .cr-root{
       const detailCache = useRef(new Map())
       /** repo#number -> in-flight /pr promise so a hover prefetch and a click share one request. */
       const detailInflight = useRef(new Map())
+      /** Per-PR epochs prevent invalidated requests from restoring stale snapshots. */
+      const detailVersions = useRef(new Map())
       const selectedRef = useRef(null)
       selectedRef.current = selected
       const settingsRef = useRef(settings)
@@ -8188,21 +8112,35 @@ html[data-ds-theme-source="dark"] .cr-root{
         }
       }, [])
 
-      /** Fetch one PR detail, sharing in-flight work and keeping the latest value cached. */
+      const invalidateDetail = useCallback((summary) => {
+        const key = String(summary.repo) + '#' + String(summary.number)
+        detailVersions.current.set(key, (detailVersions.current.get(key) || 0) + 1)
+        detailCache.current.delete(key)
+        detailInflight.current.delete(key)
+      }, [])
+
+      /** Fetch one PR detail, sharing only requests from the current cache epoch. */
       const fetchDetail = useCallback((summary) => {
         const key = String(summary.repo) + '#' + String(summary.number)
         const pending = detailInflight.current.get(key)
         if (pending) return pending
+        const version = detailVersions.current.get(key) || 0
+        const release = () => {
+          if (detailInflight.current.get(key) === request) detailInflight.current.delete(key)
+        }
         const request = post(ROUTE + '/pr', { repo: summary.repo, number: summary.number })
           .then((result) => {
-            detailInflight.current.delete(key)
+            release()
+            // An obsolete response cannot update either the cache or its caller.
+            // Join a newer request, or fetch the current snapshot instead.
+            if (version !== (detailVersions.current.get(key) || 0)) return fetchDetail(summary)
             if (!result.ok) return result
             const value = normalizePrDetail(result.value)
             detailCache.current.set(key, { value, at: Date.now() })
             return { ok: true, value }
           })
           .catch((error) => {
-            detailInflight.current.delete(key)
+            release()
             return { ok: false, error: { code: 'INTERNAL', message: String((error && error.message) || error) } }
           })
         detailInflight.current.set(key, request)
@@ -8228,6 +8166,7 @@ html[data-ds-theme-source="dark"] .cr-root{
         const generation = ++detailGeneration.current
         reviewGeneration.current += 1
         setReview(normalizeReviewStatus({ state: 'none' }))
+        const seedGeneration = reviewGeneration.current
         const key = String(summary.repo) + '#' + String(summary.number)
         const cached = detailCache.current.get(key)
         if (cached) {
@@ -8239,7 +8178,7 @@ html[data-ds-theme-source="dark"] .cr-root{
           } else if (seed && seed.state === 'running' && seed.jobId) {
             const nextGeneration = ++reviewGeneration.current
             setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
-            void pollReview(nextGeneration, seed.jobId)
+            void pollReview(nextGeneration, seed.jobId, summary)
           }
           if (Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
         } else {
@@ -8252,13 +8191,14 @@ html[data-ds-theme-source="dark"] .cr-root{
             return
           }
           setDetail({ state: 'ready', value: result.value, error: null })
+          if (seedGeneration !== reviewGeneration.current) return
           const seed = result.value.review
           if (seed && (seed.state === 'done' || seed.state === 'error')) {
             setReview(seed)
           } else if (seed && seed.state === 'running' && seed.jobId) {
             const nextGeneration = ++reviewGeneration.current
             setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
-            void pollReview(nextGeneration, seed.jobId)
+            void pollReview(nextGeneration, seed.jobId, summary)
           }
         })
       }, [fetchDetail])
@@ -8270,15 +8210,12 @@ html[data-ds-theme-source="dark"] .cr-root{
       const refreshDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
         const generation = ++detailGeneration.current
-        const key = String(summary.repo) + '#' + String(summary.number)
-        post(ROUTE + '/pr', { repo: summary.repo, number: summary.number }).then((result) => {
-          if (generation !== detailGeneration.current) return
-          if (!result.ok) return
-          const value = normalizePrDetail(result.value)
-          detailCache.current.set(key, { value, at: Date.now() })
-          setDetail({ state: 'ready', value, error: null })
+        invalidateDetail(summary)
+        fetchDetail(summary).then((result) => {
+          if (generation !== detailGeneration.current || !result.ok) return
+          setDetail({ state: 'ready', value: result.value, error: null })
         })
-      }, [])
+      }, [fetchDetail, invalidateDetail])
 
       // Remember when the current head's review finished so the summary header can
       // show a relative timestamp (the review status payload has no finishedAt).
@@ -8345,17 +8282,20 @@ html[data-ds-theme-source="dark"] .cr-root{
       }, [query, selectPr])
 
       /** Poll review-status until a terminal state, guarded by a generation counter. */
-      const pollReview = useCallback(async (generation, jobId) => {
+      const pollReview = useCallback(async (generation, jobId, summary) => {
+        invalidateDetail(summary)
         while (generation === reviewGeneration.current) {
           await sleep(POLL_MS)
           if (generation !== reviewGeneration.current) return
           const result = await post(ROUTE + '/review-status', { jobId })
           if (generation !== reviewGeneration.current) return
           if (!result.ok) {
+            invalidateDetail(summary)
             setReview({ state: 'error', error: result.error, jobId })
             return
           }
           const status = result.value || {}
+          invalidateDetail(summary)
           if (status.state === 'done') {
             setReview(normalizeReviewStatus(Object.assign({}, status, { jobId })))
             return
@@ -8387,11 +8327,12 @@ html[data-ds-theme-source="dark"] .cr-root{
             ),
           )
         }
-      }, [])
+      }, [invalidateDetail])
 
       const startReview = useCallback(() => {
         const current = selectedRef.current
         if (!current) return
+        invalidateDetail(current)
         const generation = ++reviewGeneration.current
         const options = settingsToOptions(readSettings(localStore()))
         setReview(
@@ -8433,19 +8374,21 @@ html[data-ds-theme-source="dark"] .cr-root{
               }),
             )
             if (cached) showToast(tx(t, 'reviewCached'))
-            void pollReview(generation, jobId)
+            void pollReview(generation, jobId, current)
           },
         )
-      }, [pollReview, showToast, t])
+      }, [pollReview, invalidateDetail, showToast, t])
 
       const cancelReview = useCallback(() => {
+        const selectedPr = selectedRef.current
+        if (selectedPr) invalidateDetail(selectedPr)
         const current = review
         reviewGeneration.current += 1
         setReview((previous) => normalizeReviewStatus({ state: 'none', options: previous.options }))
         if (current && current.jobId) {
           void post(ROUTE + '/review-cancel', { jobId: current.jobId })
         }
-      }, [review])
+      }, [review, invalidateDetail])
 
       const locateFinding = useCallback((finding) => {
         if (!finding || typeof finding.file !== 'string') return
@@ -9548,114 +9491,116 @@ html[data-ds-theme-source="dark"] .cr-root{
             reviewPublished && reviewPublished.url ? 'true' : 'false',
         },
         h('style', null, CSS),
-        h(PrList, {
-          state: list,
-          queryInput,
-          selectedNumber: selected ? selected.number : null,
-          t,
-          inputRef: searchRef,
-          listRef,
-          autoBadges,
-          onSelect: selectPr,
-          onPrefetch: prefetchDetail,
-          onQueryChange: setQueryInput,
-          onRefresh: () => setQuery(queryInput),
-          onRetry: () => setQuery(queryInput + ' '),
-          onClearQuery: () => {
-            setQueryInput('')
-            setQuery('')
-          },
-        }),
-        h(
-          'div',
-          { className: 'cr-main', 'data-cr-main': 'ready' },
-          notice
-            ? h(
-                'div',
-                { className: 'cr-health', role: 'status' },
-                Icon('alert', 14),
-                h('span', null, notice),
-              )
-            : null,
-          h(Toolbar, {
-            tab,
+        h('div', { className: 'cr-layout' },
+          h(PrList, {
+            state: list,
+            queryInput,
+            selectedNumber: selected ? selected.number : null,
             t,
-            additions: summary.additions,
-            deletions: summary.deletions,
-            pinned,
-            url: selected ? selected.url : undefined,
-            canReview: Boolean(selected),
-            review: reviewValue,
-            settingsSummary,
-            settingsOpen,
-            gearRef,
-            onTabChange: changeTab,
-            onPin: () => setPinned((previous) => !previous),
-            onCopy: copyLink,
-            onGithub: openGithub,
-            onReview: startReview,
-            onGear: () => setSettingsOpen(true),
-            mergeEnabled: mergeState.enabled,
-            mergeTitle,
-            mergeOpen: mergeDialog.open,
-            onMerge: openMerge,
+            inputRef: searchRef,
+            listRef,
+            autoBadges,
+            onSelect: selectPr,
+            onPrefetch: prefetchDetail,
+            onQueryChange: setQueryInput,
+            onRefresh: () => setQuery(queryInput),
+            onRetry: () => setQuery(queryInput + ' '),
+            onClearQuery: () => {
+              setQueryInput('')
+              setQuery('')
+            },
           }),
           h(
             'div',
-            { className: 'cr-body' },
+            { className: 'cr-main', 'data-cr-main': 'ready' },
+            notice
+              ? h(
+                  'div',
+                  { className: 'cr-health', role: 'status' },
+                  Icon('alert', 14),
+                  h('span', null, notice),
+                )
+              : null,
+            h(Toolbar, {
+              tab,
+              t,
+              additions: summary.additions,
+              deletions: summary.deletions,
+              pinned,
+              url: selected ? selected.url : undefined,
+              canReview: Boolean(selected),
+              review: reviewValue,
+              settingsSummary,
+              settingsOpen,
+              gearRef,
+              onTabChange: changeTab,
+              onPin: () => setPinned((previous) => !previous),
+              onCopy: copyLink,
+              onGithub: openGithub,
+              onReview: startReview,
+              onGear: () => setSettingsOpen(true),
+              mergeEnabled: mergeState.enabled,
+              mergeTitle,
+              mergeOpen: mergeDialog.open,
+              onMerge: openMerge,
+            }),
             h(
               'div',
-              { className: 'cr-cluster' },
+              { className: 'cr-body' },
               h(
                 'div',
-                {
-                  className: 'cr-doc',
-                  ref: docRef,
-                  role: 'tabpanel',
-                  'aria-label': tab === 'changes' ? tx(t, 'changes') : tx(t, 'summary'),
-                },
-                docBody,
+                { className: 'cr-cluster' },
+                h(
+                  'div',
+                  {
+                    className: 'cr-doc',
+                    ref: docRef,
+                    role: 'tabpanel',
+                    'aria-label': tab === 'changes' ? tx(t, 'changes') : tx(t, 'summary'),
+                  },
+                  docBody,
+                ),
+                detailValue
+                  ? h(RightPanel, {
+                      detail: detailValue,
+                      review: reviewValue,
+                      findingsByFile,
+                      now: clock,
+                      autoReview,
+                      autoReviewOpen,
+                      autoReviewRunBusy,
+                      onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),
+                      onAutoReviewRefresh: refreshAutoReview,
+                      onAutoReviewRun: runAutoReview,
+                      onAutoReviewJump: jumpToAutoReviewPr,
+                      onOpenSettings: () => setSettingsOpen(true),
+                      t,
+                      onTabChange: changeTab,
+                      onJumpFile: jumpToFile,
+                      onStartReview: startReview,
+                      onCancelReview: cancelReview,
+                      onResolve: writeActions.resolve,
+                      onLocate: locateFinding,
+                    })
+                  : selected
+                    ? h(RightRailPending, { summary: selected, t })
+                    : detail.state === 'loading'
+                    ? h(
+                        'aside',
+                        {
+                          className: 'cr-details',
+                          'data-cr-details-loading': 'ready',
+                          'aria-busy': 'true',
+                          'aria-hidden': 'true',
+                        },
+                        h(Skeleton, { rows: 2, height: 24 }),
+                        h('div', { style: { height: 14 } }),
+                        h(Skeleton, { rows: 2, height: 56 }),
+                        h('div', { style: { height: 14 } }),
+                        h(Skeleton, { rows: 1, height: 40 }),
+                      )
+                    : h('aside', { className: 'cr-details', 'aria-hidden': 'true' }),
               ),
-              detailValue
-                ? h(RightPanel, {
-                    detail: detailValue,
-                    review: reviewValue,
-                    findingsByFile,
-                    now: clock,
-                    autoReview,
-                    autoReviewOpen,
-                    autoReviewRunBusy,
-                    onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),
-                    onAutoReviewRefresh: refreshAutoReview,
-                    onAutoReviewRun: runAutoReview,
-                    onAutoReviewJump: jumpToAutoReviewPr,
-                    onOpenSettings: () => setSettingsOpen(true),
-                    t,
-                    onTabChange: changeTab,
-                    onJumpFile: jumpToFile,
-                    onStartReview: startReview,
-                    onCancelReview: cancelReview,
-                    onResolve: writeActions.resolve,
-                    onLocate: locateFinding,
-                  })
-                : selected
-                  ? h(RightRailPending, { summary: selected, t })
-                  : detail.state === 'loading'
-                  ? h(
-                      'aside',
-                      {
-                        className: 'cr-details',
-                        'data-cr-details-loading': 'ready',
-                        'aria-busy': 'true',
-                        'aria-hidden': 'true',
-                      },
-                      h(Skeleton, { rows: 2, height: 24 }),
-                      h('div', { style: { height: 14 } }),
-                      h(Skeleton, { rows: 2, height: 56 }),
-                      h('div', { style: { height: 14 } }),
-                      h(Skeleton, { rows: 1, height: 40 }),
-                    )
-                  : h('aside', { className: 'cr-details', 'aria-hidden': 'true' }),
             ),
           ),
         ),
@@ -9964,6 +9909,9 @@ html[data-ds-theme-source="dark"] .cr-root{
         normalizeReviewStatus,
         groupFindingsByLine,
         normalizeInlineComments,
+        groupCommentThreads,
+        CommentsCard,
+        Workbench,
         groupCommentsByFile,
         truncateText,
         filterFindings,

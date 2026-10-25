@@ -863,3 +863,24 @@ test('a GraphQL error array maps onto a stable code', async () => {
   })
 })
 
+
+for (const primaryFails of [false, true]) {
+  test(`parallel PR reads handle early secondary failures (primary fails: ${primaryFails})`, async () => {
+    const client = new GitHubClient()
+    client.requestJson = async () => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      if (primaryFails) throw new Error('primary failed')
+      return { data: { head: { sha: 'abc' }, base: { ref: 'main' } } }
+    }
+    client.loadFiles = async () => { throw new Error('files failed') }
+    client.loadIssueComments = async () => []
+    client.loadReviews = async () => []
+    client.loadInlineComments = async () => []
+    client.loadReviewThreads = async () => ({})
+    client.loadChecks = async () => ({})
+    client.loadStack = async () => ({})
+    // node:test also fails this test on any unhandled rejection.
+    if (primaryFails) await assert.rejects(client.loadPull('a/b', 1), /primary failed/)
+    else assert.deepEqual((await client.loadPull('a/b', 1)).files, [])
+  })
+}
