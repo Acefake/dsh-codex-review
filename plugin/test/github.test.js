@@ -591,6 +591,11 @@ test('createPullReview posts event COMMENT, inline comments and the head commit 
       return responseOf({ id: 77, html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77' })
     }
     const client = makeClient({}, fetchImpl)
+    let invalidated = 0
+    client.invalidatePullCache = () => {
+      invalidated += 1
+      return 0
+    }
     const request = {
       repo: 'Acme/repo',
       number: 1,
@@ -612,6 +617,7 @@ test('createPullReview posts event COMMENT, inline comments and the head commit 
     })
     await client.createPullReview(request)
     assert.equal(calls.length, 2, 'a write must never be served from the cache')
+    assert.equal(invalidated, 2, 'a published review invalidates the PR detail cache')
   })
 })
 

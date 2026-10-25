@@ -1221,6 +1221,9 @@ export class GitHubClient {
     } catch (error) {
       throw mapReviewWriteError(error)
     }
+    // A published review adds inline comments: drop the cached detail so the
+    // next /pr read shows them immediately instead of after the 60 s TTL.
+    this.invalidatePullCache(input.repo, number)
     const reviewId = Number(data.id)
     return {
       reviewId: Number.isFinite(reviewId) && reviewId > 0 ? reviewId : 0,

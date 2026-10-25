@@ -73,7 +73,7 @@
 - **解决讨论线程**：评论卡「解决」→ 确认条 → 确认后调用 GraphQL `resolveReviewThread`；解决后显示「已解决」并隐藏操作。需要 token 写权限；GraphQL 不可用时该操作自动隐藏，回复仍可用。
 - **发表 PR 总评论**：PR 头部「评论」→ 弹层 →「发表评论」（`POST /codex-review/comment`）。
 - **安全与一致性**：三条路由都要求 `confirm:true`；body ≤4000 字；失败回显 `BAD_REQUEST` / `GH_FORBIDDEN` / `GH_NOT_FOUND` / `GH_RATE_LIMIT` / `GH_NETWORK`；写入成功后自动失效 PR 详情缓存并刷新页面，新评论即时可见。
-- 版本 0.6.0；测试 238 例。
+- 版本 0.6.1；测试 238 例。
 
 
 ## 配置（可选，写进 profile 的 `cordis.patch.yml`）
@@ -124,7 +124,7 @@ locale/            Plugin Manager 显示元数据（zh/en）
 - 独立验证装置 `../verify/`：真实 DSH 页面 + 真实路由；v1 **PASS（10/10 项，43/43 路由断言）**、v1.1 见 REPORT §11、v2 见 REPORT §12、v2.1 见 REPORT §13、v2.2 见 REPORT §14、v2.3 见 REPORT §15，证据与截图见 [../verify/REPORT.md](../verify/REPORT.md)。
 - AI 审查实测：v1.1 `depth=fast` 真实运行 + 同设置 `cached=true`；`severityThreshold=P0` 服务端过滤；文件级复用 `reusedFiles=24` 且 0 次额外模型调用（见 REPORT）。
 - 合并：**只做守卫测试，未对真实 PR 执行合并**（避免误操作）；对话：真实流式问答验证（SSE delta→done，1.4s 返回 603 字上下文相关回答）。
-- 发布：**只做校验分支与页面取消路径验证，未对真实 PR 发布评论**（`--v22` 硬约束：绝不发送 `confirm:true` + 已完成审查的组合）。
+- 发布：装置侧校验分支与页面取消路径 **0 写入**；功能侧做过一次真实自动发布验证（2026-10-25：#139 → review `5640905093` / 19 条行内评论，#141 → 13 条），未合并。
 - 评论写操作：**只做校验分支与页面取消路径验证，未真实回复/解决/发评论**（`--v23` 硬约束：confirmTrueSent=0、writes=0）。
 
 ## 已知限制
