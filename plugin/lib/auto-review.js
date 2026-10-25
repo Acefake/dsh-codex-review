@@ -190,12 +190,15 @@ export function sanitizeRecentList(raw, limit = AUTO_REVIEW_RECENT_LIMIT) {
 }
 
 /**
- * Normalize the persisted publish records (`repo#number@headSha` → identity).
+ * Normalize the persisted publish records. Two shapes live in this map:
+ * `repo#number@headSha` → per-head identity, and `repo#number` → the rolling
+ * summary review plus the content fingerprint that lets a restart skip an
+ * unchanged re-publish (CONTRACT §7.2 #6).
  * @param {unknown} raw - persisted published map.
- * @returns {Record<string, { publishedAt: number, reviewId: number, url: string }>} sanitized records.
+ * @returns {Record<string, { publishedAt: number, reviewId: number, url: string, fingerprint?: string }>} sanitized records.
  */
 export function sanitizePublishedMap(raw) {
-  /** @type {Record<string, { publishedAt: number, reviewId: number, url: string }>} */
+  /** @type {Record<string, { publishedAt: number, reviewId: number, url: string, fingerprint?: string }>} */
   const published = {}
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return published
   for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
@@ -204,11 +207,14 @@ export function sanitizePublishedMap(raw) {
     const publishedAt = Number(entry.publishedAt)
     const reviewId = Number(entry.reviewId)
     if (!Number.isFinite(publishedAt) || publishedAt < 0 || !Number.isFinite(reviewId) || reviewId < 0) continue
-    published[key] = {
+    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string }} */
+    const record = {
       publishedAt: Math.floor(publishedAt),
       reviewId: Math.floor(reviewId),
       url: typeof entry.url === 'string' ? entry.url : '',
     }
+    if (typeof entry.fingerprint === 'string' && /^[0-9a-f]{6,40}$/.test(entry.fingerprint)) record.fingerprint = entry.fingerprint
+    published[key] = record
   }
   return published
 }
@@ -316,29 +322,35 @@ export class AutoReviewer {
 
   /**
    * Read one persisted publish record.
-   * @param {string} key - `repo#number@headSha`.
-   * @returns {{ publishedAt: number, reviewId: number, url: string } | undefined} the record.
+   * @param {string} key - `repo#number@headSha` (per head) or `repo#number` (rolling summary).
+   * @returns {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string } | undefined} the record.
    */
   getPublished(key) {
     return this.published[key]
   }
 
   /**
-   * Persist one publish record (CONTRACT §7.2 #6/#8: one publish per head, kept
-   * across reloads so a restarted Host never re-publishes the same head).
-   * @param {string} key - `repo#number@headSha`.
-   * @param {{ publishedAt?: number, reviewId?: number, url?: string }} record - publish identity.
+   * Persist one publish record (CONTRACT §7.2 #6/#8: one publish per head plus
+   * the rolling summary identity, kept across reloads so a restarted Host never
+   * re-publishes the same head and never duplicates the summary review). The
+   * optional fingerprint lets a later publish skip content that is already on
+   * GitHub.
+   * @param {string} key - `repo#number@headSha` (per head) or `repo#number` (rolling summary).
+   * @param {{ publishedAt?: number, reviewId?: number, url?: string, fingerprint?: string }} record - publish identity.
    * @returns {void}
    */
   setPublished(key, record) {
     if (typeof key !== 'string' || key === '' || record === null || typeof record !== 'object') return
     const reviewId = Number(record.reviewId)
     const publishedAt = Number(record.publishedAt)
-    this.published[key] = {
+    /** @type {{ publishedAt: number, reviewId: number, url: string, fingerprint?: string }} */
+    const identity = {
       publishedAt: Number.isFinite(publishedAt) && publishedAt >= 0 ? Math.floor(publishedAt) : this.now(),
       reviewId: Number.isFinite(reviewId) && reviewId >= 0 ? Math.floor(reviewId) : 0,
       url: typeof record.url === 'string' ? record.url : '',
     }
+    if (typeof record.fingerprint === 'string' && /^[0-9a-f]{6,40}$/.test(record.fingerprint)) identity.fingerprint = record.fingerprint
+    this.published[key] = identity
     this.persistState()
   }
 

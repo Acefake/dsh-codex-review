@@ -517,6 +517,31 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 
 **v2.3 判定：PASS（48 路由断言 0 失败 + 页面 19 条断言 17 通过 / 0 失败 / 2 environment pending + 0 真实写）。**
 
+## 16. v2.4 验收章节（CONTRACT §7.5：滚动发布）— **单测 PASS；真实写未执行**
+
+> **状态：PASS（单测 246/246；Host 0.7.0 加载后只做只读探测）**
+> 说明：本轮不主动对用户 PR 发写请求。滚动更新的真实链路（PUT 已有 review）会在用户下一次开启自动发布的审查时自然发生；本轮验证覆盖单测、语法检查与 Host 加载。
+
+### 16.1 单测（`node --test`）
+
+| # | 断言 | 结果 |
+|---|---|---|
+| 1 | 新 head 内容未变 → 0 次 create/update，只刷新 head 记录 | PASS |
+| 2 | 新 head 内容变化 → 1 次 `updatePullReview`（reviewId 不变，无新 review） | PASS |
+| 3 | `both` 模式新 finding → 更新汇总 + 一条只含新评论的无 body review | PASS |
+| 4 | 本机状态丢失 → 按 `<!-- dsh-codex-review:summary -->` 找回并更新，不重复创建 | PASS |
+| 5 | 本地记录的 review 404 → 回退新建 | PASS |
+| 6 | 同 head 并发仍只写一次；per-PR 锁释放 | PASS |
+| 7 | summary 渲染追加 marker、fingerprint 稳定/变化、state sanitize 保留 fingerprint | PASS |
+
+### 16.2 Host 加载与只读探测
+
+- `health` 返回 `version=0.7.0`；
+- `/pr` 仍带回既有 `review.published` 记录（head 记录未变），页面徽章逻辑不受影响；
+- 未触发任何 publish 请求（0 真实 GitHub 写）。
+
+**v2.4 判定：PASS（单测 246/246 + Host 0.7.0 加载；真实滚动写待用户下一次审查自然验证）。**
+
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。

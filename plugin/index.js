@@ -47,7 +47,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.6.1'
+export const VERSION = '0.7.0'
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -222,8 +222,9 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const reviewer = deps.reviewer ?? new AutoReviewer({ github, engine, logger })
   /**
    * Publish flow shared by the manual route and the automatic reviewer
-   * (CONTRACT §7.2). The publish records live inside the auto-review state file,
-   * so a restarted Host remembers which head was already published.
+   * (CONTRACT §7.2). Per-head and rolling-summary publish records live inside
+   * the auto-review state file, so a restarted Host remembers which heads were
+   * already published and which review to update in place.
    */
   const publisher = deps.publisher ?? new ReviewPublisher({
     github,

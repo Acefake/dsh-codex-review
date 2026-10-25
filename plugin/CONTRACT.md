@@ -564,15 +564,16 @@ type PublishRequest = {
 4. 去重：先拉该 PR 已有 review comments，解析 marker `<!-- dsh-codex-review:<findingHash> -->`；命中 marker 的 finding 跳过（`skipped` 计数）。`findingHash = sha1(file:line:title)` 同 review 内的 id。
 5. 构造并提交 GitHub review：`POST /repos/{o}/{r}/pulls/{n}/reviews`，`event: 'COMMENT'`；
    - `mode` 含 inline：`comments: [{ path, line, side: 'RIGHT', body }]`，body = `**[P1] 标题**\n\n为什么：…\n\n建议：…\n\n<!-- dsh-codex-review:<hash> -->`（每条 ≤2000 字；标题/why/fix 截断）；
-   - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（≤4000 字）；若请求带 `body` 则用之。
-6. 记录已发布：`engine` 或 auto-review 状态文件里按 `repo#number@headSha` 记 `publishedAt/reviewId/url`；重复调用先用 marker 去重，再返回同一 head 的最近结果。
+   - `mode` 含 summary 或 inline 为空：`body` = `**代码审查（dsh-codex-review）**\n\n<overview>\n\n` + 逐条 `- [P1] file:line 标题`（列出**全部可发布 findings**，不因行内 marker 去重而减少），末尾固定追加隐藏 marker `\n\n<!-- dsh-codex-review:summary -->`（总长 ≤4000 字，含 marker）；若请求带 `body` 则用它覆盖生成内容（同样追加 marker）。
+6. 记录已发布（v2.4 起两套记录，都持久化在 auto-review 状态文件）：`repo#number@headSha` → `{publishedAt, reviewId, url}`（同一 head 幂等，重复调用直接回放、0 写请求）；`repo#number` → `{publishedAt, reviewId, url, fingerprint}`（该 PR 的滚动汇总 review 身份 + 本次内容指纹，供重启后继续原地更新）。
 7. 错误码：`BAD_REQUEST`、`REVIEW_NOT_READY`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`INTERNAL`。
-8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/marker）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。0.5.1 起同一自定发布逻辑也适用于**手动 `review-start`** 产生的 job：完成后（`done`）在后台自动发布，fire-and-forget、失败只记日志，发布前重新读取开关（审查期间关掉则不发布）。
+8. 自动发布：auto-review cycle 审查 `done` 后，若 `config.publish.enabled === true` → 自动调用同一发布逻辑（同一套过滤/去重/滚动更新）；失败只记 `lastError`，不重试风暴；重载/重启后同 head 不重复发布（published 记录持久化）。0.5.1 起同一自定发布逻辑也适用于**手动 `review-start`** 产生的 job：完成后（`done`）在后台自动发布，fire-and-forget、失败只记日志，发布前重新读取开关（审查期间关掉则不发布）。
+9. 滚动更新（v2.4）：同一 PR 只保留**一条**汇总 review。首次发布 `POST` 创建；之后内容变化时 `PUT /repos/{o}/{r}/pulls/{n}/reviews/{id}` 只替换 body，不新增 review 条目（GitHub 时间线只标记 edited）。`fingerprint = sha1(summaryBody + 行内评论 bodies)` 与 `repo#number` 记录相同 → 不写 GitHub（新 head 只刷新本地 head 记录）。行内评论提交后 GitHub 不允许追加：只有从未发布过的 finding 会以一条无 body 的新 review 补发，汇总 review 的 id 保持不变。状态文件丢失时先 `GET /pulls/{n}/reviews`，按 `<!-- dsh-codex-review:summary -->` 找回既有汇总 review 再更新，绝不重复创建；本地记录的 review 在 GitHub 已不存在（404）时才回退为新建。同一 PR 的不同 head 发布串行（per-PR lock），避免滚动记录竞争。
 
 ### 7.3 客户端
 
 - 审查卡：`done` 且有点 `findings` 时显示「发布到 GitHub」；点击弹确认弹层（mode 三选、最低严重度、预计评论数=过滤后条数、「这会真的在 PR 上创建 review 评论」警告、发布/取消）；成功 → 按钮变「已发布 · 在 GitHub 查看」（新窗口打开 url）；已有发布记录时显示已发布徽章。
-- 自动审查设置区：新增「发布审查到 GitHub」开关（默认关）+ mode/minSeverity/maxComments；打开开关时二次确认（写操作警告：会对以后自动审查的 PR 创建评论）；状态卡 recent 项若已发布显示小链接。
+- 自动审查设置区：新增「发布审查到 GitHub」开关（默认关）+ mode/minSeverity/maxComments；打开开关时二次确认（写操作警告：一个 PR 会保留一条汇总 review，后续审查原地更新它，只有新行内问题会补发）。
 - 错误：`REVIEW_NOT_READY` → 提示先审查；`GH_FORBIDDEN` → 提示 token 权限；旧 Host 无路由 → 按钮隐藏并降级。
 
 ### 7.4 v2.2 验收
@@ -581,6 +582,11 @@ type PublishRequest = {
 2. 真实环境：**默认不做真实发布**（避免在用户 PR 上产生未经请求的评论）；只验证守卫（confirm:false → BAD_REQUEST；mode 非法 → BAD_REQUEST；无审查结果 → REVIEW_NOT_READY）与 UI 弹层字段/取消（Network 0 publish 请求）。
 3. 若用户明确要求，可对某个 PR 发布一次并在报告记录 URL（默认不做）。
 4. 页面：发布按钮/弹层/取消、自动发布开关与二次确认、已发布徽章/链接、旧 Host 降级、console 0 error。
+
+### 7.5 v2.4 验收（滚动发布）
+
+1. 单测：`publishFingerprint` 稳定性/变化；同一 PR 新 head 内容未变 → 0 次 create/update；内容变化 → 1 次 `updatePullReview`（reviewId 不变、无新 review）；`both` 模式新 finding → 更新汇总 + 一条无 body 的新 review（只含新评论）；状态丢失后按 summary marker 找回并更新；记录中的 review 404 → 回退新建；同 head 并发仍只写一次；不同 head 串行（per-PR lock 释放）。
+2. 真实环境：默认仍只验证「同 head 回放 0 写」与 health/version；不主动对用户 PR 发写请求。真实滚动更新在用户下一次审查（自动发布开启时）自然发生，可在 PR 时间线确认只有一条 review 被 edited。
 
 ## 8. v2.3 契约：评论写操作（2026-10-25 第六轮迭代，版本 0.6.0）
 

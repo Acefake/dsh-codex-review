@@ -769,9 +769,15 @@ test('sanitizeRecentList/sanitizePublishedMap keep only well-formed records', ()
   assert.deepEqual(full[0].published, { reviewId: 7, url: 'u' })
   assert.deepEqual(sanitizePublishedMap({
     'A/b#2@sha': { publishedAt: 5, reviewId: 9, url: 'https://x' },
+    'A/b#2': { publishedAt: 6, reviewId: 9, url: 'https://x', fingerprint: 'abcdef123456' },
+    'A/b#3': { publishedAt: 7, reviewId: 10, url: 'https://y', fingerprint: 'not a hash' },
     bad: { publishedAt: 'nope' },
     null: null,
-  }), { 'A/b#2@sha': { publishedAt: 5, reviewId: 9, url: 'https://x' } })
+  }), {
+    'A/b#2@sha': { publishedAt: 5, reviewId: 9, url: 'https://x' },
+    'A/b#2': { publishedAt: 6, reviewId: 9, url: 'https://x', fingerprint: 'abcdef123456' },
+    'A/b#3': { publishedAt: 7, reviewId: 10, url: 'https://y' },
+  })
   assert.deepEqual(sanitizePublishedMap(null), {})
 })
 
@@ -784,6 +790,22 @@ test('publish records are persisted and readable after a restart (CONTRACT §7.2
   const second = makeReviewer({ dir })
   assert.deepEqual(second.reviewer.getPublished('Acme/repo#1@sha-1'), { publishedAt: 1_234, reviewId: 42, url: 'https://github.com/x/y/pull/1#pullrequestreview-42' })
   assert.equal(second.reviewer.getPublished('other/repo#1@sha'), undefined)
+
+  // The rolling summary record keeps its content fingerprint across restarts.
+  first.reviewer.setPublished('Acme/repo#1', { publishedAt: 1_234, reviewId: 42, url: 'https://github.com/x/y/pull/1#pullrequestreview-42', fingerprint: 'abcdef123456' })
+  assert.deepEqual(first.reviewer.getPublished('Acme/repo#1'), {
+    publishedAt: 1_234,
+    reviewId: 42,
+    url: 'https://github.com/x/y/pull/1#pullrequestreview-42',
+    fingerprint: 'abcdef123456',
+  })
+  const third = makeReviewer({ dir })
+  assert.deepEqual(third.reviewer.getPublished('Acme/repo#1'), {
+    publishedAt: 1_234,
+    reviewId: 42,
+    url: 'https://github.com/x/y/pull/1#pullrequestreview-42',
+    fingerprint: 'abcdef123456',
+  })
 })
 
 test('automatic publishing is off unless publish.enabled is true (CONTRACT §7.4 #1)', async () => {

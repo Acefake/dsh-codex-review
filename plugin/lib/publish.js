@@ -7,13 +7,25 @@
  * persisted `publish.enabled` flag is true). It never edits code, never pushes
  * commits and never merges.
  *
+ * One rolling summary review per pull request: the first publish creates it and
+ * every later publish replaces its body in place (`PUT .../reviews/{id}`), so a
+ * PR timeline does not grow a new summary review on every commit. Inline
+ * comments are immutable after submission, so only findings that were never
+ * published are sent, each carrying the `<!-- dsh-codex-review:<hash> -->`
+ * marker that lets a later publish skip them. A hidden
+ * `<!-- dsh-codex-review:summary -->` marker identifies the rolling review even
+ * after the local state file was lost. Publishing nothing changed is a no-op
+ * (the same fingerprint is reused), and a repeat publish for one head never
+ * writes to GitHub twice.
+ *
  * Pure helpers (config clamping, finding → comment mapping, marker generation,
- * summary rendering, marker parsing) are exported for `node --test`; the
- * {@link ReviewPublisher} class owns the read-before-write flow:
- * `getPull → existing review → publish record → existing comments → createPullReview → persist`.
+ * summary rendering, marker parsing, content fingerprints) are exported for
+ * `node --test`; the {@link ReviewPublisher} class owns the read-before-write
+ * flow.
  * @module dsh-codex-review/lib/publish
  */
 
+import { createHash } from 'node:crypto'
 import { AppError, badRequest } from './errors.js'
 import { REPO_RE } from './github.js'
 import { SEVERITIES, compareFindings, findingId } from './review.js'
@@ -43,6 +55,13 @@ export const PUBLISH_SUMMARY_MAX_CHARS = 4_000
 
 /** Marker prefix embedded in every inline comment posted by this plugin. */
 export const PUBLISH_MARKER_PREFIX = 'dsh-codex-review'
+
+/**
+ * Hidden marker at the end of the rolling summary review body. It is not a
+ * finding hash, so {@link parsePublishMarkers} ignores it; it lets a publish
+ * recognise the previous summary review after the local state file was lost.
+ */
+export const PUBLISH_SUMMARY_MARKER = '<!-- dsh-codex-review:summary -->'
 
 /** Matches one published-comment marker and captures the finding hash. */
 const PUBLISH_MARKER_RE = /<!--\s*dsh-codex-review:([0-9a-f]{6,40})\s*-->/g
@@ -182,30 +201,81 @@ export function buildInlineCommentBody(finding) {
 /**
  * Render the review summary body. A caller-provided body wins (truncated to the
  * cap); otherwise the deterministic header + overview + finding list is used.
+ * The hidden {@link PUBLISH_SUMMARY_MARKER} always closes the body so a later
+ * publish can find this rolling review again (CONTRACT §7.2 #6).
  * @param {{ overview?: unknown, findings?: Array<any>, customBody?: unknown, maxChars?: number }} [input] - summary data.
  * @returns {string} markdown body, never longer than the cap.
  */
 export function buildSummaryBody(input = {}) {
   const maxChars = Number.isFinite(input.maxChars) && input.maxChars > 0 ? input.maxChars : PUBLISH_SUMMARY_MAX_CHARS
-  if (typeof input.customBody === 'string' && input.customBody.trim() !== '') return truncate(input.customBody.trim(), maxChars)
-  const findings = Array.isArray(input.findings) ? input.findings : []
-  const overview = typeof input.overview === 'string' && input.overview.trim() !== ''
-    ? input.overview.trim()
-    : findings.length === 0 ? 'AI 未发现明显问题' : `共 ${findings.length} 个问题`
-  const lines = ['**代码审查（dsh-codex-review）**', '', overview]
-  if (findings.length > 0) {
-    lines.push('')
-    for (const finding of findings) {
-      const severity = PUBLISH_SEVERITIES.includes(finding?.severity) ? finding.severity : 'P2'
-      lines.push(`- [${severity}] ${finding?.file ?? '?'}:${finding?.line ?? '?'} ${finding?.title ?? ''}`.trimEnd())
+  const markerBlock = `\n\n${PUBLISH_SUMMARY_MARKER}`
+  const budget = Math.max(0, maxChars - markerBlock.length)
+  /** @type {string} */
+  let content
+  if (typeof input.customBody === 'string' && input.customBody.trim() !== '') {
+    content = truncate(input.customBody.trim(), budget)
+  } else {
+    const findings = Array.isArray(input.findings) ? input.findings : []
+    const overview = typeof input.overview === 'string' && input.overview.trim() !== ''
+      ? input.overview.trim()
+      : findings.length === 0 ? 'AI 未发现明显问题' : `共 ${findings.length} 个问题`
+    const lines = ['**代码审查（dsh-codex-review）**', '', overview]
+    if (findings.length > 0) {
+      lines.push('')
+      for (const finding of findings) {
+        const severity = PUBLISH_SEVERITIES.includes(finding?.severity) ? finding.severity : 'P2'
+        lines.push(`- [${severity}] ${finding?.file ?? '?'}:${finding?.line ?? '?'} ${finding?.title ?? ''}`.trimEnd())
+      }
+    }
+    content = truncate(lines.join('\n'), budget)
+  }
+  return `${content}${markerBlock}`
+}
+
+/**
+ * Hash everything one publish would write (summary body + inline comment
+ * bodies). An unchanged fingerprint on a new head means the PR already shows
+ * exactly this content, so the publish can be a no-op (CONTRACT §7.2 #6).
+ * @param {{ summaryBody?: string, inlineComments?: Array<{ path?: string, line?: number, body?: string }> }} input - prepared publish content.
+ * @returns {string} 12 hex characters.
+ */
+export function publishFingerprint(input = {}) {
+  const summary = typeof input.summaryBody === 'string' ? input.summaryBody : ''
+  const inline = (Array.isArray(input.inlineComments) ? input.inlineComments : []).map((comment) => [
+    typeof comment?.path === 'string' ? comment.path : '',
+    Number.isInteger(comment?.line) ? comment.line : 0,
+    typeof comment?.body === 'string' ? comment.body : '',
+  ])
+  return createHash('sha1').update(JSON.stringify({ summary, inline })).digest('hex').slice(0, 12)
+}
+
+/**
+ * Find the newest submitted review carrying {@link PUBLISH_SUMMARY_MARKER}.
+ * @param {Array<{ id?: unknown, body?: unknown, url?: unknown, submittedAt?: unknown }>} reviews - reviews from `listPullReviews`.
+ * @returns {{ id: number, url: string } | undefined} the rolling summary review, when found.
+ */
+export function findPublishedSummaryReview(reviews) {
+  /** @type {{ id: number, url: string, submittedAt: string } | undefined} */
+  let best
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    if (review === null || typeof review !== 'object') continue
+    const body = typeof review.body === 'string' ? review.body : ''
+    if (!body.includes(PUBLISH_SUMMARY_MARKER)) continue
+    const id = Number(review.id)
+    if (!Number.isFinite(id) || id <= 0) continue
+    const submittedAt = typeof review.submittedAt === 'string' ? review.submittedAt : ''
+    if (best === undefined || submittedAt >= best.submittedAt) {
+      best = { id: Math.floor(id), url: typeof review.url === 'string' ? review.url : '', submittedAt }
     }
   }
-  return truncate(lines.join('\n'), maxChars)
+  return best === undefined ? undefined : { id: best.id, url: best.url }
 }
 
 /**
  * Assemble everything one publish needs: filtered/sorted findings, the inline
  * comments actually to create (marker-deduplicated) and an optional summary.
+ * The summary always lists every publishable finding (not only the ones not yet
+ * posted inline) so the rolling review body stays a complete picture.
  * @param {{ findings?: Array<any>, mode?: string, minSeverity?: string, maxComments?: number, existingMarkers?: Set<string>, overview?: string, body?: string }} input - publish data.
  * @returns {{ mode: string, minSeverity: string, maxComments: number, inlineComments: Array<{ path: string, line: number, side: 'RIGHT', body: string }>, summaryBody: string | undefined, selected: Array<any>, skipped: number, overLimit: number, deduped: number }} prepared publish.
  */
@@ -233,8 +303,11 @@ export function preparePublish(input = {}) {
     : []
   // Contract §7.2 #5: summary mode — or inline mode with nothing to anchor.
   const needsSummary = mode === 'summary' || mode === 'both' || inlineComments.length === 0
+  // A submitted review cannot receive new inline comments, so a summary review
+  // carries the full current finding list; the inline list above only sends the
+  // findings GitHub has never seen (CONTRACT §7.2 #4/#6).
   const summaryBody = needsSummary
-    ? buildSummaryBody({ overview: input.overview, findings: toSend, customBody: input.body })
+    ? buildSummaryBody({ overview: input.overview, findings: selected, customBody: input.body })
     : undefined
   return {
     mode,
@@ -250,8 +323,42 @@ export function preparePublish(input = {}) {
 }
 
 /**
- * The publish flow: read the PR/review, deduplicate against persisted records
- * and existing GitHub markers, then create exactly one PR review and remember it.
+ * Build the response of a publish that needed no GitHub write (repeat head or
+ * unchanged content). The caller still learns which review already holds the
+ * content.
+ * @param {{ reviewId?: unknown, url?: unknown } | null | undefined} record - stored publish identity.
+ * @param {number} skipped - findings not sent.
+ * @param {string} headSha - reviewed head.
+ * @returns {{ published: true, reviewId: number, url: string, comments: 0, skipped: number, headSha: string }} publish result.
+ */
+function replayResult(record, skipped, headSha) {
+  return {
+    published: true,
+    reviewId: Number(record?.reviewId) || 0,
+    url: typeof record?.url === 'string' ? record.url : '',
+    comments: 0,
+    skipped,
+    headSha,
+  }
+}
+
+/**
+ * Fallback URL for a review created without a usable `html_url`.
+ * @param {{ url?: unknown } | null | undefined} created - create response.
+ * @param {string} repo - `owner/name`.
+ * @param {number} number - PR number.
+ * @param {number} reviewId - review id.
+ * @returns {string} review URL or an empty string.
+ */
+function reviewUrl(created, repo, number, reviewId) {
+  if (typeof created?.url === 'string' && created.url !== '') return created.url
+  return reviewId > 0 ? `https://github.com/${repo}/pull/${number}#pullrequestreview-${reviewId}` : ''
+}
+
+/**
+ * The publish flow: read the PR/review, reuse the stored record for a head that
+ * was already published, update the one rolling summary review when the content
+ * changed, and only create a review when there is something new to write.
  */
 export class ReviewPublisher {
   /**
@@ -265,6 +372,8 @@ export class ReviewPublisher {
     this.now = options.now ?? Date.now
     /** One publish per repo#number@headSha; concurrent callers share this promise. @type {Map<string, Promise<any>>} */
     this.inflight = new Map()
+    /** One publish per repo#number at a time, so rolling-review writes never race. @type {Map<string, Promise<any>>} */
+    this.prLocks = new Map()
   }
 
   /**
@@ -304,51 +413,61 @@ export class ReviewPublisher {
 
     // One publish per head: a double click (or a second tab) must never create
     // two GitHub reviews, so concurrent calls share the in-flight promise
-    // instead of racing the store record (CONTRACT §7.2 #6).
+    // instead of racing the store record (CONTRACT §7.2 #6). Different heads of
+    // the same PR are serialized too, because both may update the same rolling
+    // summary review.
     const key = `${repo}#${number}@${headSha}`
     const pending = this.inflight.get(key)
     if (pending !== undefined) return pending
-    const running = this.publishForHead({ repo, number, headSha, review, mode, minSeverity, maxComments, customBody })
+    const prKey = `${repo}#${number}`
+    const previous = this.prLocks.get(prKey) ?? Promise.resolve()
+    const running = previous.catch(() => undefined).then(() => this.publishForPull({
+      repo,
+      number,
+      headSha,
+      review,
+      mode,
+      minSeverity,
+      maxComments,
+      customBody,
+    }))
     this.inflight.set(key, running)
+    this.prLocks.set(prKey, running)
     try {
       return await running
     } finally {
       this.inflight.delete(key)
+      if (this.prLocks.get(prKey) === running) this.prLocks.delete(prKey)
     }
   }
 
   /**
-   * The write half of {@link publish}: replay the stored record when this head
-   * was already published, deduplicate against the markers already present on
-   * the PR, create exactly one GitHub review and remember it. Callers go
-   * through {@link publish}, which serializes concurrent calls for one head.
+   * The write half of {@link publish}: replay a head that was already published,
+   * skip a publish whose content GitHub already shows, update the rolling
+   * summary review in place, and create a review only for content that has no
+   * review yet (the first summary, or newly discovered inline findings).
+   * Callers go through {@link publish}, which serializes concurrent calls.
    * @param {{ repo: string, number: number, headSha: string, review: any, mode: string, minSeverity: string, maxComments: number, customBody?: string }} input - resolved publish request.
    * @returns {Promise<{ published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string }>} publish result.
    * @throws {AppError} GH_* / INTERNAL while talking to GitHub.
    */
-  async publishForHead(input) {
+  async publishForPull(input) {
     const { repo, number, headSha, review, mode, minSeverity, maxComments, customBody } = input
-    const key = `${repo}#${number}@${headSha}`
-    const recorded = this.store.get(key)
+    const prKey = `${repo}#${number}`
+    const headKey = `${repo}#${number}@${headSha}`
+    const recorded = this.store.get(headKey)
     if (recorded !== undefined && recorded !== null) {
       // One publish per head: a repeat is answered with the stored result and
       // performs no GitHub write (CONTRACT §7.2 #6).
       const replay = filterPublishableFindings(review.findings, { minSeverity, maxComments })
-      return {
-        published: true,
-        reviewId: Number(recorded.reviewId) || 0,
-        url: typeof recorded.url === 'string' ? recorded.url : '',
-        comments: 0,
-        skipped: replay.selected.length + replay.overLimit,
-        headSha,
-      }
+      return replayResult(recorded, replay.selected.length + replay.overLimit, headSha)
     }
 
+    // Inline comments need the marker set; a summary-only publish does not.
     /** @type {Set<string>} */
     let existingMarkers = new Set()
-    if (typeof this.github.listPullReviewComments === 'function') {
-      const comments = await this.github.listPullReviewComments(repo, number)
-      existingMarkers = parsePublishMarkers(comments)
+    if ((mode === 'inline' || mode === 'both') && typeof this.github.listPullReviewComments === 'function') {
+      existingMarkers = parsePublishMarkers(await this.github.listPullReviewComments(repo, number))
     }
     const prepared = preparePublish({
       findings: review.findings,
@@ -359,33 +478,99 @@ export class ReviewPublisher {
       overview: review.overview,
       body: customBody,
     })
-    /** @type {{ body?: string, comments?: Array<any> }} */
-    const payload = {}
-    if (prepared.summaryBody !== undefined) payload.body = prepared.summaryBody
-    if (prepared.inlineComments.length > 0) payload.comments = prepared.inlineComments
-    if (payload.body === undefined && payload.comments === undefined) {
-      // No publishable finding at all: still record a summary-only review so the
-      // user sees that the review ran (and repeated calls stay idempotent).
-      payload.body = buildSummaryBody({ overview: review.overview, findings: [] })
+    const fingerprint = publishFingerprint({ summaryBody: prepared.summaryBody, inlineComments: prepared.inlineComments })
+    const rolling = this.store.get(prKey)
+    if (rolling !== undefined && rolling !== null && rolling.fingerprint === fingerprint) {
+      // The new head produced exactly the content already on GitHub: keep the
+      // head↔review pointer fresh but do not touch GitHub (CONTRACT §7.2 #6).
+      this.record(headKey, { reviewId: Number(rolling.reviewId) || 0, url: typeof rolling.url === 'string' ? rolling.url : '' })
+      return replayResult(rolling, prepared.selected.length + prepared.overLimit, headSha)
     }
-    const created = await this.github.createPullReview({ repo, number, headSha, body: payload.body, comments: payload.comments })
-    const reviewId = Number(created?.reviewId) > 0 ? Number(created.reviewId) : 0
-    const url = typeof created?.url === 'string' && created.url !== ''
-      ? created.url
-      : reviewId > 0 ? `https://github.com/${repo}/pull/${number}#pullrequestreview-${reviewId}` : ''
-    const record = { publishedAt: this.now(), reviewId, url }
-    try {
-      this.store.set(key, record)
-    } catch (error) {
-      this.logger?.warn?.(`dsh-codex-review: cannot persist publish record: ${error?.message ?? error}`)
+
+    // Resolve the one rolling review this PR keeps (persisted identity first,
+    // marker recovery second) — but only summary mode can update a body.
+    const canUpdate = typeof this.github.updatePullReview === 'function'
+    let rollingReviewId = canUpdate ? Number(rolling?.reviewId) || 0 : 0
+    let rollingUrl = canUpdate && typeof rolling?.url === 'string' ? rolling.url : ''
+    if (rollingReviewId <= 0 && prepared.summaryBody !== undefined && typeof this.github.listPullReviews === 'function') {
+      const found = findPublishedSummaryReview(await this.github.listPullReviews(repo, number))
+      if (found !== undefined) {
+        rollingReviewId = found.id
+        rollingUrl = found.url
+      }
     }
+
+    let reviewId = rollingReviewId
+    let url = rollingUrl
+    let comments = 0
+    if (prepared.summaryBody !== undefined) {
+      if (rollingReviewId > 0) {
+        // Update in place: the timeline keeps one summary review per PR.
+        try {
+          const updated = await this.github.updatePullReview({ repo, number, reviewId: rollingReviewId, body: prepared.summaryBody })
+          if (typeof updated?.url === 'string' && updated.url !== '') url = updated.url
+        } catch (error) {
+          // A review recorded locally but deleted/dismissed on GitHub: recreate.
+          if (!(error instanceof AppError) || error.code !== 'GH_NOT_FOUND') throw error
+          rollingReviewId = 0
+          url = ''
+        }
+      }
+      if (rollingReviewId <= 0) {
+        // First publish (or recovery failed): create the one rolling review and
+        // carry today's new inline findings with it.
+        const created = await this.github.createPullReview({
+          repo,
+          number,
+          headSha,
+          body: prepared.summaryBody,
+          comments: prepared.inlineComments.length > 0 ? prepared.inlineComments : undefined,
+        })
+        reviewId = Number(created?.reviewId) > 0 ? Number(created.reviewId) : 0
+        url = reviewUrl(created, repo, number, reviewId)
+        comments = prepared.inlineComments.length
+      } else if (prepared.inlineComments.length > 0) {
+        // A submitted review cannot gain inline comments: send only the new
+        // findings in a bodyless review, leaving the summary identity intact.
+        const created = await this.github.createPullReview({ repo, number, headSha, comments: prepared.inlineComments })
+        if (url === '' && created?.url !== undefined) url = reviewUrl(created, repo, number, Number(created?.reviewId) || 0)
+        comments = prepared.inlineComments.length
+      }
+    } else if (prepared.inlineComments.length > 0) {
+      // Inline-only mode: new findings always need a new review (GitHub API).
+      const created = await this.github.createPullReview({ repo, number, headSha, comments: prepared.inlineComments })
+      comments = prepared.inlineComments.length
+      const createdId = Number(created?.reviewId) > 0 ? Number(created.reviewId) : 0
+      reviewId = createdId > 0 ? createdId : rollingReviewId
+      if (createdId > 0) rollingReviewId = createdId
+      url = reviewUrl(created, repo, number, createdId)
+    }
+
+    const now = this.now()
+    this.record(headKey, { publishedAt: now, reviewId, url })
+    this.record(prKey, { publishedAt: now, reviewId, url, fingerprint })
     return {
       published: true,
       reviewId,
       url,
-      comments: Array.isArray(payload.comments) ? payload.comments.length : 0,
+      comments,
       skipped: prepared.skipped,
       headSha,
+    }
+  }
+
+  /**
+   * Persist one publish record; a broken store must never turn a successful
+   * GitHub write into a failed publish.
+   * @param {string} key - `repo#number@headSha` (per head) or `repo#number` (rolling).
+   * @param {{ publishedAt?: number, reviewId?: number, url?: string, fingerprint?: string }} record - publish identity.
+   * @returns {void}
+   */
+  record(key, record) {
+    try {
+      this.store.set(key, record)
+    } catch (error) {
+      this.logger?.warn?.(`dsh-codex-review: cannot persist publish record: ${error?.message ?? error}`)
     }
   }
 }

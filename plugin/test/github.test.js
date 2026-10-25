@@ -702,6 +702,73 @@ test('listPullReviewComments paginates and normalizes existing comments', async 
   })
 })
 
+test('updatePullReview replaces the review body in place, invalidates the cache and maps failures', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const calls = []
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init })
+      return responseOf({ id: 77, html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77' })
+    }
+    const client = makeClient({}, fetchImpl)
+    let invalidated = 0
+    client.invalidatePullCache = () => {
+      invalidated += 1
+      return 0
+    }
+
+    // Validation happens before any request.
+    await assert.rejects(client.updatePullReview({ repo: 'Acme/repo', number: 1, reviewId: 0, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
+    await assert.rejects(client.updatePullReview({ repo: 'Acme/repo', number: 1, reviewId: 7, body: '   ' }), (error) => error.code === 'BAD_REQUEST')
+    assert.equal(calls.length, 0)
+
+    const result = await client.updatePullReview({ repo: 'Acme/repo', number: 1, reviewId: 77, body: '新摘要' })
+    assert.deepEqual(result, { reviewId: 77, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77' })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].init.method, 'PUT')
+    assert.ok(calls[0].url.endsWith('/repos/Acme/repo/pulls/1/reviews/77'))
+    assert.deepEqual(JSON.parse(calls[0].init.body), { body: '新摘要' })
+    assert.equal(invalidated, 1, 'an edited review invalidates the PR detail cache')
+
+    // Failures use the same contract codes as a create.
+    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'GH_NETWORK']]) {
+      const failing = makeClient({}, async () => responseOf({ message: `HTTP ${status}` }, status))
+      await assert.rejects(failing.updatePullReview({ repo: 'Acme/repo', number: 1, reviewId: 77, body: 'x' }), (error) => error.code === code)
+    }
+  })
+})
+
+test('listPullReviews normalizes submitted reviews and is never cached', async () => {
+  await withEnv('GH_TOKEN', 'token-123', async () => {
+    const urls = []
+    const fetchImpl = async (url) => {
+      urls.push(url)
+      return responseOf([
+        { id: 7, body: '**代码审查**', html_url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-7', user: { login: 'bot' }, state: 'COMMENTED', submitted_at: '2026-10-25T00:00:00Z' },
+        { id: 8, body: '', user: { login: 'bot' }, state: 'PENDING' },
+        { id: null, body: 'bad id' },
+      ])
+    }
+    const client = makeClient({}, fetchImpl)
+    const first = await client.listPullReviews('Acme/repo', 1)
+    assert.deepEqual(first[0], {
+      id: 7,
+      body: '**代码审查**',
+      url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-7',
+      author: 'bot',
+      state: 'COMMENTED',
+      submittedAt: '2026-10-25T00:00:00Z',
+    })
+    assert.equal(first[1].url, '')
+    assert.equal(first[1].state, 'PENDING')
+    assert.equal(first[2].id, null)
+    const second = await client.listPullReviews('Acme/repo', 1)
+    assert.equal(second.length, 3)
+    assert.equal(urls.length, 2, 'reviews are read uncached (only used for recovery)')
+    assert.ok(urls[0].includes('/pulls/1/reviews?per_page=100'))
+    await assert.rejects(client.listPullReviews('Acme/repo', 0), (error) => error.code === 'BAD_REQUEST')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // v2.3: comment writes (CONTRACT §8)
 // ---------------------------------------------------------------------------

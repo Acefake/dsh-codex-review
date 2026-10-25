@@ -1233,6 +1233,65 @@ export class GitHubClient {
   }
 
   /**
+   * Update the body of a submitted review created by this token (CONTRACT §7.2).
+   * GitHub keeps the review id, so the PR timeline does not gain a new review
+   * per commit; only the summary body is replaced. Inline comments are immutable
+   * after submission and therefore never touched here.
+   * @param {{ repo: string, number: number, reviewId: number, body: string }} input - review identity and new body.
+   * @returns {Promise<{ reviewId: number, url: string }>} updated review identity.
+   * @throws {AppError} BAD_REQUEST / GH_FORBIDDEN / GH_NOT_FOUND / GH_RATE_LIMIT / GH_NETWORK / INTERNAL.
+   */
+  async updatePullReview(input = {}) {
+    const [owner, name] = splitRepo(input.repo)
+    const number = typeof input.number === 'number' ? input.number : Number(input.number)
+    if (!Number.isInteger(number) || number <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
+    const reviewId = typeof input.reviewId === 'number' ? input.reviewId : Number(input.reviewId)
+    if (!Number.isInteger(reviewId) || reviewId <= 0) throw new AppError('BAD_REQUEST', 'reviewId 必须是正整数')
+    const body = typeof input.body === 'string' ? input.body : ''
+    if (body.trim() === '') throw new AppError('BAD_REQUEST', '没有可更新的审查内容')
+    /** @type {any} */
+    let data
+    try {
+      const response = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews/${reviewId}`, {
+        method: 'PUT',
+        body: { body },
+      })
+      data = response.data !== null && typeof response.data === 'object' ? response.data : {}
+    } catch (error) {
+      throw mapReviewWriteError(error)
+    }
+    this.invalidatePullCache(input.repo, number)
+    return {
+      reviewId,
+      url: typeof data.html_url === 'string' ? data.html_url : '',
+    }
+  }
+
+  /**
+   * List the PR's submitted reviews (uncached). Used only after a Host restart
+   * lost the persisted publish identity: the rolling summary review is found by
+   * its hidden marker instead of creating a duplicate review (CONTRACT §7.2).
+   * @param {string} repo - `owner/name`.
+   * @param {number} number - PR number.
+   * @returns {Promise<Array<{ id: number | null, body: string, url: string, author: string, state: string, submittedAt: string }>>} normalized reviews.
+   */
+  async listPullReviews(repo, number) {
+    const [owner, name] = splitRepo(repo)
+    const numeric = typeof number === 'number' ? number : Number(number)
+    if (!Number.isInteger(numeric) || numeric <= 0) throw new AppError('BAD_REQUEST', 'number 必须是正整数')
+    const { data } = await this.requestJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${numeric}/reviews?per_page=100`)
+    const list = Array.isArray(data) ? data : []
+    return list.map((review) => ({
+      id: Number.isInteger(review?.id) ? review.id : null,
+      body: typeof review?.body === 'string' ? review.body : '',
+      url: typeof review?.html_url === 'string' ? review.html_url : '',
+      author: review?.user?.login ?? 'ghost',
+      state: typeof review?.state === 'string' ? review.state : 'COMMENTED',
+      submittedAt: typeof review?.submitted_at === 'string' ? review.submitted_at : '',
+    }))
+  }
+
+  /**
    * List the PR's existing inline review comments (all authors, newest pages
    * included) so a publish can skip findings whose marker already exists.
    * This read is deliberately uncached: it runs right after a write.

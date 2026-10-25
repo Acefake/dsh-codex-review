@@ -211,6 +211,17 @@ v2.2 之后剩下最大的缺口是「只能看评论、不能写」。v2.3 接�
 4. **实现约束**：三条路由都必须 `confirm:true`；body ≤4000；写后失效详情缓存；客户端取消/关闭不发请求；旧 Host 无对应方法时按钮降级隐藏；`gh api graphql` 作为 GraphQL 的 CLI 兜底。
 5. **验证**：`node --test` **238/238**（新增行内评论 id/thread 映射、GraphQL 错误映射、写请求形状、参数校验、路由转发）；装置 `--v23` 只测校验分支并断言 `confirmTrueSent=0 / writes=0`；页面只打开回复编辑器/解决确认/评论弹层后取消，断言三条写路由 0 请求。真实写评论默认不做。
 
+## 19. v2.4 回填：发布改为一个 PR 一条滚动 review（2026-10-25 第七轮，版本 0.7.0）
+
+用户问「每次重新审查都会提评论吗？这样是不是不合理啊？」。核对现状：同一 commit 重审不会重发（head 幂等记录），但每个新 commit 都会新建一条全量汇总 review —— summary 模式下即使没有新问题也会发，时间线随 push 堆积。用户选择「一个 PR 只保留一条滚动 review」。
+
+1. **滚动汇总 review**：`repo#number` 记录 `{reviewId, url, fingerprint}`；首次 `POST /pulls/{n}/reviews`，之后内容变化时 `PUT /pulls/{n}/reviews/{id}` 只替换 body，不再新增 review 条目。
+2. **无变化不写**：`fingerprint = sha1(summaryBody + 行内评论 bodies)`；同 head 重发或新 head 结果完全相同 → 0 写请求，仅刷新 head 记录。
+3. **行内评论**：GitHub 不允许给已提交 review 追加行内评论，因此只把从未发布过的 finding 放进一条无 body 的新 review；汇总 review 的 id 不变。
+4. **状态丢失恢复**：汇总 body 末尾追加隐藏 marker `<!-- dsh-codex-review:summary -->`；本地状态文件丢失时先 `GET /pulls/{n}/reviews` 按 marker 找回再更新；只有 review 已不存在（404）才回退新建。发布记录随 auto-review 状态文件持久化（含 fingerprint）。
+5. **并发**：保留同 head in-flight 去重，新增 per-PR 串行锁，避免不同 head 同时更新同一条滚动 review。
+6. **验证**：`node --test` **246/246**（新增滚动更新、无变化 no-op、marker 恢复、404 回退、内容指纹等）；`node --check` 通过。真实 GitHub 写验证未做（避免未经请求的写）；同 head 回放 0 写由既有 head 记录保证。
+
 
 
 

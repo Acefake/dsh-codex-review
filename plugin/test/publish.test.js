@@ -1,8 +1,10 @@
 /**
  * Unit tests for the publish-to-GitHub feature (CONTRACT §7): finding →
  * inline comment mapping, severity/max caps, marker dedupe, summary rendering,
- * the confirm/REVIEW_NOT_READY guards, one-publish-per-head records and error
- * mapping. Every GitHub terminal is fake; no real PR is ever published.
+ * the confirm/REVIEW_NOT_READY guards, one rolling summary review per pull
+ * request (update in place instead of a new review per commit), no-op publishes
+ * for unchanged content, marker recovery after state loss and error mapping.
+ * Every GitHub terminal is fake; no real PR is ever published.
  */
 
 import test from 'node:test'
@@ -10,14 +12,17 @@ import assert from 'node:assert/strict'
 import {
   PUBLISH_COMMENT_MAX_CHARS,
   PUBLISH_DEFAULTS,
+  PUBLISH_SUMMARY_MARKER,
   PUBLISH_SUMMARY_MAX_CHARS,
   ReviewPublisher,
   buildInlineCommentBody,
   buildSummaryBody,
   filterPublishableFindings,
+  findPublishedSummaryReview,
   parsePublishMarkers,
   preparePublish,
   publishFindingHash,
+  publishFingerprint,
   publishMarker,
   sanitizePublishConfig,
 } from '../lib/publish.js'
@@ -29,6 +34,9 @@ const FINDINGS = [
   { id: 'f6e5d4c3b2a1', severity: 'P0', file: 'src/a.ts', line: 3, title: '空指针', why: '为 null 时崩溃', fix: '加判空' },
   { id: '0f1e2d3c4b5a', severity: 'P1', file: 'src/a.ts', line: 5, title: '错误处理', why: '异常被吞', fix: '记录日志', evidence: '+throw', confidence: 'high' },
 ]
+
+/** A finding discovered on the next commit. */
+const NEW_FINDING = { id: 'abababababab', severity: 'P0', file: 'src/c.ts', line: 4, title: '新问题', why: '新增分支未处理', fix: '补分支' }
 
 /** A completed review snapshot. */
 const REVIEW = {
@@ -60,12 +68,18 @@ function makeStore(initial = {}) {
 }
 
 /**
- * Build a publisher over fake terminals.
- * @param {{ review?: any, detail?: any, created?: any, existingComments?: any[], records?: Record<string, any>, pullError?: Error, commentsError?: Error, reviewError?: Error }} [options] - fixtures.
- * @returns {{ publisher: ReviewPublisher, engine: any, store: any, calls: any }} harness.
+ * Build a publisher over fake terminals. The fake GitHub keeps the submitted
+ * comments/reviews so a second publish sees exactly what the first one wrote.
+ * @param {{ review?: any, detail?: any, created?: any, existingComments?: any[], submittedReviews?: any[], records?: Record<string, any>, nextReviewId?: number, pullError?: Error, commentsError?: Error, reviewError?: Error, updateError?: Error, reviewListError?: Error }} [options] - fixtures.
+ * @returns {{ publisher: ReviewPublisher, engine: any, store: any, calls: any, state: any }} harness.
  */
 function makePublisher(options = {}) {
-  const calls = { pulls: [], commentReads: [], reviews: [] }
+  const calls = { pulls: [], commentReads: [], reviews: [], updates: [], reviewLists: [] }
+  const state = {
+    nextId: Number.isFinite(options.nextReviewId) ? options.nextReviewId : 42,
+    comments: (options.existingComments ?? []).map((comment) => ({ body: comment.body })),
+    reviews: (options.submittedReviews ?? []).map((review) => ({ ...review })),
+  }
   const github = {
     async getPull(repo, number) {
       calls.pulls.push(`${repo}#${number}`)
@@ -75,27 +89,58 @@ function makePublisher(options = {}) {
     async listPullReviewComments(repo, number) {
       calls.commentReads.push(`${repo}#${number}`)
       if (options.commentsError !== undefined) throw options.commentsError
-      return options.existingComments ?? []
+      return state.comments.map((comment) => ({ body: comment.body }))
+    },
+    async listPullReviews(repo, number) {
+      calls.reviewLists.push(`${repo}#${number}`)
+      if (options.reviewListError !== undefined) throw options.reviewListError
+      return state.reviews.map((review) => ({ ...review }))
+    },
+    async updatePullReview(input) {
+      calls.updates.push(input)
+      if (options.updateError !== undefined) throw options.updateError
+      const review = state.reviews.find((entry) => entry.id === input.reviewId)
+      if (review !== undefined) review.body = input.body
+      return {
+        reviewId: input.reviewId,
+        url: `https://github.com/${input.repo}/pull/${input.number}#pullrequestreview-${input.reviewId}`,
+      }
     },
     async createPullReview(input) {
       calls.reviews.push(input)
       if (options.reviewError !== undefined) throw options.reviewError
-      return options.created ?? { reviewId: 42, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-42' }
+      const reviewId = options.created?.reviewId ?? state.nextId++
+      const url = options.created?.url ?? `https://github.com/${input.repo}/pull/${input.number}#pullrequestreview-${reviewId}`
+      if (typeof input.body === 'string' && input.body !== '') {
+        state.reviews.push({ id: reviewId, body: input.body, url, submittedAt: `2026-10-25T00:00:${String(reviewId).padStart(2, '0')}Z` })
+      }
+      for (const comment of input.comments ?? []) state.comments.push({ body: comment.body })
+      return { reviewId, url }
     },
   }
   const engine = {
-    existing(repo, number, headSha) {
+    existing() {
       if (options.review === undefined) return REVIEW
       return options.review
     },
   }
   const store = makeStore(options.records)
   const publisher = new ReviewPublisher({ github, engine, store, now: () => 1_234, logger: { warn() {} } })
-  return { publisher, engine, store, calls, github }
+  return { publisher, engine, store, calls, github, state }
 }
 
 /** One valid publish request. */
 const PUBLISH_REQUEST = { repo: 'Acme/repo', number: 1, confirm: true, mode: 'inline', minSeverity: 'P2', maxComments: 20 }
+
+/**
+ * Snapshot one harness' persisted records so a second harness can continue the
+ * same PR (simulating the next request after a host reload).
+ * @param {{ store: any }} harness - source harness.
+ * @returns {Record<string, any>} records keyed like the backing store.
+ */
+function recordsOf(harness) {
+  return Object.fromEntries(harness.store.map)
+}
 
 test('sanitizePublishConfig clamps maxComments, validates enums and keeps live values for bad patches', () => {
   assert.deepEqual(sanitizePublishConfig(undefined), PUBLISH_DEFAULTS)
@@ -174,17 +219,36 @@ test('buildInlineCommentBody renders severity/title/why/fix plus the marker and 
   assert.ok(minimal.endsWith(publishMarker('abcdef123456')))
 })
 
-test('buildSummaryBody renders the deterministic header/list, honours custom bodies and truncates', () => {
+test('buildSummaryBody renders the header/list, appends the rolling-review marker and truncates', () => {
   const body = buildSummaryBody({ overview: REVIEW.overview, findings: FINDINGS })
   assert.ok(body.startsWith('**代码审查（dsh-codex-review）**'))
   assert.ok(body.includes(REVIEW.overview))
   assert.ok(body.includes('- [P0] src/a.ts:3 空指针'))
   assert.ok(body.includes('- [P2] src/b.ts:9 边界值'))
+  assert.ok(body.endsWith(PUBLISH_SUMMARY_MARKER))
 
-  assert.equal(buildSummaryBody({ overview: 'x', findings: FINDINGS, customBody: '  自定义正文  ' }), '自定义正文')
+  assert.equal(buildSummaryBody({ findings: FINDINGS, customBody: '  自定义正文  ' }), `自定义正文\n\n${PUBLISH_SUMMARY_MARKER}`)
   assert.equal(buildSummaryBody({ findings: [], customBody: '' }).includes('AI 未发现明显问题'), true)
   const long = buildSummaryBody({ overview: 'x'.repeat(5000), findings: [] })
   assert.ok(long.length <= PUBLISH_SUMMARY_MAX_CHARS)
+  assert.ok(long.endsWith(PUBLISH_SUMMARY_MARKER))
+})
+
+test('publishFingerprint is stable for identical content and changes with the payload', () => {
+  const base = publishFingerprint({ summaryBody: 'summary', inlineComments: [{ path: 'a.ts', line: 1, body: 'x' }] })
+  assert.match(base, /^[0-9a-f]{12}$/)
+  assert.equal(publishFingerprint({ summaryBody: 'summary', inlineComments: [{ path: 'a.ts', line: 1, body: 'x' }] }), base)
+  assert.notEqual(publishFingerprint({ summaryBody: 'summary2', inlineComments: [{ path: 'a.ts', line: 1, body: 'x' }] }), base)
+  assert.notEqual(publishFingerprint({ summaryBody: 'summary', inlineComments: [] }), base)
+  assert.equal(publishFingerprint(), publishFingerprint({}))
+})
+
+test('findPublishedSummaryReview picks the newest review carrying the hidden marker', () => {
+  const older = { id: 1, body: `old\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'u1', submittedAt: '2026-10-25T00:00:01Z' }
+  const newest = { id: 2, body: `new\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'u2', submittedAt: '2026-10-25T00:00:02Z' }
+  assert.deepEqual(findPublishedSummaryReview([older, newest, { id: 3, body: 'no marker', submittedAt: '2026-10-25T00:00:03Z' }]), { id: 2, url: 'u2' })
+  assert.equal(findPublishedSummaryReview([]), undefined)
+  assert.equal(findPublishedSummaryReview([null, { id: 0, body: PUBLISH_SUMMARY_MARKER }, {}]), undefined)
 })
 
 test('preparePublish builds inline comments, dedupes markers and falls back to a summary', () => {
@@ -209,10 +273,13 @@ test('preparePublish builds inline comments, dedupes markers and falls back to a
   assert.equal(deduped.skipped, 1)
   assert.equal(deduped.deduped, 1)
 
-  // Inline mode with nothing anchorable falls back to a summary review.
+  // Inline mode with nothing anchorable falls back to a summary of every
+  // publishable finding (not only the not-yet-posted ones).
   const empty = preparePublish({ findings: FINDINGS, mode: 'inline', minSeverity: 'P0', maxComments: 20, existingMarkers: new Set([FINDINGS[1].id]) })
   assert.equal(empty.inlineComments.length, 0)
   assert.ok(empty.summaryBody.includes('**代码审查（dsh-codex-review）**'))
+  assert.ok(empty.summaryBody.includes('- [P0] src/a.ts:3 空指针'))
+  assert.ok(empty.summaryBody.endsWith(PUBLISH_SUMMARY_MARKER))
 
   const summary = preparePublish({ findings: FINDINGS, mode: 'summary', minSeverity: 'P2', maxComments: 20 })
   assert.equal(summary.inlineComments.length, 0)
@@ -232,6 +299,7 @@ test('publish requires confirm, validates the mode/severity/body before touching
   await assert.rejects(harness.publisher.publish({ ...PUBLISH_REQUEST, repo: 'nope' }), (error) => error.code === 'BAD_REQUEST')
   assert.equal(harness.calls.pulls.length, 0)
   assert.equal(harness.calls.reviews.length, 0)
+  assert.equal(harness.calls.updates.length, 0)
 })
 
 test('publish refuses when the current head has no completed review (REVIEW_NOT_READY)', async () => {
@@ -244,7 +312,7 @@ test('publish refuses when the current head has no completed review (REVIEW_NOT_
   await assert.rejects(notFound.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'GH_NOT_FOUND')
 })
 
-test('publish posts one PR review with inline comments and persists the record', async () => {
+test('publish posts one PR review with inline comments and persists both records', async () => {
   const harness = makePublisher()
   const result = await harness.publisher.publish(PUBLISH_REQUEST)
   assert.deepEqual(result, {
@@ -271,6 +339,10 @@ test('publish posts one PR review with inline comments and persists the record',
     reviewId: 42,
     url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-42',
   })
+  const rolling = harness.store.get('Acme/repo#1')
+  assert.equal(rolling.reviewId, 42)
+  assert.equal(rolling.fingerprint, publishFingerprint({ inlineComments: request.comments }))
+  assert.equal(harness.store.writes, 2, 'one record per head and one rolling record')
 })
 
 test('publish applies minSeverity/maxComments and marker dedupe from existing comments', async () => {
@@ -290,8 +362,9 @@ test('publish applies minSeverity/maxComments and marker dedupe from existing co
 
 test('a published head is idempotent: repeat returns the stored record with no GitHub write', async () => {
   const harness = makePublisher()
-  const first = await harness.publisher.publish(PUBLISH_REQUEST)
+  await harness.publisher.publish(PUBLISH_REQUEST)
   const record = harness.store.get('Acme/repo#1@head-1')
+  const writes = harness.store.writes
   const second = await harness.publisher.publish(PUBLISH_REQUEST)
   assert.deepEqual(second, {
     published: true,
@@ -302,34 +375,111 @@ test('a published head is idempotent: repeat returns the stored record with no G
     headSha: 'head-1',
   })
   assert.equal(harness.calls.reviews.length, 1)
-  // The replay does not even read GitHub comments again.
+  assert.equal(harness.calls.updates.length, 0)
   assert.equal(harness.calls.commentReads.length, 1)
+  assert.equal(harness.store.writes, writes, 'a replay does not write records again')
 })
 
-test('a new head publishes again (record is keyed by repo#number@headSha)', async () => {
-  const harness = makePublisher()
-  await harness.publisher.publish(PUBLISH_REQUEST)
-  harness.engine.existing = () => ({ ...REVIEW, headSha: 'head-2', findings: FINDINGS })
-  // The fake git client still reports head-1; simulate a moved head.
-  const publisher2 = new ReviewPublisher({
-    github: {
-      async getPull() {
-        return { headSha: 'head-2' }
-      },
-      async listPullReviewComments() {
-        return []
-      },
-      async createPullReview() {
-        return { reviewId: 43, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-43' }
-      },
-    },
-    engine: { existing: () => ({ ...REVIEW, headSha: 'head-2' }) },
-    store: harness.store,
-    now: () => 2_000,
+test('a new head with identical content is a no-op: only the head pointer is refreshed', async () => {
+  const first = makePublisher()
+  await first.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(first.calls.reviews.length, 1)
+
+  const second = makePublisher({
+    detail: { headSha: 'head-2' },
+    review: { ...REVIEW, headSha: 'head-2' },
+    records: recordsOf(first),
   })
-  const result = await publisher2.publish(PUBLISH_REQUEST)
+  const result = await second.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(result.comments, 0)
+  assert.equal(result.reviewId, 42)
+  assert.equal(second.calls.reviews.length, 0, 'unchanged content must not create a review')
+  assert.equal(second.calls.updates.length, 0, 'unchanged content must not edit the review')
+  assert.equal(second.calls.reviewLists.length, 0, 'the fingerprint check happens before any recovery read')
+  assert.deepEqual(second.store.get('Acme/repo#1@head-2'), {
+    reviewId: 42,
+    url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-42',
+  })
+})
+
+test('a new head updates the one rolling summary review in place instead of creating a new one', async () => {
+  const first = makePublisher()
+  await first.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(first.calls.reviews.length, 1)
+
+  const second = makePublisher({
+    detail: { headSha: 'head-2' },
+    review: { ...REVIEW, headSha: 'head-2', findings: [...FINDINGS, NEW_FINDING], overview: '共 4 个问题：P0 ×2 · P1 ×1 · P2 ×1' },
+    records: recordsOf(first),
+  })
+  const result = await second.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(result.reviewId, 42)
+  assert.equal(result.comments, 0)
+  assert.equal(second.calls.reviews.length, 0, 'the rolling review must not be duplicated')
+  assert.equal(second.calls.updates.length, 1)
+  assert.equal(second.calls.updates[0].reviewId, 42)
+  assert.ok(second.calls.updates[0].body.includes('- [P0] src/c.ts:4 新问题'))
+  assert.ok(second.calls.updates[0].body.endsWith(PUBLISH_SUMMARY_MARKER))
+  assert.equal(second.store.get('Acme/repo#1@head-2').reviewId, 42)
+  assert.notEqual(second.store.get('Acme/repo#1').fingerprint, first.store.get('Acme/repo#1').fingerprint)
+})
+
+test('new inline findings on a new head update the summary and only add a bodyless review for the new comments', async () => {
+  const first = makePublisher()
+  await first.publisher.publish({ ...PUBLISH_REQUEST, mode: 'both' })
+  const posted = first.calls.reviews[0].comments.map((comment) => ({ body: comment.body }))
+
+  const second = makePublisher({
+    detail: { headSha: 'head-2' },
+    review: { ...REVIEW, headSha: 'head-2', findings: [...FINDINGS, NEW_FINDING], overview: '共 4 个问题：P0 ×2 · P1 ×1 · P2 ×1' },
+    existingComments: posted,
+    records: recordsOf(first),
+  })
+  const result = await second.publisher.publish({ ...PUBLISH_REQUEST, mode: 'both' })
+  assert.equal(result.reviewId, 42, 'the summary review keeps its identity')
+  assert.equal(result.comments, 1, 'only the never-published finding is sent inline')
+  assert.equal(second.calls.updates.length, 1)
+  assert.equal(second.calls.updates[0].reviewId, 42)
+  assert.equal(second.calls.reviews.length, 1)
+  const inlineReview = second.calls.reviews[0]
+  assert.equal(inlineReview.body, undefined)
+  assert.equal(inlineReview.comments.length, 1)
+  assert.equal(inlineReview.comments[0].path, 'src/c.ts')
+  assert.equal(second.store.get('Acme/repo#1@head-2').reviewId, 42)
+})
+
+test('the rolling review is recovered by its hidden marker after the local state was lost', async () => {
+  const harness = makePublisher({
+    review: { ...REVIEW },
+    submittedReviews: [
+      { id: 77, body: `旧汇总\n\n${PUBLISH_SUMMARY_MARKER}`, url: 'https://github.com/Acme/repo/pull/1#pullrequestreview-77', submittedAt: '2026-10-25T00:00:01Z' },
+    ],
+  })
+  const result = await harness.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+  assert.equal(result.reviewId, 77)
+  assert.equal(harness.calls.reviewLists.length, 1)
+  assert.equal(harness.calls.updates.length, 1)
+  assert.equal(harness.calls.updates[0].reviewId, 77)
+  assert.equal(harness.calls.reviews.length, 0, 'state loss must not create a duplicate summary review')
+  assert.equal(harness.store.get('Acme/repo#1@head-1').reviewId, 77)
+})
+
+test('a recorded summary review that GitHub no longer has is recreated', async () => {
+  const first = makePublisher()
+  await first.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
+
+  const second = makePublisher({
+    detail: { headSha: 'head-2' },
+    review: { ...REVIEW, headSha: 'head-2', findings: [...FINDINGS, NEW_FINDING], overview: '共 4 个问题' },
+    records: recordsOf(first),
+    updateError: new AppError('GH_NOT_FOUND', 'review not found'),
+    nextReviewId: 43,
+  })
+  const result = await second.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' })
   assert.equal(result.reviewId, 43)
-  assert.ok(harness.store.get('Acme/repo#1@head-2') !== undefined)
+  assert.equal(second.calls.updates.length, 1)
+  assert.equal(second.calls.reviews.length, 1)
+  assert.ok(second.calls.reviews[0].body.includes('- [P0] src/c.ts:4 新问题'))
 })
 
 test('summary and both modes publish the expected body shape', async () => {
@@ -340,11 +490,13 @@ test('summary and both modes publish the expected body shape', async () => {
   assert.equal(summaryReview.comments, undefined)
   assert.ok(summaryReview.body.includes('**代码审查（dsh-codex-review）**'))
   assert.ok(summaryReview.body.includes('- [P0] src/a.ts:3 空指针'))
+  assert.ok(summaryReview.body.endsWith(PUBLISH_SUMMARY_MARKER))
 
   const both = makePublisher()
   await both.publisher.publish({ ...PUBLISH_REQUEST, mode: 'both', body: '自定义摘要' })
   const bothReview = both.calls.reviews[0]
-  assert.equal(bothReview.body, '自定义摘要')
+  assert.ok(bothReview.body.startsWith('自定义摘要'))
+  assert.ok(bothReview.body.endsWith(PUBLISH_SUMMARY_MARKER))
   assert.equal(bothReview.comments.length, 3)
 
   const fallback = makePublisher()
@@ -363,6 +515,15 @@ test('publish propagates GitHub failures untouched and persists nothing', async 
   const readFailure = makePublisher({ commentsError: new AppError('GH_NETWORK') })
   await assert.rejects(readFailure.publisher.publish(PUBLISH_REQUEST), (error) => error.code === 'GH_NETWORK')
   assert.equal(readFailure.calls.reviews.length, 0)
+
+  // A non-recoverable update failure must surface and persist nothing new.
+  const updateFailure = makePublisher({
+    records: { 'Acme/repo#1': { publishedAt: 1, reviewId: 42, url: 'u', fingerprint: 'deadbeef1234' } },
+    review: { ...REVIEW },
+    updateError: new AppError('GH_FORBIDDEN', 'no permission'),
+  })
+  await assert.rejects(updateFailure.publisher.publish({ ...PUBLISH_REQUEST, mode: 'summary' }), (error) => error.code === 'GH_FORBIDDEN')
+  assert.equal(updateFailure.store.writes, 0)
 })
 
 test('concurrent publishes of the same head collapse into one GitHub review', async () => {
@@ -383,6 +544,7 @@ test('concurrent publishes of the same head collapse into one GitHub review', as
 
   assert.equal(harness.calls.reviews.length, 1, 'a double click must create exactly one review')
   assert.deepEqual(first, second)
-  assert.equal(harness.store.writes, 1)
+  assert.equal(harness.store.writes, 2)
   assert.equal(harness.publisher.inflight.size, 0, 'the in-flight guard must be released')
+  assert.equal(harness.publisher.prLocks.size, 0, 'the per-PR lock must be released')
 })
