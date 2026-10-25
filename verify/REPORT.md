@@ -664,6 +664,7 @@ verdict 徽章与计数、resolved options/复用/AGENTS.md 状态行、设置�
 | 15 | 模型文本里的 HTML 注释被剥掉、`@` 被转义，无法伪造 marker / 误 @ | PASS |
 | 16 | `dispose()` 清空 in-flight 与 per-PR 锁并拒绝后续发布 | PASS |
 | 17 | 客户端：`buildPublishRequest` 带 `headSha`/`jobId`；`action` 映射到 created/updated/unchanged；`GH_NOT_FOUND` 不再被判成"无路由" | PASS |
+| 18 | 写请求 5xx → `PUBLISH_UNKNOWN`（结果未知，不映射成 `GH_NETWORK`） | PASS |
 
 ### 20.2 只读真实探测（`node verify/v25-publish-probe.mjs` → 6/6）
 

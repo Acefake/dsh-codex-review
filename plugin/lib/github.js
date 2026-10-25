@@ -1771,6 +1771,13 @@ function mapReviewWriteError(error) {
       : new AppError('GH_FORBIDDEN', message || USER_MESSAGES.GH_FORBIDDEN)
   }
   if (status === 404 || /HTTP 404/.test(message)) return new AppError('GH_NOT_FOUND', message || USER_MESSAGES.GH_NOT_FOUND)
+  // A 5xx on a write is not "no network": GitHub may have committed the review
+  // before failing. Report it as an unknown outcome so nobody blindly retries
+  // into a duplicate, and never as GH_NETWORK (which reads as "nothing happened").
+  if (typeof status === 'number' && status >= 500) {
+    return new AppError('PUBLISH_UNKNOWN', undefined, { cause: error })
+  }
+  if (/HTTP 5\d\d/.test(message)) return new AppError('PUBLISH_UNKNOWN', undefined, { cause: error })
   return error
 }
 

@@ -632,7 +632,7 @@ test('createPullReview validates its content and maps GitHub failures', async ()
     await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 1, comments: [] }), (error) => error.code === 'BAD_REQUEST')
     await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 0, body: 'x' }), (error) => error.code === 'BAD_REQUEST')
 
-    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'GH_NETWORK']]) {
+    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'PUBLISH_UNKNOWN']]) {
       responders.push(() => responseOf({ message: `HTTP ${status}` }, status))
       await assert.rejects(client.createPullReview({ repo: 'Acme/repo', number: 1, body: 'x' }), (error) => {
         assert.equal(error.code, code)
@@ -730,7 +730,7 @@ test('updatePullReview replaces the review body in place, invalidates the cache 
     assert.equal(invalidated, 1, 'an edited review invalidates the PR detail cache')
 
     // Failures use the same contract codes as a create.
-    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'GH_NETWORK']]) {
+    for (const [status, code] of [[422, 'BAD_REQUEST'], [403, 'GH_FORBIDDEN'], [429, 'GH_RATE_LIMIT'], [404, 'GH_NOT_FOUND'], [500, 'PUBLISH_UNKNOWN']]) {
       const failing = makeClient({}, async () => responseOf({ message: `HTTP ${status}` }, status))
       await assert.rejects(failing.updatePullReview({ repo: 'Acme/repo', number: 1, reviewId: 77, body: 'x' }), (error) => error.code === code)
     }
