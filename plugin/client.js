@@ -14,6 +14,8 @@ window.__ModuleLoader__.load({
     /** Document-relative route base: the host page is served with <base href="./">. */
     const ROUTE = 'codex-review'
     const POLL_MS = 800
+    /** Client-side PR detail TTL: revisits render instantly, stale entries refresh in the background. */
+    const DETAIL_CACHE_TTL_MS = 120_000
 /** Shared empty list so memoized rows keep reference equality on missing data. */
 const EMPTY_LIST = Object.freeze([])
     const REQUEST_TIMEOUT_MS = 15000
@@ -3468,6 +3470,12 @@ html[data-ds-theme-source="dark"] .cr-root{
           'data-pr-number': String(pr.number === undefined ? '' : pr.number),
           title: pr.title || '',
           onClick: () => props.onSelect(pr),
+          onMouseEnter: () => {
+            if (typeof props.onPrefetch === 'function') props.onPrefetch(pr)
+          },
+          onFocus: () => {
+            if (typeof props.onPrefetch === 'function') props.onPrefetch(pr)
+          },
         },
         h('span', { className: 'cr-row-title' }, pr.title || '(untitled)'),
         h(
@@ -3593,6 +3601,7 @@ html[data-ds-theme-source="dark"] .cr-root{
                       t,
                       active: selectedNumber !== null && Number(pr.number) === Number(selectedNumber),
                       onSelect: props.onSelect,
+                      onPrefetch: props.onPrefetch,
                     }),
                   ),
         ),
@@ -7907,6 +7916,10 @@ html[data-ds-theme-source="dark"] .cr-root{
       const listGeneration = useRef(0)
       const detailGeneration = useRef(0)
       const reviewGeneration = useRef(0)
+      /** repo#number -> { value, at } for instant PR switches. */
+      const detailCache = useRef(new Map())
+      /** repo#number -> in-flight /pr promise so a hover prefetch and a click share one request. */
+      const detailInflight = useRef(new Map())
       const selectedRef = useRef(null)
       selectedRef.current = selected
       const settingsRef = useRef(settings)
@@ -7948,30 +7961,80 @@ html[data-ds-theme-source="dark"] .cr-root{
         }
       }, [])
 
+      /** Fetch one PR detail, sharing in-flight work and keeping the latest value cached. */
+      const fetchDetail = useCallback((summary) => {
+        const key = String(summary.repo) + '#' + String(summary.number)
+        const pending = detailInflight.current.get(key)
+        if (pending) return pending
+        const request = post(ROUTE + '/pr', { repo: summary.repo, number: summary.number })
+          .then((result) => {
+            detailInflight.current.delete(key)
+            if (!result.ok) return result
+            const value = normalizePrDetail(result.value)
+            detailCache.current.set(key, { value, at: Date.now() })
+            return { ok: true, value }
+          })
+          .catch((error) => {
+            detailInflight.current.delete(key)
+            return { ok: false, error: { code: 'INTERNAL', message: String((error && error.message) || error) } }
+          })
+        detailInflight.current.set(key, request)
+        return request
+      }, [])
+
+      /**
+       * Warm a PR's detail when the pointer or focus rests on its row: by the time
+       * the click lands the payload is cached or already in flight, so the right
+       * rail and the document render without a cold network wait.
+       */
+      const prefetchDetail = useCallback((summary) => {
+        if (!summary || summary.repo === undefined || summary.number === undefined) return
+        const key = String(summary.repo) + '#' + String(summary.number)
+        const cached = detailCache.current.get(key)
+        if (cached && Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
+        if (detailInflight.current.has(key)) return
+        void fetchDetail(summary)
+      }, [fetchDetail])
+
       const loadDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
         const generation = ++detailGeneration.current
         reviewGeneration.current += 1
         setReview(normalizeReviewStatus({ state: 'none' }))
-        setDetail((previous) => ({ state: 'loading', value: previous.value, error: null }))
-        post(ROUTE + '/pr', { repo: summary.repo, number: summary.number }).then((result) => {
+        const key = String(summary.repo) + '#' + String(summary.number)
+        const cached = detailCache.current.get(key)
+        if (cached) {
+          // A cached PR renders instantly; an expired entry refreshes in the background.
+          setDetail({ state: 'ready', value: cached.value, error: null })
+          const seed = cached.value.review
+          if (seed && (seed.state === 'done' || seed.state === 'error')) {
+            setReview(seed)
+          } else if (seed && seed.state === 'running' && seed.jobId) {
+            const nextGeneration = ++reviewGeneration.current
+            setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
+            void pollReview(nextGeneration, seed.jobId)
+          }
+          if (Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
+        } else {
+          setDetail({ state: 'loading', value: null, error: null })
+        }
+        fetchDetail(summary).then((result) => {
           if (generation !== detailGeneration.current) return
-          if (result.ok) {
-            const value = normalizePrDetail(result.value)
-            setDetail({ state: 'ready', value, error: null })
-            const seed = value.review
-            if (seed && (seed.state === 'done' || seed.state === 'error')) {
-              setReview(seed)
-            } else if (seed && seed.state === 'running' && seed.jobId) {
-              const nextGeneration = ++reviewGeneration.current
-              setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
-              void pollReview(nextGeneration, seed.jobId)
-            }
-          } else {
-            setDetail((previous) => ({ state: 'error', value: previous.value, error: result.error }))
+          if (!result.ok) {
+            if (!cached) setDetail({ state: 'error', value: null, error: result.error })
+            return
+          }
+          setDetail({ state: 'ready', value: result.value, error: null })
+          const seed = result.value.review
+          if (seed && (seed.state === 'done' || seed.state === 'error')) {
+            setReview(seed)
+          } else if (seed && seed.state === 'running' && seed.jobId) {
+            const nextGeneration = ++reviewGeneration.current
+            setReview(Object.assign({}, seed, { progress: seed.progress || {} }))
+            void pollReview(nextGeneration, seed.jobId)
           }
         })
-      }, [])
+      }, [fetchDetail])
 
       /**
        * Re-fetch one PR's detail without resetting the review card. Used after a
@@ -7980,9 +8043,13 @@ html[data-ds-theme-source="dark"] .cr-root{
       const refreshDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
         const generation = ++detailGeneration.current
+        const key = String(summary.repo) + '#' + String(summary.number)
         post(ROUTE + '/pr', { repo: summary.repo, number: summary.number }).then((result) => {
           if (generation !== detailGeneration.current) return
-          if (result.ok) setDetail({ state: 'ready', value: normalizePrDetail(result.value), error: null })
+          if (!result.ok) return
+          const value = normalizePrDetail(result.value)
+          detailCache.current.set(key, { value, at: Date.now() })
+          setDetail({ state: 'ready', value, error: null })
         })
       }, [])
 
@@ -9263,6 +9330,7 @@ html[data-ds-theme-source="dark"] .cr-root{
           listRef,
           autoBadges,
           onSelect: selectPr,
+          onPrefetch: prefetchDetail,
           onQueryChange: setQueryInput,
           onRefresh: () => setQuery(queryInput),
           onRetry: () => setQuery(queryInput + ' '),
@@ -9341,7 +9409,22 @@ html[data-ds-theme-source="dark"] .cr-root{
                     onStartReview: startReview,
                     onCancelReview: cancelReview,
                   })
-                : h('aside', { className: 'cr-details', 'aria-hidden': 'true' }),
+                : detail.state === 'loading'
+                  ? h(
+                      'aside',
+                      {
+                        className: 'cr-details',
+                        'data-cr-details-loading': 'ready',
+                        'aria-busy': 'true',
+                        'aria-hidden': 'true',
+                      },
+                      h(Skeleton, { rows: 2, height: 24 }),
+                      h('div', { style: { height: 14 } }),
+                      h(Skeleton, { rows: 2, height: 56 }),
+                      h('div', { style: { height: 14 } }),
+                      h(Skeleton, { rows: 1, height: 40 }),
+                    )
+                  : h('aside', { className: 'cr-details', 'aria-hidden': 'true' }),
             ),
           ),
         ),

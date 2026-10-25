@@ -269,6 +269,7 @@ ctx.slots.inject('main', () => ctx.slots.register(
 - 视觉（v1.0，按 `recon/ui-spec.md`）：三栏 238 / 760 / 300、列距 44、主区与详情列同底色无分隔线；三列独立滚动（列表 / 文档 / 详情），文档列 = `.cr-doc`（`docRef` 挂这里，文件跳转与 tab 滚动记忆都相对它）。
 - 配色（v1.0）：暗色实测 `#202020` 应用底 / `#1B1B1B` 左栏 / `#181818` 主区 / `#2D2D2D` 抬升 / `#383838` 选中；浅色用同构浅色值。比例字体做界面，等宽只用于代码/diff/路径/分支/SHA。
 - 顶部审查汇总（v1.0）：AI 审查结果卡（`ReviewCard`，`data-review-state`）渲染在 PR 头部与正文之间，Summary / Changes tab 都可见；idle（无审查结果）时不渲染，符合规格的 idle 语义。
+- 切换性能（客户端）：列表行 hover/focus 触发 `/pr` 预取（`prefetchDetail`，与点击共享在飞 promise）；详情按 `repo#number` 内存缓存 120s，命中即时渲染、过期先渲染再后台刷新；切换到不同 PR 时必须清空旧 `detail.value` 并渲染右栏骨架（`data-cr-details-loading`），不得继续显示上一个 PR 的右栏内容。
 - 设置页（v0.9.1）不回退：行式布局 + 分段控件 + 开关，颜色跟随宿主 `--dsw-alias-*` token，禁止退回弹窗 fieldset 形式。
 - 设置入口（v0.9）：注册 `settings.section`（id `codex-review`，order 60，label = 「代码审查」），内容含审查选项（localStorage `codex-review:settings`）、自动审查/发布（Host `auto-review-config`）与 health 状态；工作台齿轮弹层保留为快捷方式。修改审查选项时派发 `codex-review:settings-changed` 事件，工作台监听后重读 localStorage。
 - 颜色：只能使用 `--dsw-alias-*` token 或其 color-mix/透明叠加；不得硬编码品牌色/暖色（v0.8 初版的暖底+陶土红已按用户反馈移除，见 REPORT §18）。

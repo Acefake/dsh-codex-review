@@ -697,6 +697,38 @@ PASS  行内 marker 只认本人评论  (own=19 foreign=0 comments=38)
 
 **v2.5 判定：PASS（单测 267/267 + 只读真实探测 6/6 + Host 0.10.0 加载 + 真实 bundle 校验；0 真实 GitHub 写；真实滚动更新仍待用户下一次开启自动发布的审查自然发生）。**
 
+## 20. 切换 PR 时右侧栏加载慢：根因与客户端优化 — **PASS**
+
+> **状态：PASS（2026-10-25 16:3x）**
+> 证据：CDP 实测（真实 GUI）请求计数与网络分层计时；dev 预览 11/11；插件 consoleErrors=0（宿主 `remote.session` pageerror 为既有噪音）。
+
+### 20.1 根因（实测）
+
+1. **网络层**：本机到 api.github.com 单次 REST 调用 0.8–2.0s（实测 `pull` 1992ms / `files` 1310ms / `reviews` 1164ms / `review-comments` 1004ms / `status` 861ms / `check-runs` 829ms / `issue-comments` 855ms）。
+2. **后端**：`/pr` 先**串行**取 `pull`（约 2s），再并行取 7 个子资源（files+patch、issue comments、reviews、inline comments、check-runs+status、stack、GraphQL review threads）；有 detail 缓存（60s 级）与在飞去重。冷路径合计约 1–3s。
+3. **前端**：右侧栏只在**整个 detail 包**（含最重的 files/patch 与 GraphQL threads）返回后才渲染；每次切换都重新 POST `/pr`；加载期间保留**上一个 PR** 的 detail（先显示错内容再替换），既没有预取也没有客户端缓存。
+
+### 20.2 客户端优化
+
+- **悬停/聚焦预取**：列表行 `hover`/`focus` 即调用 `prefetchDetail`；点击复用同一个在飞 promise（`detailInflight`），不产生第二次请求。
+- **按 PR 缓存**：`detailCache`（`repo#number` → `{value, at}`，TTL 120s）。命中即时渲染；过期先渲染缓存再后台刷新（stale-while-revalidate）。
+- **右栏骨架**：切换到不同 PR 时清空 `detail.value`，右栏渲染骨架（`data-cr-details-loading`）而不是上一个 PR 的内容。
+- `refreshDetail`（评论写入后）会同步更新缓存。
+
+### 20.3 实测效果
+
+| 场景 | 优化前 | 优化后 |
+|---|---|---|
+| 回访已看过的 PR | 每次重新请求，1–3s | **0 个 `/pr` 请求**，1–3ms 渲染 |
+| 悬停 >1s 再点击 | 点击后才开始请求 | 预取已完成，点击到就绪 **8–9ms** |
+| 冷点击（未预取） | 1 请求，等 1–3s | 仍 1 请求（后端成本），但右栏立即出现骨架、不再显示上一个 PR |
+
+### 20.4 后续建议（未做，需与并发会话协调）
+
+- 把 `/pr` 拆成「轻量（summary/comments/checks）」与「files/patch」两段，右侧栏与正文先渲染，Changes tab 再加载 patch；
+- 或把 `pull` 与 `files` 并行化（当前 `pull` 串行在最前），并提高 Host detail 缓存 TTL；
+- 这些改动位于 `plugin/lib/github.js` / `plugin/index.js`，本次未触碰（正被另一会话修改）。
+
 ## 附录 A · 复跑命令（同 §2 / README §4.6–§4.10）与判定速查
 
 - 退出码 0 通过 / 1 断言失败 / 2 装置或认证 / 3 路由未就绪（reload 窗口稍等重跑）。
