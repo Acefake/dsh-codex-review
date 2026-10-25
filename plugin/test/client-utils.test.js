@@ -1557,3 +1557,34 @@ test('toolbar and native settings reuse the same form with one set of review con
   assert.equal(controls.filter(node => node.props.label === 'depth' && node.props.options).length, 1)
   assert.equal(controls.filter(node => node.props.label === 'severityThreshold' && node.props.options).length, 1)
 })
+
+test('settings load errors offer retry and failed refreshes preserve the last good config', async () => {
+  const harness = componentHarness()
+  let fail = true
+  harness.bundle.sandbox.fetch = async path => ({ async json() {
+    if (path.endsWith('/health')) return { ok: true, value: {} }
+    return fail ? { ok: false, error: { code: 'GH_NETWORK' } } : {
+      ok: true, value: { config: { depth: 'deep', severityThreshold: 'P0', includeGuidelines: false } },
+    }
+  } })
+  harness.render(harness.api.CodeReviewSettingsPanel, {})
+  const refresh = harness.callbacks.find(fn => String(fn).includes("'/auto-review-status'"))
+  refresh()
+  await new Promise(resolve => setImmediate(resolve))
+  let tree = harness.render(harness.api.CodeReviewSettingsPanel, {})
+  assert.ok(nodes(tree).some(node => node.props?.role === 'alert'))
+  assert.equal(nodes(tree).find(node => node.props?.kind === 'depth').props.disabled, true)
+  const retry = nodes(tree).find(node => node.props?.['data-action'] === 'settings-retry')
+  fail = false
+  retry.props.onClick()
+  await new Promise(resolve => setImmediate(resolve))
+  tree = harness.render(harness.api.CodeReviewSettingsPanel, {})
+  assert.equal(nodes(tree).some(node => node.props?.role === 'alert'), false)
+  assert.equal(nodes(tree).find(node => node.props?.kind === 'depth').props.disabled, false)
+  const config = harness.states[0].status
+  assert.equal(config.config.depth, 'deep')
+  fail = true
+  refresh()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(harness.states[0].status, config)
+})

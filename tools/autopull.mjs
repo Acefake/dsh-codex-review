@@ -4,10 +4,10 @@
  * working tree only when it is safe to do so.
  *
  * Safety rules, in order:
- *   1. no uncommitted changes (staged / unstaged / untracked)      -> skip
- *   2. on the `master` branch, tracking `origin/master`            -> else skip
- *   3. remote commit is a fast-forward of HEAD                     -> else skip
- *   4. `git pull --ff-only` must succeed                           -> else report
+ *   1. on master, tracking origin/master                          -> else skip
+ *   2. no uncommitted changes (staged / unstaged / untracked)      -> else skip
+ *   3. remote commit is a fast-forward of HEAD                    -> else skip
+ *   4. fast-forward to the checked commit SHA must succeed        -> else report
  *
  * Never rebases, never stashes, never touches a dirty tree: a skipped run is
  * reported as `SKIP` with the reason, so a human can decide.
@@ -50,6 +50,9 @@ function run() {
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'])
   if (branch !== 'master') return { status: 'skip', detail: `on branch ${branch}, expected master` }
 
+  const upstream = git(['for-each-ref', '--format=%(upstream:short)', 'refs/heads/master'])
+  if (upstream !== 'origin/master') return { status: 'skip', detail: `tracking ${upstream || '(none)'}, expected origin/master` }
+
   const dirty = git(['status', '--porcelain=v1'])
   if (dirty !== '') {
     const lines = dirty.split('\n').length
@@ -68,7 +71,13 @@ function run() {
   }
   if (dryRun) return { status: 'skip', detail: `dry-run: would fast-forward ${behind} commit(s)` }
 
-  git(['pull', '--ff-only', '--quiet'])
+  // Fetching can take long enough for an editor or another git process to act.
+  if (git(['status', '--porcelain=v1']) !== '' || git(['rev-parse', 'HEAD']) !== local ||
+      git(['rev-parse', '--abbrev-ref', 'HEAD']) !== 'master' ||
+      git(['for-each-ref', '--format=%(upstream:short)', 'refs/heads/master']) !== 'origin/master') {
+    return { status: 'skip', detail: 'checkout changed during fetch' }
+  }
+  git(['merge', '--ff-only', '--quiet', remote])
   const head = git(['rev-parse', 'HEAD'])
   return { status: 'pulled', detail: `fast-forwarded ${behind} commit(s) to ${head.slice(0, 7)}` }
 }

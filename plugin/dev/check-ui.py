@@ -177,4 +177,24 @@ with sync_playwright() as playwright:
         page.screenshot(path=str(OUTPUT / f'native-settings-{theme}.png'))
         print(f'PASS native settings inherit {theme} host surface with inset content')
         page.close()
+    page = browser.new_page(viewport={'width': 1280, 'height': 1000})
+    status_calls = [0]
+
+    def fail_first_status(route):
+        status_calls[0] += 1
+        if status_calls[0] == 1:
+            route.fulfill(json={'ok': False, 'error': {'code': 'GH_NETWORK'}})
+        else:
+            route.continue_()
+
+    page.route('**/codex-review/auto-review-status', fail_first_status)
+    page.goto(f'{BASE}/?scene=settings')
+    page.locator('[data-cr-settings-page] [role=alert]').wait_for()
+    assert page.locator('button[data-depth]').first.is_disabled()
+    page.locator('[data-action="settings-retry"]').click()
+    page.wait_for_function('() => { const e = document.querySelector("button[data-depth]"); return e && !e.disabled }')
+    assert page.locator('[data-cr-settings-page] [role=alert]').count() == 0
+    assert status_calls[0] == 2
+    print('PASS settings recover through retry after transient read failure')
+    page.close()
     browser.close()

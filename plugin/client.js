@@ -393,6 +393,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsSaved: 'Saved',
       settingsSaveFailed: 'Could not save; try again',
       settingsLoading: 'Loading…',
+      settingsLoadFailed: 'Could not load settings. Retry to reconnect.',
       settingsMoved: 'More settings (auto review, publishing, status) live in DSH Settings → Code Review.',
       settingsReviewDesc: 'Shared by manual and automatic reviews. Saved in the host.',
       settingsAutoDesc: 'Scans the query in the background and reviews new commits. Nothing is written to GitHub.',
@@ -735,6 +736,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsSaved: '已保存',
       settingsSaveFailed: '保存失败，请重试',
       settingsLoading: '加载中…',
+      settingsLoadFailed: '设置读取失败，请重试。',
       settingsMoved: '更多设置（自动审查、发布、状态）已移到 DSH 设置 → 代码审查。',
       settingsReviewDesc: '手动与自动审查共用，统一保存在宿主。',
       settingsAutoDesc: '后台按查询扫描新提交并自动审查；不会向 GitHub 写入任何内容。',
@@ -5878,6 +5880,7 @@ const EMPTY_LIST = Object.freeze([])
       const [drafts, setDrafts] = useState({ interval: '', maxPerCycle: '', query: '', maxComments: '' })
 
       const refresh = useCallback(() => {
+        setAutoReview((previous) => ({ ...previous, loading: true, error: null }))
         post(ROUTE + '/health', {}).then((result) => {
           setHealth(result.ok ? result.value || {} : { gh: 'unknown', llm: 'unknown', version: '' })
         })
@@ -5891,7 +5894,7 @@ const EMPTY_LIST = Object.freeze([])
             setAutoReview({ supported: false, loading: false, status: null })
             return
           }
-          setAutoReview({ supported: true, loading: false, status: null, error: result.error || null })
+          setAutoReview((previous) => ({ ...previous, loading: false, error: result.error || { code: 'INTERNAL' } }))
         })
       }, [])
 
@@ -5934,7 +5937,7 @@ const EMPTY_LIST = Object.freeze([])
       const config = normalizeAutoReviewConfig(status ? status.config : null)
       const settings = normalizeSettings(config)
       const publish = status && status.publish ? status.publish : PUBLISH_DEFAULT_CONFIG
-      const busy = autoReviewBusy || autoReview.loading
+      const busy = autoReviewBusy || autoReview.loading || !status || !supported
 
       useEffect(() => {
         setDrafts({
@@ -5951,7 +5954,7 @@ const EMPTY_LIST = Object.freeze([])
       }
 
       const patch = (value) => {
-        if (!autoReviewBusy) patchAutoReview(value)
+        if (!busy) patchAutoReview(value)
       }
       const patchPublish = (partial) => patchAutoReview({ publish: partial })
       const setDraft = (key, value) => setDrafts((previous) => Object.assign({}, previous, { [key]: value }))
@@ -6014,9 +6017,21 @@ const EMPTY_LIST = Object.freeze([])
         'div',
         { className: 'cr-panel-root cr-set-page', 'data-cr-settings-page': 'ready' },
         h('style', null, CSS),
+        autoReview.error
+          ? h('div', { className: 'cr-set-inline cr-set-inline--warn', role: 'alert' },
+              h('span', null, tx(t, 'settingsLoadFailed')),
+              h('div', { className: 'cr-set-actions' },
+                h('button', {
+                  type: 'button', className: 'cr-btn cr-btn--ghost',
+                  'data-action': 'settings-retry', disabled: autoReview.loading,
+                  onClick: refresh,
+                }, tx(t, 'retry')),
+              ),
+            )
+          : null,
         h(
           SettingsSection,
-          { title: tx(t, 'reviewOptions'), desc: tx(t, 'settingsReviewDesc'), note },
+          { title: tx(t, 'reviewOptions'), desc: tx(t, 'settingsReviewDesc'), note: note || (autoReview.loading ? tx(t, 'settingsLoading') : '') },
           h(
             SettingRow,
             { label: tx(t, 'depth'), hint: tx(t, depthHintKey) },
