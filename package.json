@@ -1,0 +1,42 @@
+{
+  "name": "dsh-codex-review",
+  "version": "0.10.0",
+  "private": true,
+  "description": "Code review workbench inside the DSH Web GUI: GitHub pull-request list, unified diff, inline findings, AI review options, PR conversation and approval-free explicit merge.",
+  "type": "module",
+  "main": "./plugin/index.js",
+  "icon": "./plugin/icon.svg",
+  "exports": {
+    ".": "./plugin/index.js",
+    "./client": "./plugin/client.js",
+    "./package.json": "./package.json",
+    "./icon": "./plugin/icon.svg",
+    "./locale/*.json": "./plugin/locale/*.json"
+  },
+  "files": [
+    "plugin/index.js",
+    "plugin/lib/**/*.js",
+    "plugin/client.js",
+    "plugin/cordis.patch.yml",
+    "plugin/icon.svg",
+    "plugin/locale/*.json",
+    "plugin/README.md",
+    "plugin/package.json"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./plugin/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  }
+}

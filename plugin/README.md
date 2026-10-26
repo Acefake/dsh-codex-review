@@ -7,7 +7,7 @@
 - **AI 审查**：Host 侧走 DSH `ctx.llm`，使用当前默认模型（`agentDefaultModel`），失败/未配置时浏览功能不受影响。
 - **范围**：v1 只读 + AI 审查；合并、发评论、向 PR 提问、指派 reviewer 为禁用只读态（v2 计划）。
 
-> 本目录同时是 npm 包目录（`package.json` 双面声明：`dsh.bundle.patch` + `dsh.client`），可直接 `plugin_manager install_bundle` 安装。
+> 本目录与仓库根目录都是有效的 npm / DSH 组合包入口（声明 `dsh.bundle.patch` + `dsh.client`）。从 Git 地址安装时使用根目录声明；已有 `plugin/` 目录安装继续兼容。详见[根目录安装说明](../README.md)。
 
 ## 统一审查设置
 
