@@ -7906,7 +7906,7 @@ const EMPTY_LIST = Object.freeze([])
       // and only use the legacy provider rule when health has no accounts at all.
       const hasAccounts = accounts.length > 0
       const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
-      const writeAccount = currentAccount ?? accounts[0] ?? null
+      const writeAccount = currentAccount ?? accounts.find((entry) => entry.id === health.value?.defaultAccount) ?? accounts[0] ?? null
       const currentWriteAllowed = writeAccount === null
         ? (!hasAccounts && legacyWriteAllowed)
         : (writeAccount.capabilities?.merge ?? writeAccount.type !== 'gitlab')
