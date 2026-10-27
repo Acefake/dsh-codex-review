@@ -260,10 +260,14 @@ test('caller abort maps to GL_ABORTED and a big change list reports filesTruncat
 
 test('normalization helpers handle nested paths, drafts and pipeline states', () => {
   assert.equal(GITLAB_REPO_RE.test('mdesign/beijing/graphics-library-v2'), true)
-  assert.equal(GITLAB_REPO_RE.test('mdesign'), true)
+  assert.equal(GITLAB_REPO_RE.test('mdesign'), false)
   assert.equal(GITLAB_REPO_RE.test('a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u'), false)
   assert.equal(GITLAB_REPO_RE.test('bad path/repo'), false)
   assert.equal(isValidGitlabRepo('mdesign/beijing/graphics-library-v2'), true)
+  assert.equal(isValidGitlabRepo('mdesign'), false)
+  assert.equal(isValidGitlabRepo('a/b'), true)
+  assert.equal(isValidGitlabRepo(Array.from({ length: 20 }, () => 'a').join('/')), true)
+  assert.equal(isValidGitlabRepo(Array.from({ length: 21 }, () => 'a').join('/')), false)
   assert.equal(isValidGitlabRepo('mdesign/../secret'), false)
   assert.equal(isValidGitlabRepo('mdesign/./secret'), false)
   assert.equal(isValidGitlabRepo('mdesign/-secret'), false)

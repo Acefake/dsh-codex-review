@@ -399,6 +399,25 @@ const EMPTY_LIST = Object.freeze([])
       settingsAutoDesc: 'Scans the query in the background and reviews new commits. Nothing is written to GitHub.',
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
+      accountsTitle: 'Accounts',
+      accountsDesc: 'GitHub / GitLab accounts. Every added account needs its own token; the built-in GitHub account may use the gh login.',
+      accountAdd: 'Add account',
+      accountTest: 'Test connection',
+      accountDefault: 'Set as default',
+      accountRemove: 'Remove',
+      accountDefaultTag: 'Default',
+      accountType: 'Account type',
+      accountName: 'Name (optional)',
+      accountUsername: 'Username (optional)',
+      accountBaseUrlPlaceholder: 'https://gitlab.example.com',
+      accountToken: 'Token',
+      accountGhLogin: 'gh login',
+      accountNoUsername: 'No username',
+      accountLoading: 'Loading…',
+      accountTestOk: 'Connected: ',
+      accountTestFailed: 'Connection failed',
+      accountError: 'Could not load accounts.',
+      accountRemoveConfirm: 'Click again to confirm removal',
       settingsSaving: 'Saving…',
       settingsIntervalHint: '60–3600 s, default 180 s.',
       settingsQueryHint: 'GitHub search syntax, default is:open author:@me.',
@@ -742,6 +761,25 @@ const EMPTY_LIST = Object.freeze([])
       settingsAutoDesc: '后台按查询扫描新提交并自动审查；不会向 GitHub 写入任何内容。',
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
+      accountsTitle: '账号',
+      accountsDesc: 'GitHub / GitLab 账号；新增账号必须填自己的 Token，内置默认 GitHub 账号可用 gh 登录态。',
+      accountAdd: '添加账号',
+      accountTest: '测试连接',
+      accountDefault: '设为默认',
+      accountRemove: '删除',
+      accountDefaultTag: '默认',
+      accountType: '账号类型',
+      accountName: '名称（可选）',
+      accountUsername: '用户名（可选）',
+      accountBaseUrlPlaceholder: 'https://gitlab.example.com',
+      accountToken: 'Token',
+      accountGhLogin: 'gh 登录态',
+      accountNoUsername: '未填写用户名',
+      accountLoading: '加载中……',
+      accountTestOk: '连接成功：',
+      accountTestFailed: '连接失败',
+      accountError: '账号列表加载失败。',
+      accountRemoveConfirm: '再次点击确认删除',
       settingsSaving: '保存中…',
       settingsIntervalHint: '60–3600 秒，默认 180 秒。',
       settingsQueryHint: 'GitHub 搜索语法，默认 is:open author:@me。',
@@ -3247,6 +3285,97 @@ const EMPTY_LIST = Object.freeze([])
 .cr-set-status-row:last-child{border-bottom:0}
 .cr-set-status-key{flex:1;font:12.5px/18px ${SANS};color:var(--cr-text-2)}
 .cr-set-status-val{font:12px/18px var(--cr-mono);color:var(--cr-text)}
+
+/* ── compact pass: quiet, dense, scrollbar-free ───────────────────────── */
+.cr-root,.cr-root *,.cr-panel-root,.cr-panel-root *,.cr-modal,.cr-modal *{scrollbar-width:none;-ms-overflow-style:none}
+.cr-root ::-webkit-scrollbar,.cr-panel-root ::-webkit-scrollbar,.cr-modal::-webkit-scrollbar{width:0;height:0;display:none;background:transparent}
+.cr-root ::-webkit-scrollbar-thumb,.cr-panel-root ::-webkit-scrollbar-thumb{background:transparent}
+.cr-side{flex:0 0 222px;width:222px}
+.cr-side-head{padding:12px 10px 4px 16px}
+.cr-side-title{font-size:16px;line-height:22px;letter-spacing:-.015em}
+.cr-search{height:32px;border-radius:8px}
+.cr-list{padding:0 8px 12px;gap:1px}
+.cr-row{min-height:0;padding:8px 9px;border-radius:8px}
+.cr-row-title{font-size:12.5px;line-height:18px}
+.cr-row-meta{margin-top:4px;font-size:10.5px;line-height:15px}
+.cr-list-state{font-size:12px;line-height:18px;padding:12px 8px}
+.cr-toolbar{height:46px;gap:8px;padding:0 12px 0 20px}
+.cr-tab{height:27px;padding:0 10px;font-size:12px}
+.cr-diffstat{font-size:11.5px}
+.cr-review-main{font-size:12px;padding:0 10px;gap:6px}
+.cr-btn{height:28px;padding:0 11px;font-size:12px;border-radius:14px}
+.cr-btn--ghost{height:24px;padding:0 7px;font-size:11px;border-radius:5px}
+.cr-iconbtn{width:26px;height:26px;border-radius:7px}
+.cr-doc{width:720px;padding:2px 0 64px;scrollbar-gutter:auto}
+.cr-details{width:280px;padding:8px 0 56px}
+.cr-pr-repo{font-size:12px}
+.cr-pr-title{margin:12px 0 8px;font-size:22px;line-height:1.3}
+.cr-pr-meta{margin-top:8px;font-size:11.5px;gap:6px}
+.cr-md{margin-top:22px;font-size:13.5px;line-height:1.68}
+.cr-md h2{margin:22px 0 8px;font-size:17px}
+.cr-md h3{margin:16px 0 6px;font-size:15px}
+.cr-md code{font-size:11.5px}
+.cr-sec-title{font-size:12px}
+.cr-finding-title{font-size:13.5px;line-height:20px;margin-top:6px}
+.cr-finding-body{margin-top:8px;font-size:12.5px;line-height:20px}
+.cr-finding-loc{margin-top:4px;font-size:10.5px;line-height:16px}
+.cr-diff{font-size:11.5px;line-height:18px}
+.cr-diff-hunk{padding:1px 10px;font-size:11px;line-height:17px}
+.cr-diff-meta{font-size:10.5px}
+.cr-review-card-title{font-size:13px}
+.cr-review-card-meta{font-size:11.5px}
+.cr-verdict-hint{font-size:11.5px}
+.cr-review-counts{margin-top:12px;padding:10px 0;gap:18px;font-size:11.5px}
+.cr-review-meta-row{margin-top:7px;font-size:11px;line-height:16px}
+.cr-chip{height:24px;padding:0 8px;font-size:11px}
+.cr-filter-empty{font-size:11.5px}
+.cr-changes-row{margin-top:4px;font-size:12px}
+.cr-toast{font-size:12px;padding:7px 12px}
+.cr-accounts{display:flex;gap:4px;padding:0 8px 6px;margin:0;flex-wrap:wrap;background:transparent;border-radius:0}
+.cr-accounts .cr-tab{height:24px;padding:0 8px;font-size:11.5px;border-radius:6px;border:1px solid transparent}
+.cr-accounts .cr-tab--active{border-color:var(--cr-border-2)}
+/* settings */
+.cr-set-page{padding:12px 18px 24px;max-width:740px}
+.cr-set-sec{margin-bottom:18px}
+.cr-set-head{gap:8px;margin-bottom:2px}
+.cr-set-title{font:600 13px/18px ${SANS};letter-spacing:-.01em}
+.cr-set-note{font:10.5px/14px ${SANS}}
+.cr-set-desc{margin-bottom:4px;font:11px/16px ${SANS};max-width:62ch}
+.cr-set-row{padding:7px 0;gap:6px 16px}
+.cr-set-row--stack{gap:5px}
+.cr-set-text{flex:1 1 200px}
+.cr-set-label{font:12px/17px ${SANS}}
+.cr-set-hint{margin-top:1px;font:10.5px/15px ${SANS};max-width:58ch}
+.cr-set-control{gap:6px}
+.cr-set-input{height:24px;padding:0 7px;border-radius:5px;font:11.5px/22px ${MONO}}
+.cr-set-num{width:56px;height:24px;padding:0 6px;font:11px/22px ${MONO}}
+.cr-set-unit{font:10.5px/15px ${SANS}}
+.cr-set-inline{margin-top:6px;padding:6px 8px;border-radius:5px;font:11px/16px ${SANS}}
+.cr-set-actions{gap:6px;margin-top:5px}
+.cr-set-status-row{padding:6px 0;gap:10px}
+.cr-set-status-key{font:11.5px/16px ${SANS}}
+.cr-set-status-val{font:11px/16px ${MONO}}
+.cr-shared-settings{width:min(660px,calc(100% - 28px))}
+.cr-shared-settings .cr-set-page{padding:4px 0 0;max-width:none}
+.cr-modal{max-height:calc(100% - 44px);padding:11px 13px 12px;border-radius:10px}
+.cr-modal-head{margin-bottom:5px}
+.cr-modal-title{font-size:13px}
+.cr-modal-backdrop{padding:40px 14px 14px}
+/* account manager */
+.cr-set-accounts{display:flex;flex-direction:column;border-top:1px solid var(--cr-hair-soft)}
+.cr-set-account{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-set-account .cr-set-text{flex:1 1 auto;min-width:0}
+.cr-set-account .cr-set-label{display:flex;align-items:center;gap:6px;font-size:12px;line-height:17px}
+.cr-set-account .cr-set-hint{margin-top:0;font-size:10.5px;line-height:15px;max-width:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-set-account .cr-set-actions{flex:none;margin-top:0;gap:4px}
+.cr-set-account .cr-btn{height:22px;padding:0 7px;font-size:11px;border-radius:5px}
+.cr-set-tag{display:inline-flex;align-items:center;height:16px;padding:0 5px;border-radius:4px;background:var(--cr-raised);color:var(--cr-text-3);font-size:9.5px;font-weight:600;letter-spacing:.02em}
+.cr-set-tag--default{background:color-mix(in srgb,var(--cr-blue) 14%,transparent);color:var(--cr-blue)}
+.cr-set-account-form{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 0;align-items:center}
+.cr-set-account-form .cr-set-input{height:24px;padding:0 7px;border-radius:5px;font-family:inherit;font-size:11.5px}
+.cr-set-account-form .cr-set-input--wide{grid-column:1 / -1}
+.cr-set-account-form .cr-set-account-buttons{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:6px;padding-top:2px}
+.cr-set-account-form .cr-btn{height:24px;padding:0 9px;font-size:11px;border-radius:5px}
 `
 
     // ---------------------------------------------------------------------
@@ -3586,6 +3715,25 @@ const EMPTY_LIST = Object.freeze([])
             Icon('more', 18, { strokeWidth: 2.4 }),
           ),
         ),
+        Array.isArray(props.accounts) && props.accounts.length > 1
+          ? h(
+              'div',
+              { className: 'cr-tabs cr-accounts', role: 'tablist', 'aria-label': 'accounts' },
+              props.accounts.map((entry) =>
+                h(
+                  'button',
+                  {
+                    key: entry.id,
+                    type: 'button',
+                    className: 'cr-tab' + (props.account === entry.id ? ' cr-tab--active' : ''),
+                    title: entry.viewer || entry.id,
+                    onClick: () => props.onAccountChange(entry.id),
+                  },
+                  ((entry.labels && entry.labels.item) || entry.id) + ' · ' + (entry.viewer || entry.id),
+                ),
+              ),
+            )
+          : null,
         h(
           'div',
           { className: 'cr-search-wrap' },
@@ -3746,6 +3894,18 @@ const EMPTY_LIST = Object.freeze([])
         h(
           'div',
           { className: 'cr-toolbar-icons' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-iconbtn',
+              'data-action': 'refresh',
+              'aria-label': tx(t, 'refresh'),
+              title: tx(t, 'refresh'),
+              onClick: props.onRefresh,
+            },
+            Icon('refresh', 15),
+          ),
           h(
             'button',
             {
@@ -5819,6 +5979,202 @@ const EMPTY_LIST = Object.freeze([])
       )
     }
 
+    /**
+     * Account management: list, add (GitHub/GitLab), test, remove and set the
+     * default account. Tokens go to the host; only labels/usernames come back.
+     */
+    function AccountsSettingsSection(props) {
+      const t = props.t
+      const [state, setState] = useState({ loading: true, accounts: [], defaultAccount: '', error: null })
+      const [form, setForm] = useState({ type: 'gitlab', label: '', baseUrl: '', username: '', token: '' })
+      const [busy, setBusy] = useState(false)
+      const [message, setMessage] = useState('')
+      const [pendingRemove, setPendingRemove] = useState('')
+
+      const applyList = (value) => {
+        setState({
+          loading: false,
+          accounts: Array.isArray(value.accounts) ? value.accounts : [],
+          defaultAccount: value.defaultAccount || '',
+          error: null,
+        })
+      }
+
+      const refresh = useCallback(() => {
+        post(ROUTE + '/accounts', {}).then((result) => {
+          if (result.ok) applyList(result.value || {})
+          else setState((previous) => ({ ...previous, loading: false, error: result.error || null }))
+        }).catch(() => {
+          setState((previous) => ({ ...previous, loading: false, error: { code: 'INTERNAL', message: tx(t, 'accountTestFailed') } }))
+        })
+      }, [t])
+
+      useEffect(() => {
+        refresh()
+      }, [refresh])
+
+      const mutate = (path, payload, options = {}) => {
+        setBusy(true)
+        setMessage('')
+        setPendingRemove('')
+        post(ROUTE + path, { ...payload, confirm: true }).then((result) => {
+          setBusy(false)
+          if (result.ok) {
+            if (result.value && Array.isArray(result.value.accounts)) applyList(result.value)
+            else refresh()
+            setMessage(tx(t, 'settingsSaved'))
+            if (options.resetForm === true) {
+              setForm((previous) => ({ ...previous, label: '', username: '', baseUrl: '', token: '' }))
+            }
+            try {
+              window.dispatchEvent(new CustomEvent('codex-review:accounts-changed'))
+            } catch {
+              /* event dispatch is best effort */
+            }
+            return
+          }
+          setMessage((result.error && result.error.message) || '')
+        }).catch(() => {
+          setBusy(false)
+          setMessage(tx(t, 'accountTestFailed'))
+        })
+      }
+
+      const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
+      const canAdd = !state.loading && form.token.trim() !== '' && (form.type !== 'gitlab' || form.baseUrl.trim() !== '')
+
+      return h(
+        SettingsSection,
+        { title: tx(t, 'accountsTitle'), desc: tx(t, 'accountsDesc'), note: message },
+        h(
+          'div',
+          { className: 'cr-set-accounts', 'data-cr-accounts': 'ready' },
+          state.loading
+            ? h('div', { className: 'cr-set-note' }, tx(t, 'accountLoading'))
+            : null,
+          state.error
+            ? h('div', { className: 'cr-set-inline cr-set-inline--warn', role: 'alert' },
+                tx(t, 'accountError') + ' ' + ((state.error && state.error.message) || ''),
+                h('div', { className: 'cr-set-actions' },
+                  h('button', {
+                    type: 'button', className: 'cr-btn cr-btn--ghost',
+                    'data-action': 'account-retry', onClick: refresh,
+                  }, tx(t, 'retry'))))
+            : null,
+          (state.accounts || []).map((account) =>
+                  h(
+                    'div',
+                    { key: account.id, className: 'cr-set-account', 'data-account': account.id },
+                    h(
+                      'div',
+                      { className: 'cr-set-text' },
+                      h('div', { className: 'cr-set-label' },
+                        account.label || account.id,
+                        h('span', { className: 'cr-set-tag' }, account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
+                        account.id === state.defaultAccount
+                          ? h('span', { className: 'cr-set-tag cr-set-tag--default' }, tx(t, 'accountDefaultTag'))
+                          : null),
+                      h('div', { className: 'cr-set-hint' },
+                        (account.username || tx(t, 'accountNoUsername'))
+                          + (account.baseUrl ? ' · ' + account.baseUrl : '')),
+                    ),
+                    h(
+                      'div',
+                      { className: 'cr-set-actions' },
+                      account.id === state.defaultAccount
+                        ? null
+                        : h('button', {
+                            type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                            'data-action': 'account-default', 'data-account-id': account.id,
+                            onClick: () => mutate('/accounts-default', { id: account.id }),
+                          }, tx(t, 'accountDefault')),
+                      h('button', {
+                        type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                        'data-action': 'account-remove', 'data-account-id': account.id,
+                        onClick: () => {
+                          if (pendingRemove !== account.id) {
+                            setPendingRemove(account.id)
+                            setMessage(tx(t, 'accountRemoveConfirm'))
+                            return
+                          }
+                          setPendingRemove('')
+                          mutate('/accounts-remove', { id: account.id })
+                        },
+                      }, tx(t, 'accountRemove')),
+                    ),
+                  ),
+                ),
+          h(
+            'div',
+            { className: 'cr-set-account-form' },
+            h(
+              'select',
+              {
+                className: 'cr-set-input', value: form.type, 'aria-label': tx(t, 'accountType'),
+                onChange: (event) => {
+                  setPendingRemove('')
+                  update({ type: event.target.value, baseUrl: '', token: '' })
+                },
+              },
+              h('option', { value: 'github' }, 'GitHub'),
+              h('option', { value: 'gitlab' }, 'GitLab'),
+            ),
+            h('input', {
+              type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountName'),
+              value: form.label, 'aria-label': tx(t, 'accountName'),
+              onChange: (event) => update({ label: event.target.value }),
+            }),
+            h('input', {
+              type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountUsername'),
+              value: form.username, 'aria-label': tx(t, 'accountUsername'),
+              onChange: (event) => update({ username: event.target.value }),
+            }),
+            form.type === 'gitlab'
+              ? h('input', {
+                  type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountBaseUrlPlaceholder'),
+                  value: form.baseUrl, 'aria-label': tx(t, 'accountBaseUrlPlaceholder'),
+                  onChange: (event) => update({ baseUrl: event.target.value }),
+                })
+              : null,
+            h('input', {
+              type: 'password', className: 'cr-set-input cr-set-input--wide',
+              placeholder: tx(t, 'accountToken'),
+              value: form.token, 'aria-label': tx(t, 'accountToken'),
+              onChange: (event) => update({ token: event.target.value }),
+            }),
+            h(
+              'div',
+              { className: 'cr-set-account-buttons' },
+              h('button', {
+                type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+                'data-action': 'account-test',
+                onClick: () => {
+                  setBusy(true)
+                  setMessage('')
+                  post(ROUTE + '/accounts-test', { ...form, confirm: true }).then((result) => {
+                    setBusy(false)
+                    if (result.ok) {
+                      setMessage(tx(t, 'accountTestOk') + ((result.value && result.value.viewer) || ''))
+                    } else {
+                      setMessage((result.error && result.error.message) || tx(t, 'accountTestFailed'))
+                    }
+                  }).catch(() => {
+                    setBusy(false)
+                    setMessage(tx(t, 'accountTestFailed'))
+                  })
+                },
+              }, tx(t, 'accountTest')),
+              h('button', {
+                type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+                'data-action': 'account-add',
+                onClick: () => mutate('/accounts-add', form, { resetForm: true }),
+              }, tx(t, 'accountAdd')),
+            ),
+          ),
+        ),
+      )
+    }
+
     /** Segmented radio control used by the settings rows. */
     function Segmented(props) {
       return h(
@@ -6264,6 +6620,7 @@ const EMPTY_LIST = Object.freeze([])
                     ),
               ),
         ),
+        h(AccountsSettingsSection, { t }),
         h(
           SettingsSection,
           { title: tx(t, 'settingsStatus') },
@@ -6271,6 +6628,9 @@ const EMPTY_LIST = Object.freeze([])
             'div',
             { className: 'cr-set-status' },
             statusRow(tx(t, 'settingsPluginVersion'), health ? health.version : ''),
+            statusRow(tx(t, 'accountsTitle'), health && Array.isArray(health.accounts)
+              ? health.accounts.map((account) => account.label || account.id).join(' / ')
+              : ''),
             statusRow(tx(t, 'settingsHealthGh'), health ? (health.provider === 'gitlab' ? (health.viewer || 'GitLab') : health.gh) : ''),
             statusRow(tx(t, 'settingsHealthLlm'), health ? health.llm : ''),
           ),
@@ -7469,10 +7829,6 @@ const EMPTY_LIST = Object.freeze([])
     function Workbench(props) {
       const t = props && props.t
       const [health, setHealth] = useState({ state: 'loading', value: null })
-      const providerValue = health.state === 'ok' ? health.value : null
-      // Loading or failed health keeps write entries off: GitLab users must not
-      // see merge/publish buttons flash before the provider is known.
-      const writeEnabled = health.state === 'ok' && (providerValue?.provider ?? 'github') !== 'gitlab'
       const [queryInput, setQueryInput] = useState(DEFAULT_QUERY)
       const [query, setQuery] = useState(DEFAULT_QUERY)
       const [list, setList] = useState({ state: 'loading', items: [], totalCount: 0, error: null })
@@ -7548,6 +7904,30 @@ const EMPTY_LIST = Object.freeze([])
       const [publishRecords, setPublishRecords] = useState({})
       const [publishUnsupported, setPublishUnsupported] = useState(false)
 
+      // Multi-account state is appended after the original state slots so the
+      // existing render order (and its tests) stays stable.
+      const [account, setAccount] = useState('')
+      const [listNonce, setListNonce] = useState(0)
+      const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
+      const defaultAccountId = health.value?.defaultAccount || accounts[0]?.id || ''
+      const activeAccount = accounts.some((entry) => entry.id === account) ? account : defaultAccountId
+      const currentAccount = accounts.find((entry) => entry.id === activeAccount) ?? null
+      const multiAccount = accounts.length > 1
+      // Prefer the account's explicit capability; fall back to its type, and only
+      // use the legacy provider rule when health has no accounts at all.
+      const hasAccounts = accounts.length > 0
+      const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
+      const writeAccount = currentAccount ?? accounts.find((entry) => entry.id === health.value?.defaultAccount) ?? accounts[0] ?? null
+      const capability = (name) => {
+        if (writeAccount === null) return !hasAccounts && legacyWriteAllowed
+        return writeAccount.capabilities?.[name] ?? writeAccount.type !== 'gitlab'
+      }
+      const canMerge = health.state === 'ok' && capability('merge')
+      const canPublish = health.state === 'ok' && capability('publish')
+      const canComment = health.state === 'ok' && capability('comment')
+      /** Detail cache key; includes the account only when several are configured. */
+      const detailKey = (summary) => (multiAccount && activeAccount !== '' ? activeAccount + '|' : '') + String(summary.repo) + '#' + String(summary.number)
+
       const docRef = useRef(null)
       const listGeneration = useRef(0)
       const detailGeneration = useRef(0)
@@ -7581,39 +7961,95 @@ const EMPTY_LIST = Object.freeze([])
       const publishDialogRef = useRef(null)
       publishDialogRef.current = publishDialog
 
-      // health: one shot, drives the top notice bar only
+      /** Drop per-account UI state: selection, detail, review polling, chat and publish dialogs. */
+      const clearSelection = () => {
+        selectedRef.current = null
+        setSelected(null)
+        setDetail({ state: 'idle', value: null, error: null })
+        setReview(normalizeReviewStatus({ state: 'none' }))
+        detailGeneration.current += 1
+        reviewGeneration.current += 1
+        listGeneration.current += 1
+        if (multiAccount) {
+          for (const key of [...detailCache.current.keys()]) {
+            if (key.startsWith(activeAccount + '|') || !key.includes('|')) detailCache.current.delete(key)
+          }
+        } else {
+          detailCache.current.clear()
+        }
+        detailInflight.current.clear()
+        setList({ state: 'loading', items: [], totalCount: 0, error: null })
+        chatGeneration.current += 1
+        try {
+          chatAbortRef.current?.abort?.()
+        } catch {
+          /* an already-aborted stream is fine */
+        }
+        setChat({ open: false, messages: [], streaming: false, error: null })
+        setPublishDialog({ open: false, mode: 'inline', minSeverity: 'P2', phase: 'idle', error: null })
+        setPublishRecords({})
+        setPublishUnsupported(false)
+        setMergeDialog({ open: false, method: DEFAULT_MERGE_METHOD, deleteBranch: false, phase: 'idle', error: null })
+      }
+
+      // health: one shot; also picks the initial account tab
       useEffect(() => {
         let alive = true
         post(ROUTE + '/health', {}).then((result) => {
           if (!alive) return
-          setHealth(
-            result.ok
-              ? { state: 'ok', value: result.value || {} }
-              : { state: 'error', error: result.error },
-          )
+          const value = result.ok ? result.value || {} : null
+          setHealth(result.ok ? { state: 'ok', value } : { state: 'error', error: result.error })
+          if (result.ok) {
+            const list = Array.isArray(value.accounts) ? value.accounts : []
+            const preferred = value.defaultAccount || (list[0] && list[0].id) || 'github'
+            setAccount((previous) => (list.some((entry) => entry.id === previous) ? previous : preferred))
+          }
         })
         return () => {
           alive = false
         }
       }, [])
 
+      // Account add/remove/switch invalidates the cached health snapshot.
+      useEffect(() => {
+        const reload = () => {
+          post(ROUTE + '/health', {}).then((result) => {
+            if (result.ok) {
+              const value = result.value || {}
+              setHealth({ state: 'ok', value })
+              const list = Array.isArray(value.accounts) ? value.accounts : []
+              if (list.length > 0 && !list.some((entry) => entry.id === account)) {
+                clearSelection()
+                setAccount(value.defaultAccount || list[0].id)
+              }
+            }
+          })
+        }
+        try {
+          window.addEventListener('codex-review:accounts-changed', reload)
+          return () => window.removeEventListener('codex-review:accounts-changed', reload)
+        } catch {
+          return undefined
+        }
+      }, [account])
+
       const invalidateDetail = useCallback((summary) => {
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         detailVersions.current.set(key, (detailVersions.current.get(key) || 0) + 1)
         detailCache.current.delete(key)
         detailInflight.current.delete(key)
-      }, [])
+      }, [account, multiAccount])
 
       /** Fetch one PR detail, sharing only requests from the current cache epoch. */
       const fetchDetail = useCallback((summary) => {
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const pending = detailInflight.current.get(key)
         if (pending) return pending
         const version = detailVersions.current.get(key) || 0
         const release = () => {
           if (detailInflight.current.get(key) === request) detailInflight.current.delete(key)
         }
-        const request = post(ROUTE + '/pr', { repo: summary.repo, number: summary.number })
+        const request = post(ROUTE + '/pr', { account, repo: summary.repo, number: summary.number })
           .then((result) => {
             release()
             // An obsolete response cannot update either the cache or its caller.
@@ -7630,7 +8066,7 @@ const EMPTY_LIST = Object.freeze([])
           })
         detailInflight.current.set(key, request)
         return request
-      }, [])
+      }, [account, multiAccount])
 
       /**
        * Warm a PR's detail when the pointer or focus rests on its row: by the time
@@ -7639,12 +8075,12 @@ const EMPTY_LIST = Object.freeze([])
        */
       const prefetchDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const cached = detailCache.current.get(key)
         if (cached && Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
         if (detailInflight.current.has(key)) return
         void fetchDetail(summary)
-      }, [fetchDetail])
+      }, [account, multiAccount, fetchDetail])
 
       const loadDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
@@ -7653,7 +8089,7 @@ const EMPTY_LIST = Object.freeze([])
         setReview(normalizeReviewStatus({ state: 'none' }))
         const seedGeneration = reviewGeneration.current
         let restoredGeneration = seedGeneration
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const cached = detailCache.current.get(key)
         if (cached) {
           // A cached PR renders instantly; an expired entry refreshes in the background.
@@ -7695,7 +8131,7 @@ const EMPTY_LIST = Object.freeze([])
             setReview(seed || normalizeReviewStatus({ state: 'none' }))
           }
         })
-      }, [fetchDetail])
+      }, [account, multiAccount, fetchDetail])
 
       /**
        * Re-fetch one PR's detail without resetting the review card. Used after a
@@ -7712,6 +8148,20 @@ const EMPTY_LIST = Object.freeze([])
           setDetail({ state: 'ready', value: result.value, error: null })
         })
       }, [fetchDetail, invalidateDetail])
+
+      /** Switch the visible account and drop the previous account's selection. */
+      const switchAccount = useCallback((nextAccount) => {
+        if (nextAccount === activeAccount) return
+        clearSelection()
+        setAccount(nextAccount)
+      }, [activeAccount, multiAccount])
+
+      /** Refresh the current list and, when a PR is open, its detail. */
+      const refreshView = useCallback(() => {
+        setListNonce((previous) => previous + 1)
+        const current = selectedRef.current
+        if (current) refreshDetail(current)
+      }, [refreshDetail])
 
       // Remember when the current head's review finished so the summary header can
       // show a relative timestamp (the review status payload has no finishedAt).
@@ -7761,9 +8211,10 @@ const EMPTY_LIST = Object.freeze([])
       }, [queryInput])
 
       useEffect(() => {
+        if (account === '') return undefined
         const generation = ++listGeneration.current
         setList((previous) => Object.assign({}, previous, { state: 'loading' }))
-        post(ROUTE + '/prs', { query }).then((result) => {
+        post(ROUTE + '/prs', { account, query }).then((result) => {
           if (generation !== listGeneration.current) return
           if (result.ok) {
             const value = result.value || {}
@@ -7776,7 +8227,8 @@ const EMPTY_LIST = Object.freeze([])
             )
           }
         })
-      }, [query, selectPr])
+        return undefined
+      }, [account, query, listNonce, selectPr])
 
       /** Poll review-status until a terminal state, guarded by a generation counter. */
       const pollReview = useCallback(async (generation, jobId, summary) => {
@@ -7839,7 +8291,7 @@ const EMPTY_LIST = Object.freeze([])
             progress: {},
           }),
         )
-        post(ROUTE + '/review-start', { repo: current.repo, number: current.number }).then(
+        post(ROUTE + '/review-start', { account, repo: current.repo, number: current.number }).then(
           (result) => {
             if (generation !== reviewGeneration.current) return
             if (!result.ok) {
@@ -8229,7 +8681,7 @@ const EMPTY_LIST = Object.freeze([])
           chatAbortRef.current = controller
           const requestMessages = chatRequestMessages(baseMessages.concat([userMessage]))
           const focusFile = resolveFocusFile()
-          const payload = { repo: current.repo, number: current.number, messages: requestMessages }
+          const payload = { account, repo: current.repo, number: current.number, messages: requestMessages }
           if (focusFile !== '') payload.focusFile = focusFile
           setComposerText('')
           setChat({
@@ -8382,7 +8834,7 @@ const EMPTY_LIST = Object.freeze([])
           return
         }
         setMergeDialog((previous) => Object.assign({}, previous, { phase: 'submitting', error: null }))
-        post(ROUTE + '/merge', request).then((result) => {
+        post(ROUTE + '/merge', Object.assign({}, request, { account })).then((result) => {
           if (result.ok) {
             const value = result.value || {}
             const sha = shortSha(value.sha, 7) || shortSha(request.expectedHeadSha, 7)
@@ -8544,7 +8996,7 @@ const EMPTY_LIST = Object.freeze([])
 
       const autoEnabled = Boolean(autoReview.status && autoReview.status.config.enabled)
       const autoPollDecision = autoReviewPollDecision({
-        supported: writeEnabled && autoReview.supported !== false,
+        supported: canPublish && autoReview.supported !== false,
         enabled: autoEnabled,
         visible: pageVisible,
         intervalMs: autoReviewPollMs,
@@ -8598,6 +9050,7 @@ const EMPTY_LIST = Object.freeze([])
           Object.assign({}, previous, { phase: 'submitting', error: null }),
         )
         post(ROUTE + '/comment', {
+          account,
           repo: current.repo,
           number: current.number,
           body,
@@ -8613,11 +9066,11 @@ const EMPTY_LIST = Object.freeze([])
             Object.assign({}, previous, { phase: 'error', error: result.error || null }),
           )
         })
-      }, [commentDialog, refreshDetail, showToast, t])
+      }, [account, commentDialog, refreshDetail, showToast, t])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
-        if (!writeEnabled) return {}
+        if (!canComment) return {}
         const finish = (result, doneKey, origin) => {
           if (result && result.ok) {
             showToast(tx(t, doneKey))
@@ -8633,6 +9086,7 @@ const EMPTY_LIST = Object.freeze([])
             const current = selectedRef.current
             if (!current || !comment || !Number.isInteger(comment.id)) return Promise.resolve(false)
             return post(ROUTE + '/reply', {
+              account,
               repo: current.repo,
               number: current.number,
               commentId: comment.id,
@@ -8646,6 +9100,7 @@ const EMPTY_LIST = Object.freeze([])
               return Promise.resolve(false)
             }
             return post(ROUTE + '/resolve', {
+              account,
               repo: current.repo,
               number: current.number,
               threadId: comment.threadId,
@@ -8653,7 +9108,7 @@ const EMPTY_LIST = Object.freeze([])
             }).then((result) => finish(result, 'resolveDone', current))
           },
         }
-      }, [writeEnabled, refreshDetail, showToast, t])
+      }, [account, canComment, refreshDetail, showToast, t])
 
       // -------------------------------------------------------------------
       // v2.2: publish the current review to GitHub (CONTRACT §7.3)
@@ -8719,7 +9174,7 @@ const EMPTY_LIST = Object.freeze([])
         setPublishDialog((previous) =>
           Object.assign({}, previous, { phase: 'submitting', error: null }),
         )
-        post(ROUTE + '/review-publish', request, { timeoutMs: PUBLISH_TIMEOUT_MS }).then((result) => {
+        post(ROUTE + '/review-publish', Object.assign({}, request, { account }), { timeoutMs: PUBLISH_TIMEOUT_MS }).then((result) => {
           if (result.ok) {
             const value = result.value || {}
             const record = normalizePublishResult(value)
@@ -8815,7 +9270,7 @@ const EMPTY_LIST = Object.freeze([])
       )
       const publishConfig = autoStatus && autoStatus.publish ? autoStatus.publish : null
       const publishSupported =
-        writeEnabled && !publishUnsupported && autoReview.supported !== false && publishConfig !== null
+        canPublish && !publishUnsupported && autoReview.supported !== false && publishConfig !== null
       const reviewHeadSha = reviewValue.headSha || currentHeadSha
       const reviewPublishKey = publishRecordKey(summary.repo, summary.number, reviewHeadSha)
       const localPublished =
@@ -8872,7 +9327,7 @@ const EMPTY_LIST = Object.freeze([])
           h(PrHeader, {
             detail: detailValue || { summary },
             t,
-            onComment: selected && writeEnabled ? openCommentDialog : null,
+            onComment: selected && canComment ? openCommentDialog : null,
           }),
           selected
             ? h(ReviewCard, {
@@ -8953,6 +9408,8 @@ const EMPTY_LIST = Object.freeze([])
         h('div', { className: 'cr-layout' },
           h(PrList, {
             state: list,
+            accounts,
+            account: activeAccount,
             queryInput,
             selectedNumber: selected ? selected.number : null,
             t,
@@ -8962,7 +9419,8 @@ const EMPTY_LIST = Object.freeze([])
             onSelect: selectPr,
             onPrefetch: prefetchDetail,
             onQueryChange: setQueryInput,
-            onRefresh: () => setQuery(queryInput),
+            onAccountChange: switchAccount,
+            onRefresh: refreshView,
             onRetry: () => setQuery(queryInput + ' '),
             onClearQuery: () => {
               setQueryInput('')
@@ -8998,8 +9456,9 @@ const EMPTY_LIST = Object.freeze([])
               onGithub: openGithub,
               onReview: startReview,
               onGear: () => setSettingsOpen(true),
-              mergeEnabled: writeEnabled && mergeState.enabled,
-              mergeVisible: writeEnabled,
+              onRefresh: refreshView,
+              mergeEnabled: canMerge && mergeState.enabled,
+              mergeVisible: canMerge,
               mergeTitle,
               mergeOpen: mergeDialog.open,
               onMerge: openMerge,
@@ -9026,7 +9485,7 @@ const EMPTY_LIST = Object.freeze([])
                       review: reviewValue,
                       findingsByFile,
                       now: clock,
-                      autoReview: writeEnabled ? autoReview : { ...autoReview, supported: false },
+                      autoReview: canPublish ? autoReview : { ...autoReview, supported: false },
                       autoReviewOpen,
                       autoReviewRunBusy,
                       onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),

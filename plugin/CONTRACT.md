@@ -39,15 +39,17 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/health` | `{}` | `{ provider: "github"\|"gitlab", ok: boolean, viewer: string, gh?: "ok"\|"not-logged-in"\|"missing", llm: "ok"\|"unavailable", version: "0.12.0", capabilities: { browse, review, chat, autoReview, publish, comment, reply, resolve, merge }, labels: { item, itemFull, reviewers, checks } }` |
+| `/codex-review/health` | `{}` | `{ provider, ok, viewer, gh?, llm, version: "0.13.0", capabilities, labels, accounts: Array<{ id, type, provider, label, username, baseUrl, ok, viewer, gh?, error?, capabilities, labels }>, defaultAccount }` |
 | `/codex-review/llm-info` | `{}` | `{ selection, reasoningEffort, efforts, transport, models?, pluginConfig }`（调试路由；LLM 不可用时报 `LLM_UNAVAILABLE`） |
-| `/codex-review/prs` | `{ query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
-| `/codex-review/pr` | `{ repo, number }` | `PrDetail` |
-| `/codex-review/review-start` | `{ repo, number }` | `{ jobId, headSha, cached }` |
+| `/codex-review/prs` | `{ account?: string, query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
+| `/codex-review/pr` | `{ account?: string, repo, number }` | `PrDetail` |
+| `/codex-review/review-start` | `{ account?: string, repo, number }` | `{ jobId, headSha, cached }` |
 | `/codex-review/review-status` | `{ jobId }` | `ReviewStatus` |
 | `/codex-review/review-cancel` | `{ jobId }` | `{ cancelled: boolean }` |
 
-错误码（`code`）：`BAD_REQUEST`、`GH_MISSING`（gh 未安装）、`GH_NOT_LOGGED_IN`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_TIMEOUT`、`GH_NETWORK`、`GL_MISSING_CONFIG`、`GL_UNAUTHORIZED`、`GL_NOT_FOUND`、`GL_RATE_LIMIT`、`GL_TIMEOUT`、`GL_ABORTED`、`GL_SERVER`、`GL_NETWORK`、`PROVIDER_UNSUPPORTED`、`LLM_UNAVAILABLE`、`LLM_ERROR`、`REVIEW_TIMEOUT`、`INTERNAL`。`message` 为面向用户的中文短句（可含恢复建议）。
+`account` 为账号 id（`/accounts` 返回）；缺省使用引擎的 `legacyAccount`（默认 GitHub 账号）。审查作业与文件缓存按 `account + repo#number` 隔离。
+
+错误码（`code`）：`BAD_REQUEST`、`GH_MISSING`（gh 未安装）、`GH_NOT_LOGGED_IN`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_TIMEOUT`、`GH_NETWORK`、`GL_MISSING_CONFIG`、`GL_UNAUTHORIZED`、`GL_NOT_FOUND`、`GL_RATE_LIMIT`、`GL_TIMEOUT`、`GL_ABORTED`、`GL_SERVER`、`GL_NETWORK`、`PROVIDER_UNSUPPORTED`、`ACCOUNT_UNAVAILABLE`、`LLM_UNAVAILABLE`、`LLM_ERROR`、`REVIEW_TIMEOUT`、`INTERNAL`。`message` 为面向用户的中文短句（可含恢复建议）。
 
 ### 1.2 数据模型（JSON）
 
@@ -427,6 +429,7 @@ type ChatRequest = {
   number: number
   messages: Array<{ role: 'user' | 'assistant', content: string }> // 客户端持有历史，最后一条必须是 user
   focusFile?: string        // 可选：当前展开文件的路径，附带该文件 patch 作为上下文
+  account?: string          // 可选：账号 id；缺省使用 defaultAccount
 }
 ```
 - 服务端上下文（总预算 ≤ 24 000 字）：
@@ -650,11 +653,18 @@ type PublishRequest = {
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/comment` | `{ repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
-| `/codex-review/reply` | `{ repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
-| `/codex-review/resolve` | `{ repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
+| `/codex-review/merge` | `{ account?: string, repo, number, confirm:true, method, expectedHeadSha, ... }` | `{ merged: boolean, ... }` |
+| `/codex-review/review-publish` | `{ account?: string, repo, number, confirm:true, ... }` | `{ reviewId, url, comments, ... }` |
+| `/codex-review/comment` | `{ account?: string, repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
+| `/codex-review/reply` | `{ account?: string, repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
+| `/codex-review/resolve` | `{ account?: string, repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
+| `/codex-review/accounts` | `{}` | `{ accounts: Array<{ id, type, label, baseUrl, username, capabilities, labels }>, defaultAccount }` |
+| `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token, confirm: true }` | account list（同 `/accounts`）；`token` 必填 |
+| `/codex-review/accounts-remove` | `{ id, confirm: true }` | account list；至少保留一个账号，允许纯 GitLab |
+| `/codex-review/accounts-test` | `{ type, baseUrl?, username?, token?, confirm: true }` | `{ ok, type, viewer, error? }` |
+| `/codex-review/accounts-default` | `{ id, confirm: true }` | account list |
 
-校验顺序：`repo/number` → `confirm===true` → 其余字段（`body` 1..4000、`commentId` 正整数、`threadId` 1..200）。错误码：`BAD_REQUEST`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`GH_TIMEOUT`、`INTERNAL`。
+校验顺序：`account`（缺省 `defaultAccount`）→ `repo/number` → `confirm===true` → 其余字段（`body` 1..4000、`commentId` 正整数、`threadId` 1..200）。错误码：`BAD_REQUEST`、`ACCOUNT_UNAVAILABLE`、`PROVIDER_UNSUPPORTED`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`GH_TIMEOUT`、`INTERNAL`。
 
 ### 8.2 数据层（`lib/github.js`）
 

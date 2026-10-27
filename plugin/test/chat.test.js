@@ -181,10 +181,20 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
     focusFile: 'src/a.ts',
   })
   assert.equal(validateChatRequest({ repo: 'a/b', number: '12', messages: [message('user', 'q')] }).number, 12)
+  assert.equal(
+    validateChatRequest({ account: 'gitlab', repo: 'a/b', number: 1, messages: [message('user', 'q')] }).account,
+    'gitlab',
+  )
 
   /** @type {Array<[string, Record<string, unknown>]>} */
   const invalid = [
     ['bad repo', { repo: 'not-a-repo', number: 1, messages: [message('user', 'q')] }],
+    ['bad repo space', { repo: 'bad path/repo', number: 1, messages: [message('user', 'q')] }],
+    ['repo dot segment', { repo: 'a/../b', number: 1, messages: [message('user', 'q')] }],
+    ['repo bare dot', { repo: 'a/.', number: 1, messages: [message('user', 'q')] }],
+    ['repo bare dotdot', { repo: 'a/..', number: 1, messages: [message('user', 'q')] }],
+    ['repo bare dash', { repo: 'a/-', number: 1, messages: [message('user', 'q')] }],
+    ['repo too many segments', { repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1, messages: [message('user', 'q')] }],
     ['bad number', { repo: 'a/b', number: 0, messages: [message('user', 'q')] }],
     ['messages missing', { repo: 'a/b', number: 1 }],
     ['messages empty', { repo: 'a/b', number: 1, messages: [] }],
@@ -203,6 +213,13 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
       return true
     }, label)
   }
+  const twenty = Array.from({ length: 20 }, () => 'a').join('/')
+  assert.equal(validateChatRequest({ repo: twenty, number: 1, messages: [message('user', 'q')] }).repo, twenty)
+  assert.equal(validateChatRequest({ repo: 'a/b-c', number: 1, messages: [message('user', 'q')] }).repo, 'a/b-c')
+  assert.throws(
+    () => validateChatRequest({ repo: 'a/-b', number: 1, messages: [message('user', 'q')] }),
+    (error) => error.code === 'BAD_REQUEST',
+  )
 })
 
 test('SSE encoders emit the exact frame shapes of CONTRACT §5.2', () => {
@@ -274,6 +291,9 @@ function makeChatFlow(options = {}) {
   }
   const handle = createChatStreamHandler({
     github,
+    clients: options.clients === true ? { github } : (options.clients ?? options.accountRuntime?.clients),
+    accountRuntime: options.accountRuntime,
+    defaultAccount: options.defaultAccount,
     engine,
     streamLlm: async (request) => {
       requests.push(request)
@@ -309,6 +329,51 @@ function makeStream() {
     },
   }
 }
+
+test('the chat flow validates the repo against the resolved account provider', async () => {
+  const gitlab = {
+    async getPull() {
+      return DETAIL
+    },
+    async chatContext(input) {
+      return buildChatContext(input)
+    },
+  }
+  const accountRuntime = {
+    accounts: [{ id: 'github', type: 'github' }, { id: 'gitlab', type: 'gitlab' }],
+    clients: { github: { async getPull() { return DETAIL }, async chatContext(input) { return buildChatContext(input) } }, gitlab },
+    defaultAccount: 'github',
+  }
+  const { handle } = makeChatFlow({ accountRuntime })
+  const { stream } = makeStream()
+  await assert.rejects(
+    () => handle({ account: 'github', repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+  // GitLab nested project paths stay valid on the GitLab account.
+  const nested = makeStream()
+  await handle({ account: 'gitlab', repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, nested.stream)
+  assert.equal(JSON.parse(nested.frames.at(-1).slice(6, -2)).done, true)
+  await assert.rejects(
+    () => handle({ account: 'nope', repo: 'a/b', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+})
+
+test('the chat flow accepts a clients-only wiring without accountRuntime', async () => {
+  const { handle } = makeChatFlow({ clients: true, defaultAccount: 'github' })
+  const { stream, frames } = makeStream()
+  await handle({ repo: 'a/b', number: 1, messages: [{ role: 'user', content: 'q' }] }, stream)
+  assert.equal(JSON.parse(frames.at(-1).slice(6, -2)).done, true)
+  await assert.rejects(
+    () => handle({ repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+  await assert.rejects(
+    () => handle({ repo: 'single', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+})
 
 test('the chat flow streams deltas, carries the sessionId and ends with a done frame', async () => {
   const { handle, requests, limiter } = makeChatFlow()

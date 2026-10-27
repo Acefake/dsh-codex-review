@@ -292,6 +292,10 @@ export class AutoReviewer {
   constructor(options = {}) {
     /** GitHub data client (read-only methods only). */
     this.github = options.github
+    /** Account id this scheduler operates on; keeps review jobs account-scoped. */
+    this.account = typeof options.account === 'string'
+      ? options.account
+      : (typeof options.engine?.legacyAccount === 'string' ? options.engine.legacyAccount : 'github')
     /** Review engine shared with the manual review routes. */
     this.engine = options.engine
     /** Optional logger. */
@@ -585,7 +589,9 @@ export class AutoReviewer {
    * @param {{ force?: boolean }} [options] - start options.
    * @returns {Promise<{ started: boolean, reason?: string }>} start result.
    */
+  /** One review cycle. A profile that lost its GitHub account must not throw. */
   async runCycle(options = {}) {
+    if (this.github === undefined || this.github === null) return { started: false, reason: 'no-github-account' }
     const result = this.startCycle(options)
     if (result.promise !== undefined) await result.promise
     return { started: result.started, ...(result.reason === undefined ? {} : { reason: result.reason }) }
@@ -625,7 +631,7 @@ export class AutoReviewer {
       if (repo === '' || !Number.isInteger(number) || number <= 0) continue
       if (item?.state !== 'open') continue
       if (item?.isDraft === true && this.config.includeDrafts !== true) continue
-      if (typeof this.engine.hasActiveJob === 'function' && this.engine.hasActiveJob(repo, number) === true) continue
+      if (typeof this.engine.hasActiveJob === 'function' && this.engine.hasActiveJob(repo, number, this.account) === true) continue
       /** @type {any} */
       let detail
       try {
@@ -685,6 +691,7 @@ export class AutoReviewer {
       const started = this.engine.start({
         repo,
         number,
+        account: this.account,
         headSha,
         title: detail?.summary?.title,
         body: detail?.body,
@@ -722,6 +729,7 @@ export class AutoReviewer {
         // reviewed — never a historical head, never a backfill (CONTRACT §7.2 #8).
         try {
           const published = await this.publisher.publish({
+            account: this.account,
             repo,
             number,
             confirm: true,

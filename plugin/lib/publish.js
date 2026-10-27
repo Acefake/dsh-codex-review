@@ -411,6 +411,21 @@ function reviewUrl(created, repo, number, reviewId) {
 }
 
 /**
+ * Store keys for one publish, scoped to the account when one is known.
+ * @param {string} account - account id ('' for legacy single-account data).
+ * @param {string} repo - `owner/name`.
+ * @param {number} number - PR number.
+ * @param {string} headSha - head commit.
+ * @returns {{ prKey: string, headKey: string }} rolling and per-head keys.
+ */
+export function publishRecordKeys(account, repo, number, headSha) {
+  const id = typeof account === 'string' ? account.trim() : ''
+  const scope = id === 'github' ? '' : id
+  const prefix = scope !== '' ? `${scope}|` : ''
+  return { prKey: `${prefix}${repo}#${number}`, headKey: `${prefix}${repo}#${number}@${headSha}` }
+}
+
+/**
  * Hash of everything one publish was asked to write (mode, severity, cap and
  * custom body). The head record stores it so a repeat request replays even when
  * the recomputed content differs only because GitHub now has more markers.
@@ -466,6 +481,8 @@ export class ReviewPublisher {
   constructor(options = {}) {
     this.github = options.github
     this.engine = options.engine
+    /** Account that may read pre-account publish records. */
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
     this.store = options.store ?? { get: () => undefined, set: () => {} }
     this.logger = options.logger
     this.now = options.now ?? Date.now
@@ -550,10 +567,13 @@ export class ReviewPublisher {
     // instead of racing the store record (CONTRACT §7.2 #6). Different heads of
     // the same PR are serialized too, because both may update the same rolling
     // summary review.
-    const key = `${repo}#${number}@${headSha}`
+    const account = typeof input.account === 'string' && input.account.trim() !== ''
+      ? input.account.trim()
+      : this.legacyAccount
+    const key = publishRecordKeys(account, repo, number, headSha).headKey
     const pending = this.inflight.get(key)
     if (pending !== undefined) return pending
-    const prKey = `${repo}#${number}`
+    const prKey = publishRecordKeys(account, repo, number, headSha).prKey
     const previous = this.prLocks.get(prKey) ?? Promise.resolve()
 
     const controller = new AbortController()
@@ -584,6 +604,7 @@ export class ReviewPublisher {
       }, PUBLISH_TIMEOUT_MS)
       if (typeof timer.unref === 'function') timer.unref()
       return this.publishForPull({
+        account,
         repo,
         number,
         headSha,
@@ -625,14 +646,18 @@ export class ReviewPublisher {
    */
   async publishForPull(input) {
     const { repo, number, headSha, review, mode, minSeverity, maxComments, customBody, signal } = input
-    const prKey = `${repo}#${number}`
-    const headKey = `${repo}#${number}@${headSha}`
+    const account = typeof input.account === 'string' && input.account.trim() !== ''
+      ? input.account.trim()
+      : this.legacyAccount
+    const { prKey, headKey } = publishRecordKeys(account, repo, number, headSha)
     const requestKey = publishRequestKey({ mode, minSeverity, maxComments, body: customBody })
 
     // A repeat of the same request for the same head answers from the record and
     // performs no GitHub read at all (CONTRACT §7.2 #6). The check runs before
     // the marker read on purpose: a double click must not pay for a round trip.
-    const recorded = this.store.get(headKey)
+    // Read the account-scoped key first, then a pre-account upgrade record.
+    const recorded = this.store.get(headKey) ??
+      (account !== '' && account === this.legacyAccount ? this.store.get(`${repo}#${number}@${headSha}`) : undefined)
     if (isReplayableHead(recorded, requestKey)) {
       const replay = filterPublishableFindings(review.findings, { minSeverity, maxComments })
       return replayResult(recorded, replay.selected.length + replay.overLimit, headSha, 'unchanged')
@@ -661,7 +686,8 @@ export class ReviewPublisher {
 
     // The new head produced exactly the content already on GitHub: keep the
     // head↔review pointer fresh but do not touch GitHub (CONTRACT §7.2 #6).
-    const rolling = this.store.get(prKey)
+    const rolling = this.store.get(prKey) ??
+      (account !== '' && account === this.legacyAccount ? this.store.get(`${repo}#${number}`) : undefined)
     if (isReplayable(rolling, fingerprint)) {
       this.persistRecords([{ key: headKey, record: { publishedAt: this.now(), reviewId: rolling.reviewId, url: rolling.url, fingerprint, request: requestKey } }])
       return replayResult(rolling, prepared.selected.length + prepared.overLimit, headSha, 'unchanged')

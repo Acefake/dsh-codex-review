@@ -1032,6 +1032,7 @@ test('review-publish requires confirm and forwards the normalized options', asyn
   assert.ok(forwarded.signal !== undefined, 'the publish carries the route abort signal')
   const { signal, ...options } = forwarded
   assert.deepEqual(options, {
+    account: 'github',
     repo: 'Acefake/yingbox',
     number: 129,
     confirm: true,

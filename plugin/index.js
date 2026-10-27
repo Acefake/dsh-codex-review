@@ -19,6 +19,19 @@ import {
   REPO_RE,
 } from './lib/github.js'
 import { GITLAB_REPO_RE, GitLabClient, isValidGitlabRepo } from './lib/gitlab.js'
+import {
+  accountTokenInput,
+  accountTokenPath,
+  accountsFilePath,
+  legacyAccounts,
+  loadAccountStore,
+  makeAccountId,
+  normalizeAccountInput,
+  readAccountToken,
+  removeAccountToken,
+  saveAccountStore,
+  writeAccountToken,
+} from './lib/accounts.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
 import { dirname, join } from 'node:path'
@@ -29,6 +42,7 @@ import {
   PUBLISH_SUMMARY_MAX_CHARS,
   PUBLISH_TIMEOUT_MS,
   ReviewPublisher,
+  publishRecordKeys,
 } from './lib/publish.js'
 import { ROUTE_PREFIX, createChatRouteHandler, createJsonRouteHandler } from './lib/http.js'
 import {
@@ -50,7 +64,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.12.0'
+export const VERSION = '0.13.0'
 
 /**
  * Capabilities of one data source. This release keeps write operations on
@@ -79,6 +93,98 @@ export const PROVIDER_LABELS = Object.freeze({
   gitlab: Object.freeze({ item: 'MR', itemFull: 'Merge Request', reviewers: 'Approvals', checks: 'Pipelines' }),
 })
 
+/**
+ * Resolve the accounts the profile should expose: the saved store when it has
+ * entries, otherwise the legacy single GitHub + optional GitLab pair.
+ * @param {any} config - resolved config.
+ * @param {{ accounts?: Array<any> }} [store] - loaded account store.
+ * @returns {Array<any>} account descriptors.
+ */
+export function resolveAccounts(config, store) {
+  const saved = Array.isArray(store?.accounts) ? store.accounts : []
+  // An existing store (even with zero accounts) replaces the legacy fallback.
+  if (store?.present === true) return saved
+  return saved.length > 0 ? saved : legacyAccounts(config)
+}
+
+/**
+ * A client whose account has no usable credential. Every operation fails with a
+ * stable code instead of silently falling back to another account's identity.
+ * @param {string} reason - user-facing explanation.
+ * @returns {any} unavailable client proxy.
+ */
+function unavailableClient(reason) {
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === 'unavailable') return true
+      if (property === 'reason') return reason
+      if (property === 'status') return async () => ({ ok: false, viewer: '', error: 'ACCOUNT_UNAVAILABLE' })
+      if (property === 'ghStatus') return async () => 'missing'
+      if (property === 'dispose') return () => {}
+      return () => {
+        throw new AppError('ACCOUNT_UNAVAILABLE', reason)
+      }
+    },
+  })
+}
+
+/**
+ * Build one client per configured account. GitHub accounts honour an explicit
+ * token from secrets; GitLab accounts get the store's base URL plus their token.
+ * Only the legacy default `github` account may fall back to the host `gh`/env
+ * identity; every other account without a token is marked unavailable instead
+ * of borrowing another account's credentials.
+ * @param {any} config - resolved config.
+ * @param {any} logger - host logger.
+ * @param {any} [githubOverride] - injected GitHub client (tests, single GitHub account).
+ * @param {Array<any>} [accounts] - account descriptors; falls back to legacy config.
+ * @returns {Record<string, any>} clients keyed by account id.
+ */
+export function buildClients(config, logger, githubOverride, accounts, tokenReader = readAccountToken) {
+  const list = Array.isArray(accounts) ? accounts : legacyAccounts(config)
+  /** @type {Record<string, any>} */
+  const clients = {}
+  let githubOverrideUsed = false
+  const readToken = (id) => {
+    try {
+      return { token: tokenReader(id), error: '' }
+    } catch (error) {
+      return { token: '', error: error?.message || '读取 Token 失败' }
+    }
+  }
+  for (const account of list) {
+    if (account.type === 'gitlab') {
+      const stored = readToken(account.id)
+      const token = stored.token || (account.id === 'gitlab' ? config.gitlabToken : '')
+      const baseUrl = account.id === 'gitlab' ? (account.baseUrl || config.gitlabBaseUrl || '') : account.baseUrl
+      clients[account.id] = stored.error !== ''
+        ? unavailableClient(stored.error)
+        : (token === ''
+            ? unavailableClient(`${account.label || account.id} 缺少 Token`)
+            : (baseUrl === ''
+                ? unavailableClient(`${account.label || account.id} 缺少地址`)
+                : new GitLabClient({ config: { ...config, gitlabBaseUrl: baseUrl, gitlabToken: token }, logger })))
+      continue
+    }
+    const stored = readToken(account.id)
+    if (githubOverride !== undefined && account.id === 'github') {
+      githubOverrideUsed = true
+      clients[account.id] = githubOverride
+      continue
+    }
+    clients[account.id] = stored.error !== ''
+      ? unavailableClient(stored.error)
+      : (stored.token === '' && account.id !== 'github'
+          ? unavailableClient(`${account.label || account.id} 缺少 Token`)
+          : new GitHubClient({
+              config,
+              logger,
+              ...(stored.token === '' ? {} : { token: stored.token }),
+            }))
+  }
+  return clients
+}
+
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
 
@@ -102,6 +208,11 @@ const PATHS = Object.freeze({
   comment: `${ROUTE_PREFIX}/comment`,
   reply: `${ROUTE_PREFIX}/reply`,
   resolve: `${ROUTE_PREFIX}/resolve`,
+  accounts: `${ROUTE_PREFIX}/accounts`,
+  accountsAdd: `${ROUTE_PREFIX}/accounts-add`,
+  accountsRemove: `${ROUTE_PREFIX}/accounts-remove`,
+  accountsTest: `${ROUTE_PREFIX}/accounts-test`,
+  accountsDefault: `${ROUTE_PREFIX}/accounts-default`,
 })
 
 /**
@@ -246,55 +357,127 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     return llmFace.info()
   }
 
-  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
-  const capabilities = providerCapabilities(dataSource)
-  const github = deps.github ?? (dataSource === 'gitlab'
-    ? new GitLabClient({ config, logger })
-    : new GitHubClient({ config, logger }))
+  // Tests inject clients; never let them read the real profile's account store.
+  const store = deps.store ?? ((deps.github !== undefined || deps.clients !== undefined || deps.store !== undefined)
+    ? { accounts: [], defaultAccount: '' }
+    : loadAccountStore())
+  const accountList = resolveAccounts(config, store)
+  const clients = deps.clients ?? buildClients(config, logger, deps.github, accountList)
+  const defaultAccount = (() => {
+    const saved = accountList.find((account) => account.id === store.defaultAccount)
+    if (saved !== undefined) return saved.id
+    const bySource = config.dataSource === 'gitlab'
+      ? accountList.find((account) => account.type === 'gitlab')
+      : accountList.find((account) => account.type === 'github')
+    return (bySource ?? accountList[0])?.id ?? ''
+  })()
+  /**
+   * Mutable account runtime shared with the routes: add/remove rebuilds the
+   * client map in place so every route keeps seeing the current accounts.
+   */
+  const accountRuntime = {
+    store,
+    accounts: accountList,
+    clients,
+    githubOverride: deps.github,
+    defaultAccount,
+    rebuild() {
+      const next = buildClients(config, logger, accountRuntime.githubOverride, accountRuntime.accounts)
+      for (const key of Object.keys(accountRuntime.clients)) delete accountRuntime.clients[key]
+      Object.assign(accountRuntime.clients, next)
+      const current = accountRuntime.accounts.find((account) => account.id === accountRuntime.defaultAccount)
+      const saved = accountRuntime.accounts.find((account) => account.id === accountRuntime.store?.defaultAccount)
+      const first = accountRuntime.accounts.find(
+        (account) => accountRuntime.clients[account.id] !== undefined && accountRuntime.clients[account.id]?.unavailable !== true,
+      )
+      accountRuntime.defaultAccount = (current ?? saved ?? first)?.id ?? ''
+      accountRuntime.onRebuild?.()
+    },
+    onRebuild: undefined,
+  }
+  const primaryGithubAccount = accountList.find(
+    (account) => account.type === 'github' && clients[account.id]?.unavailable !== true,
+  )
+  const github = primaryGithubAccount === undefined ? undefined : clients[primaryGithubAccount.id]
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
+    legacyAccount: primaryGithubAccount?.id ?? defaultAccount,
   })
   /** Concurrent chat streams allowed by CONTRACT §5.2. */
   const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
-  /** Background automatic reviewer (CONTRACT §6); disabled by default. */
-  const reviewer = deps.reviewer ?? new AutoReviewer({ github, engine, logger })
+  // Auto-review and publishing are GitHub-only and bound to one account; with
+  // no usable GitHub account they stay undefined until one is added.
+  let reviewer = deps.reviewer ?? (primaryGithubAccount === undefined ? undefined : new AutoReviewer({
+    github, engine, logger, account: primaryGithubAccount.id,
+  }))
   /**
    * Publish flow shared by the manual route and the automatic reviewer
    * (CONTRACT §7.2). Per-head and rolling-summary publish records live inside
    * the auto-review state file, so a restarted Host remembers which heads were
    * already published and which review to update in place.
    */
-  const publisher = deps.publisher ?? new ReviewPublisher({
-    github,
+  const makePublisher = (client, accountId) => new ReviewPublisher({
+    github: client,
     engine,
     logger,
+    legacyAccount: accountId ?? '',
     store: {
-      get: (key) => (typeof reviewer.getPublished === 'function' ? reviewer.getPublished(key) : undefined),
+      get: (key) => (typeof reviewer?.getPublished === 'function' ? reviewer.getPublished(key) : undefined),
       set: (key, record) => {
-        if (typeof reviewer.setPublished === 'function') reviewer.setPublished(key, record)
+        if (typeof reviewer?.setPublished === 'function') reviewer.setPublished(key, record)
       },
       setMany: (entries) => {
-        if (typeof reviewer.setPublishedMany === 'function') reviewer.setPublishedMany(entries)
+        if (typeof reviewer?.setPublishedMany === 'function') reviewer.setPublishedMany(entries)
       },
     },
   })
-  if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
-  // GitLab 只读：后台自动审查/自动发布不能绕过路由层的能力位。
-  if (!capabilities.autoReview && typeof reviewer.updateConfig === 'function') {
-    try {
-      reviewer.updateConfig({ enabled: false })
-    } catch {
-      // A test double or a persisted config that refuses the patch: the route
-      // guards below still reject explicit enable attempts.
+  let publisher = deps.publisher ?? (primaryGithubAccount === undefined ? undefined : makePublisher(github, primaryGithubAccount.id))
+  if (typeof reviewer?.setPublisher === 'function') reviewer.setPublisher(publisher)
+  // Rebuilt account clients must also replace the GitHub-bound scheduler/publisher
+  // clients; a profile that starts without GitHub can create them lazily.
+  accountRuntime.onRebuild = () => {
+    const primary = accountRuntime.accounts.find(
+      (account) => account.type === 'github' && accountRuntime.clients[account.id]?.unavailable !== true,
+    )
+    if (primary === undefined) {
+      try {
+        reviewer?.updateConfig?.({ enabled: false })
+      } catch {
+        // If the scheduler cannot be paused, dispose it so it cannot run empty.
+        reviewer?.dispose?.()
+      }
+      if (reviewer !== null && typeof reviewer === 'object') {
+        reviewer.github = undefined
+        reviewer.account = ''
+      }
+      if (engine !== null && typeof engine === 'object') engine.legacyAccount = ''
+      if (publisher !== null && typeof publisher === 'object') publisher.github = undefined
+      return
     }
+    const client = accountRuntime.clients[primary.id]
+    if (reviewer === undefined) {
+      reviewer = new AutoReviewer({ github: client, engine, logger, account: primary.id })
+    } else {
+      reviewer.github = client
+      reviewer.account = primary.id
+    }
+    if (publisher === undefined) publisher = makePublisher(client, primary.id)
+    else publisher.github = client
+    if (publisher !== null && typeof publisher === 'object') publisher.legacyAccount = primary.id
+    if (engine !== null && typeof engine === 'object') engine.legacyAccount = primary.id
+    if (typeof reviewer?.setPublisher === 'function') reviewer.setPublisher(publisher)
   }
   const routes = createRoutes({
     config,
+    clients,
+    accountRuntime,
+    defaultAccount,
     github,
     engine,
-    reviewer,
-    publisher,
+    saveStore: deps.store !== undefined ? () => {} : saveAccountStore,
+    getReviewer: () => reviewer,
+    getPublisher: () => publisher,
     logger,
     llmAvailable: () => llmFace !== undefined,
     llmInfo,
@@ -309,6 +492,9 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const chatHandler = createChatRouteHandler({
     handle: createChatStreamHandler({
       github,
+      clients,
+      accountRuntime,
+      defaultAccount: () => accountRuntime.defaultAccount,
       engine,
       streamLlm,
       llmAvailable: () => llmFace !== undefined,
@@ -331,10 +517,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   ctx.effect(() => () => engine.dispose(), 'dsh-codex-review: review engine')
   // A plugin dispose must stop every live chat stream, not just its listeners.
   ctx.effect(() => () => chatLimiter.abortAll(new AppError('INTERNAL', '插件已卸载')), 'dsh-codex-review: chat streams')
-  ctx.effect(() => () => reviewer.dispose(), 'dsh-codex-review: auto-review scheduler')
+  ctx.effect(() => () => reviewer?.dispose?.(), 'dsh-codex-review: auto-review scheduler')
   // Drop pending publish locks so a reload never leaves callers chained forever.
   ctx.effect(() => () => {
-    if (typeof publisher.dispose === 'function') publisher.dispose()
+    publisher?.dispose?.()
   }, 'dsh-codex-review: review publisher')
 }
 
@@ -349,7 +535,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
  * @returns {(payload: Record<string, unknown>, stream: { signal: AbortSignal, send: (frame: string) => void, end: () => void, clientGone: () => boolean }) => Promise<void>} the chat flow.
  */
 export function createChatStreamHandler(wiring) {
-  const { github, engine, streamLlm, llmAvailable, config, limiter } = wiring
+  const { github, clients, accountRuntime, defaultAccount, engine, streamLlm, llmAvailable, config, limiter } = wiring
   const callTimeoutMs = Number.isFinite(wiring.callTimeoutMs) && wiring.callTimeoutMs > 0 ? wiring.callTimeoutMs : CHAT_CALL_TIMEOUT_MS
 
   /**
@@ -388,10 +574,23 @@ export function createChatStreamHandler(wiring) {
       else stream.signal.addEventListener('abort', linkAbort, { once: true })
       unlinkAbort = () => stream.signal.removeEventListener('abort', linkAbort)
 
-      const detail = await github.getPull(request.repo, request.number)
+      const requestedAccount = typeof request.account === 'string' ? request.account.trim() : ''
+      const fallbackAccount = typeof defaultAccount === 'function' ? defaultAccount() : defaultAccount
+      const accountId = requestedAccount !== '' ? requestedAccount : fallbackAccount
+      const runtimeClients = accountRuntime?.clients
+      const client = runtimeClients !== undefined ? runtimeClients[accountId] : (clients !== undefined ? clients[accountId] : github)
+      if (client === undefined) throw badRequest(`未知账号：${accountId}`)
+      if (client.unavailable === true) throw new AppError('ACCOUNT_UNAVAILABLE', client.reason)
+      const meta = accountRuntime?.accounts?.find((entry) => entry.id === accountId)
+      const accountType = meta?.type === 'gitlab' ? 'gitlab' : 'github'
+      const repoValid = accountType === 'gitlab' ? isValidGitlabRepo(request.repo) : REPO_RE.test(request.repo)
+      if (!repoValid) {
+        throw badRequest(accountType === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
+      }
+      const detail = await client.getPull(request.repo, request.number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
-      const review = engine.existing(request.repo, request.number, headSha)
-      const context = await github.chatContext({
+      const review = engine.existing(request.repo, request.number, headSha, accountId)
+      const context = await client.chatContext({
         repo: request.repo,
         number: request.number,
         focusFile: request.focusFile,
@@ -464,23 +663,130 @@ export function createChatStreamHandler(wiring) {
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
+  const { config, clients, accountRuntime, defaultAccount, github, engine, llmAvailable, llmInfo, version = VERSION } = wiring
+  // The scheduler/publisher can be created lazily after an account is added, so
+  // routes must read them through accessors instead of a construction snapshot.
+  const getReviewer = typeof wiring.getReviewer === 'function' ? wiring.getReviewer : () => wiring.reviewer
+  const getPublisher = typeof wiring.getPublisher === 'function' ? wiring.getPublisher : () => wiring.publisher
+  /** A missing writer keeps tests and fallback runtimes away from the real profile. */
+  const saveStore = typeof wiring.saveStore === 'function' ? wiring.saveStore : null
+  const tokenWriter = typeof wiring.tokenWriter === 'function' ? wiring.tokenWriter : writeAccountToken
+  const tokenRemover = typeof wiring.tokenRemover === 'function' ? wiring.tokenRemover : removeAccountToken
+  const runtime = accountRuntime ?? (() => {
+    const fallbackAccounts = clients !== undefined
+      ? Object.entries(clients).map(([id]) => ({ id, type: id, label: id, baseUrl: '', username: '' }))
+      : (github !== undefined
+          ? [{ id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' }]
+          : [])
+    const fallbackClients = clients ?? (github !== undefined ? { github } : {})
+    return {
+      accounts: fallbackAccounts,
+      clients: fallbackClients,
+      defaultAccount: defaultAccount ?? fallbackAccounts[0]?.id ?? '',
+      store: { accounts: [], defaultAccount: defaultAccount ?? '', present: false },
+      rebuild() {},
+    }
+  })()
 
-  /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number }>} */
+  /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number, account: string }>} */
   const jobRefs = new Map()
-
-  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
-  const capabilities = providerCapabilities(dataSource)
-  const labels = PROVIDER_LABELS[dataSource]
-  const repoPattern = dataSource === 'gitlab' ? GITLAB_REPO_RE : REPO_RE
+  /** The GitHub account the bound auto-review/publish pair may write through. */
+  const currentPrimaryGithub = () => runtime.accounts.find(
+    (account) => account.type === 'github' && runtime.clients[account.id]?.unavailable !== true,
+  )
 
   /**
-   * Reject a write operation the active data source cannot perform.
+   * Resolve the account a route acts on. An explicit `account` wins; otherwise
+   * the profile default is used, so single-account callers keep working.
+   * @param {Record<string, unknown>} payload - parsed request body.
+   * @returns {{ id: string, type: 'github' | 'gitlab', label: string, client: any, capabilities: ReturnType<typeof providerCapabilities>, labels: any }} resolved account.
+   * @throws {AppError} BAD_REQUEST for an unknown account id.
+   */
+  const resolveAccount = (payload) => {
+    const requested = payload !== null && typeof payload === 'object' && typeof payload.account === 'string'
+      ? payload.account.trim()
+      : ''
+    const id = requested !== '' ? requested : runtime.defaultAccount
+    if (runtime.accounts.length === 0) throw new AppError('ACCOUNT_UNAVAILABLE', '还没有配置任何账号')
+    const client = runtime.clients[id]
+    if (client === undefined) throw badRequest(`未知账号：${id}`)
+    if (client.unavailable === true) throw new AppError('ACCOUNT_UNAVAILABLE', client.reason)
+    const meta = runtime.accounts.find((entry) => entry.id === id) ?? { id, type: id, label: id }
+    const type = meta.type === 'gitlab' ? 'gitlab' : 'github'
+    return { id, type, label: meta.label, client, capabilities: providerCapabilities(type), labels: PROVIDER_LABELS[type] }
+  }
+
+  /** Return the public account list (never includes tokens). */
+  const accountListValue = () => ({
+    accounts: runtime.accounts.map((account) => {
+      const type = account.type === 'gitlab' ? 'gitlab' : 'github'
+      const primary = currentPrimaryGithub()
+      const capabilities = type === 'github'
+        ? { ...providerCapabilities('github'), publish: primary?.id === account.id, autoReview: primary?.id === account.id }
+        : providerCapabilities('gitlab')
+      return {
+        id: account.id,
+        type: account.type,
+        label: account.label,
+        baseUrl: account.baseUrl,
+        username: account.username,
+        capabilities,
+        labels: PROVIDER_LABELS[type],
+      }
+    }),
+    defaultAccount: runtime.defaultAccount,
+  })
+
+  /** Persist the current runtime accounts and default. */
+  const persistAccounts = (previous) => {
+    if (saveStore === null) {
+      runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
+      return
+    }
+    try {
+      saveStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
+      runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
+    } catch (error) {
+      // A failed write must roll the in-memory account list back to disk.
+      /** @type {any} */
+      let reloaded
+      try {
+        reloaded = loadAccountStore()
+      } catch {
+        reloaded = undefined
+      }
+      const restored = reloaded ?? previous
+      if (restored !== undefined) {
+        runtime.accounts = restored.accounts.slice()
+        runtime.defaultAccount = restored.defaultAccount
+        runtime.store = { ...restored, present: true }
+        runtime.rebuild()
+      }
+      throw error
+    }
+  }
+
+  /** Auto-review config is GitHub-backed; an explicitly non-GitHub account is rejected. */
+  const assertAutoReviewAccount = (payload) => {
+    const requested = payload !== null && typeof payload === 'object' && typeof payload.account === 'string'
+      ? payload.account.trim()
+      : ''
+    if (requested === '') return
+    const meta = runtime.accounts.find((account) => account.id === requested)
+    if (meta === undefined) throw badRequest(`未知账号：${requested}`)
+    if (meta.type !== 'github' || meta.id !== currentPrimaryGithub()?.id) {
+      throw new AppError('PROVIDER_UNSUPPORTED')
+    }
+  }
+
+  /**
+   * Reject a write operation the account cannot perform.
+   * @param {ReturnType<typeof providerCapabilities>} capabilities - account flags.
    * @param {keyof ReturnType<typeof providerCapabilities>} capability - capability flag.
    * @returns {void}
    * @throws {AppError} PROVIDER_UNSUPPORTED when the flag is off.
    */
-  const requireWrite = (capability) => {
+  const requireWrite = (capabilities, capability) => {
     if (!capabilities[capability]) throw new AppError('PROVIDER_UNSUPPORTED')
   }
 
@@ -495,12 +801,16 @@ export function createRoutes(wiring) {
    * @param {number} number - PR number.
    * @returns {void}
    */
-  const autoPublishAfterReview = (jobId, repo, number) => {
-    if (!capabilities.publish) return
-    if (typeof engine.waitForCompletion !== 'function' || typeof publisher?.publish !== 'function') return
+  const autoPublishAfterReview = (jobId, repo, number, accountId) => {
+    const account = runtime.accounts.find((entry) => entry.id === accountId)
+    if (account?.type !== 'github') return
+    const primary = currentPrimaryGithub()
+    if (primary === undefined || accountId !== primary.id) return
+    const publisherNow = getPublisher()
+    if (typeof engine.waitForCompletion !== 'function' || typeof publisherNow?.publish !== 'function') return
     const isEnabled = () => {
       try {
-        return reviewer?.status?.()?.publish?.enabled === true
+        return getReviewer()?.status?.()?.publish?.enabled === true
       } catch {
         return false
       }
@@ -516,9 +826,10 @@ export function createRoutes(wiring) {
           logger?.warn?.(`dsh-codex-review: auto publish skipped ${repo}#${number}: review is partial`)
           return
         }
-        const publishConfig = reviewer?.status?.()?.publish
+        const publishConfig = getReviewer()?.status?.()?.publish
         if (publishConfig?.enabled !== true) return
-        await publisher.publish({
+        await publisherNow.publish({
+          account: accountId,
           repo,
           number,
           confirm: true,
@@ -555,13 +866,14 @@ export function createRoutes(wiring) {
    * @throws {AppError} BAD_REQUEST for a malformed repo or number.
    */
   const requirePullRef = (payload) => {
+    const account = resolveAccount(payload)
     const repo = requireString(payload, 'repo', 'repo')
-    const validRepo = dataSource === 'gitlab' ? isValidGitlabRepo(repo) : repoPattern.test(repo)
-    if (!validRepo) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
+    const validRepo = account.type === 'gitlab' ? isValidGitlabRepo(repo) : REPO_RE.test(repo)
+    if (!validRepo) throw badRequest(account.type === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
-    return { repo, number }
+    return { id: account.id, type: account.type, repo, number }
   }
 
   /**
@@ -575,11 +887,12 @@ export function createRoutes(wiring) {
    * @param {any} detail - fetched detail.
    * @returns {any} detail plus `review` (and `review.published` when recorded).
    */
-  const withReview = (repo, number, detail) => {
+  const withReview = (repo, number, detail, account = '') => {
     const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
-    const review = engine.existing(repo, number, headSha)
-    if (headSha === '' || typeof reviewer?.getPublished !== 'function') return { ...detail, review }
-    const record = reviewer.getPublished(`${repo}#${number}@${headSha}`)
+    const review = engine.existing(repo, number, headSha, account)
+    const reviewerNow = getReviewer()
+    if (headSha === '' || typeof reviewerNow?.getPublished !== 'function') return { ...detail, review }
+    const record = reviewerNow.getPublished(publishRecordKeys(account, repo, number, headSha).headKey)
     if (record === undefined || record === null) return { ...detail, review }
     return { ...detail, review: { ...review, published: { ...record, headSha } } }
   }
@@ -603,37 +916,84 @@ export function createRoutes(wiring) {
 
   return {
     [PATHS.health]: async () => {
-      /** @type {any} */
-      let status
-      if (dataSource === 'github') {
-        // Keep the three-state answer: missing vs not-logged-in is actionable.
-        let gh = 'missing'
-        try {
-          gh = await github.ghStatus()
-        } catch {
-          gh = 'not-logged-in'
+      /** @type {Array<any>} */
+      const accounts = []
+      for (const meta of runtime.accounts) {
+        const id = meta.id
+        const type = meta.type === 'gitlab' ? 'gitlab' : 'github'
+        const client = runtime.clients[id]
+        if (client === undefined) continue
+        const accountCapabilities = providerCapabilities(type)
+        const accountLabels = PROVIDER_LABELS[type]
+        const primary = currentPrimaryGithub()
+        const capabilities = type === 'github'
+          ? {
+              ...accountCapabilities,
+              // Publishing/auto-review are bound to the primary GitHub client.
+              publish: primary?.id === id,
+              autoReview: primary?.id === id,
+            }
+          : accountCapabilities
+        /** @type {Record<string, unknown>} */
+        const entry = {
+          id,
+          type,
+          provider: type,
+          label: meta.label,
+          username: meta.username,
+          baseUrl: meta.baseUrl,
+          ok: false,
+          viewer: '',
+          capabilities,
+          labels: accountLabels,
         }
-        status = { ok: gh === 'ok', viewer: '', gh }
-      } else {
-        try {
-          status = await github.status()
-        } catch {
-          status = { ok: false, viewer: '', error: 'GL_NETWORK' }
+        if (client.unavailable === true) {
+          entry.error = client.reason || 'ACCOUNT_UNAVAILABLE'
+          accounts.push(entry)
+          continue
         }
+        if (type === 'github') {
+          let gh = 'missing'
+          try {
+            gh = await client.ghStatus()
+          } catch {
+            gh = 'not-logged-in'
+          }
+          entry.ok = gh === 'ok'
+          entry.gh = gh
+          if (entry.ok) {
+            try {
+              entry.viewer = await client.getAuthenticatedUser()
+            } catch {
+              entry.viewer = ''
+            }
+          }
+        } else {
+          try {
+            const accountStatus = await client.status()
+            entry.ok = accountStatus.ok === true
+            entry.viewer = accountStatus.viewer || meta.username || ''
+            if (typeof accountStatus.error === 'string') entry.error = accountStatus.error
+          } catch {
+            entry.error = 'GL_NETWORK'
+          }
+        }
+        accounts.push(entry)
       }
-      /** @type {Record<string, unknown>} */
-      const value = {
-        provider: dataSource,
-        ok: status.ok === true,
-        viewer: status.viewer || config.viewerLogin || '',
+      const primary = accounts.find((entry) => entry.id === runtime.defaultAccount) ?? accounts[0]
+      return {
+        provider: primary.provider,
+        ok: primary.ok,
+        viewer: primary.viewer,
         llm: llmAvailable() ? 'ok' : 'unavailable',
         version,
-        capabilities,
-        labels,
+        capabilities: primary.capabilities,
+        labels: primary.labels,
+        accounts,
+        defaultAccount: runtime.defaultAccount,
+        ...(primary.gh !== undefined ? { gh: primary.gh } : {}),
+        ...(primary.error !== undefined ? { error: primary.error } : {}),
       }
-      if (dataSource === 'github') value.gh = status.gh
-      if (typeof status.error === 'string') value.error = status.error
-      return value
     },
 
     [PATHS.llmInfo]: async () => {
@@ -652,34 +1012,37 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.prs]: async (payload) => {
+      const account = resolveAccount(payload)
       const query = typeof payload.query === 'string' && payload.query.trim() !== '' ? payload.query.trim() : config.defaultQuery
       const rawLimit = payload.limit
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(100, Math.max(1, Math.floor(rawLimit)))
         : config.limit
-      return github.listPullRequests({ query, limit })
+      return account.client.listPullRequests({ query, limit })
     },
 
     [PATHS.pr]: async (payload) => {
-      const { repo, number } = requirePullRef(payload)
-      const detail = await github.getPull(repo, number)
-      return withReview(repo, number, detail)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      const detail = await account.client.getPull(repo, number)
+      return withReview(repo, number, detail, accountId)
     },
 
     [PATHS.reviewStart]: async (payload, context) => {
-      const { repo, number } = requirePullRef(payload)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
       if (!engine.available()) throw new AppError('LLM_UNAVAILABLE')
       // Resolve the v1.1 options here as well so the guideline fetch happens
       // only when requested; the engine resolves the same values internally.
-      const shared = reviewer?.status?.()?.config ?? {}
+      const shared = getReviewer()?.status?.()?.config ?? {}
       const options = resolveReviewOptions({ ...shared, ...(payload.options ?? {}) }, config)
-      const detail = await github.getPull(repo, number)
+      const detail = await account.client.getPull(repo, number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')
       let guidelines
-      if (options.includeGuidelines && typeof github.getGuidelines === 'function') {
+      if (options.includeGuidelines && typeof account.client.getGuidelines === 'function') {
         try {
-          guidelines = await github.getGuidelines(repo, { signal: context?.signal })
+          guidelines = await account.client.getGuidelines(repo, { signal: context?.signal })
         } catch {
           // Guidelines are an enhancement: never let them block the review.
           guidelines = undefined
@@ -688,6 +1051,7 @@ export function createRoutes(wiring) {
       const started = engine.start({
         repo,
         number,
+        account: accountId,
         headSha,
         title: detail?.summary?.title,
         body: detail?.body,
@@ -697,12 +1061,12 @@ export function createRoutes(wiring) {
         options,
         guidelines,
       })
-      jobRefs.set(started.jobId, { repo, number })
+      jobRefs.set(started.jobId, { repo, number, account: accountId })
       if (jobRefs.size > 200) {
         const oldest = jobRefs.keys().next()
         if (oldest.done !== true) jobRefs.delete(oldest.value)
       }
-      autoPublishAfterReview(started.jobId, repo, number)
+      autoPublishAfterReview(started.jobId, repo, number, accountId)
       return {
         jobId: started.jobId,
         headSha: started.headSha,
@@ -715,10 +1079,11 @@ export function createRoutes(wiring) {
       const jobId = requireString(payload, 'jobId', 'jobId')
       const status = engine.status(jobId)
       const ref = jobRefs.get(jobId)
-      if (ref === undefined || typeof reviewer?.getPublished !== 'function') return status
+      const reviewerNow = getReviewer()
+      if (ref === undefined || typeof reviewerNow?.getPublished !== 'function') return status
       const headSha = typeof status?.headSha === 'string' ? status.headSha : ''
       if (headSha === '') return status
-      const record = reviewer.getPublished(`${ref.repo}#${ref.number}@${headSha}`)
+      const record = reviewerNow.getPublished(publishRecordKeys(ref.account, ref.repo, ref.number, headSha).headKey)
       if (record === undefined || record === null) return status
       // Lets the workbench show the "already published" badge as soon as the
       // auto-publish (or a manual publish) completed, without reloading the PR.
@@ -731,8 +1096,9 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.merge]: async (payload) => {
-      requireWrite('merge')
-      const { repo, number } = requirePullRef(payload)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'merge')
       // Guard 1: a write operation always needs an explicit confirmation.
       if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
       const method = typeof payload.method === 'string' ? payload.method.trim().toLowerCase() : ''
@@ -746,7 +1112,7 @@ export function createRoutes(wiring) {
         if (typeof payload.deleteBranch !== 'boolean') throw badRequest('deleteBranch 必须是布尔值')
         deleteBranch = payload.deleteBranch
       }
-      const result = await github.mergePull({
+      const result = await account.client.mergePull({
         repo,
         number,
         method,
@@ -757,38 +1123,48 @@ export function createRoutes(wiring) {
         confirm: true,
       })
       // Guard 7: the merged head is no longer reachable, so drop its review jobs.
-      if (typeof engine.invalidate === 'function') engine.invalidate(repo, number)
+      if (typeof engine.invalidate === 'function') engine.invalidate(repo, number, accountId)
       return result
     },
 
-    [PATHS.autoReviewStatus]: async () => {
-      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
-      return reviewer.status()
+    [PATHS.autoReviewStatus]: async (payload) => {
+      assertAutoReviewAccount(payload)
+      const reviewerNow = getReviewer()
+      if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
+      return reviewerNow.status()
     },
 
     [PATHS.autoReviewConfig]: async (payload) => {
-      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
-      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
-      if (payload.patch === undefined) return reviewer.status()
+      assertAutoReviewAccount(payload)
+      const reviewerNow = getReviewer()
+      if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
+      if (payload.patch === undefined) return reviewerNow.status()
       if (payload.patch === null || typeof payload.patch !== 'object' || Array.isArray(payload.patch)) {
         throw badRequest('patch 必须是对象')
       }
-      return reviewer.updateConfig(payload.patch)
+      return reviewerNow.updateConfig(payload.patch)
     },
 
     [PATHS.autoReviewRun]: async (payload) => {
-      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
-      if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
-      return reviewer.runOnce({ force: payload.force === true })
+      assertAutoReviewAccount(payload)
+      const reviewerNow = getReviewer()
+      if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
+      return reviewerNow.runOnce({ force: payload.force === true })
     },
 
     [PATHS.reviewPublish]: async (payload, context) => {
-      requireWrite('publish')
-      const { repo, number } = requirePullRef(payload)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      const primary = currentPrimaryGithub()
+      if (primary === undefined || accountId !== primary.id) {
+        throw new AppError('PROVIDER_UNSUPPORTED')
+      }
+      const accountCapabilities = { ...account.capabilities, publish: accountId === primary.id }
+      requireWrite(accountCapabilities, 'publish')
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
       // Defaults come from the persisted publish config; explicit values win.
-      const publishConfig = reviewer?.status?.()?.config?.publish ?? PUBLISH_DEFAULTS
+      const publishConfig = getReviewer()?.status?.()?.config?.publish ?? PUBLISH_DEFAULTS
       const mode = payload.mode === undefined ? publishConfig.mode : payload.mode
       if (!PUBLISH_MODES.includes(mode)) throw badRequest('mode 必须是 inline|summary|both')
       const minSeverity = payload.minSeverity === undefined ? publishConfig.minSeverity : payload.minSeverity
@@ -800,10 +1176,12 @@ export function createRoutes(wiring) {
         if (trimmed.length > PUBLISH_SUMMARY_MAX_CHARS) throw badRequest(`body 超过 ${PUBLISH_SUMMARY_MAX_CHARS} 字`)
         if (trimmed !== '') customBody = trimmed
       }
-      if (publisher === undefined) throw new AppError('INTERNAL', '发布器未初始化')
+      const publisherNow = getPublisher()
+      if (publisherNow === undefined) throw new AppError('INTERNAL', '发布器未初始化')
       const jobId = typeof payload.jobId === 'string' ? payload.jobId.trim() : ''
       const headSha = typeof payload.headSha === 'string' ? payload.headSha.trim() : ''
-      return publisher.publish({
+      return publisherNow.publish({
+        account: accountId,
         repo,
         number,
         confirm: true,
@@ -818,29 +1196,125 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.comment]: async (payload) => {
-      requireWrite('comment')
+      const account = resolveAccount(payload)
       const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'comment')
       // Every comment write needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
-      return github.createIssueComment({ repo, number, body: payload.body })
+      return account.client.createIssueComment({ repo, number, body: payload.body })
     },
 
     [PATHS.reply]: async (payload) => {
-      requireWrite('reply')
+      const account = resolveAccount(payload)
       const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'reply')
       if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
       const commentId = Number(payload.commentId)
       if (!Number.isInteger(commentId) || commentId <= 0) throw badRequest('commentId 必须是正整数')
-      return github.replyToReviewComment({ repo, number, commentId, body: payload.body })
+      return account.client.replyToReviewComment({ repo, number, commentId, body: payload.body })
     },
 
     [PATHS.resolve]: async (payload) => {
-      requireWrite('resolve')
+      const account = resolveAccount(payload)
       const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'resolve')
       if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
       if (threadId === '' || threadId.length > 200) throw badRequest('threadId 不合法')
-      return github.resolveReviewThread({ repo, number, threadId })
+      return account.client.resolveReviewThread({ repo, number, threadId })
+    },
+
+    [PATHS.accounts]: async () => accountListValue(),
+
+    [PATHS.accountsAdd]: async (payload) => {
+      if (payload.confirm !== true) throw badRequest('添加账号需要 confirm: true')
+      const input = normalizeAccountInput(payload)
+      const token = accountTokenInput(payload)
+      if (input.type === 'github' && token === '') {
+        throw badRequest('新增 GitHub 账号需要 Token')
+      }
+      const id = makeAccountId(input.type, input.label, runtime.accounts)
+      if (input.type === 'github' && token === '') {
+        throw badRequest('新增 GitHub 账号需要 Token')
+      }
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
+      if (token !== '') tokenWriter(id, token)
+      runtime.accounts.push({
+        id,
+        type: input.type,
+        label: input.label,
+        baseUrl: input.baseUrl,
+        username: input.username,
+      })
+      if (runtime.accounts.length === 1) runtime.defaultAccount = id
+      persistAccounts(previous)
+      runtime.rebuild()
+      return accountListValue()
+    },
+
+    [PATHS.accountsRemove]: async (payload) => {
+      if (payload.confirm !== true) throw badRequest('删除账号需要 confirm: true')
+      const id = requireString(payload, 'id', 'account id')
+      const target = runtime.accounts.find((account) => account.id === id)
+      if (target === undefined) throw badRequest('账号不存在')
+      const remaining = runtime.accounts.filter((account) => account.id !== id)
+      if (remaining.length === 0) throw badRequest('至少保留一个账号')
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
+      tokenRemover(id)
+      runtime.accounts = remaining
+      if (runtime.defaultAccount === id) runtime.defaultAccount = remaining[0].id
+      persistAccounts(previous)
+      runtime.rebuild()
+      // Removing the last GitHub account must stop the GitHub-bound scheduler.
+      if (currentPrimaryGithub() === undefined) {
+        try {
+          getReviewer()?.dispose?.()
+          getPublisher()?.dispose?.()
+        } catch {
+          /* disposal is best effort */
+        }
+      }
+      return accountListValue()
+    },
+
+    [PATHS.accountsTest]: async (payload) => {
+      if (payload.confirm !== true) throw badRequest('测试账号需要 confirm: true')
+      const input = normalizeAccountInput(payload, { requireToken: false })
+      const token = accountTokenInput(payload)
+      if (input.type === 'gitlab') {
+        const client = new GitLabClient({
+          config: {
+            ...config,
+            gitlabBaseUrl: input.baseUrl || config.gitlabBaseUrl || '',
+            gitlabToken: token,
+          },
+          logger,
+        })
+        const status = await client.status()
+        return {
+          ok: status.ok === true,
+          type: input.type,
+          viewer: status.viewer || input.username,
+          ...(typeof status.error === 'string' ? { error: status.error } : {}),
+        }
+      }
+      const client = new GitHubClient({ config, logger, token })
+      try {
+        const viewer = await client.getAuthenticatedUser()
+        return { ok: true, type: input.type, viewer }
+      } catch (error) {
+        return { ok: false, type: input.type, viewer: '', error: error instanceof AppError ? error.code : 'GH_NOT_LOGGED_IN' }
+      }
+    },
+
+    [PATHS.accountsDefault]: async (payload) => {
+      if (payload.confirm !== true) throw badRequest('设置默认账号需要 confirm: true')
+      const id = requireString(payload, 'id', 'account id')
+      if (!runtime.accounts.some((account) => account.id === id)) throw badRequest('账号不存在')
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
+      runtime.defaultAccount = id
+      persistAccounts(previous)
+      return accountListValue()
     },
   }
 }

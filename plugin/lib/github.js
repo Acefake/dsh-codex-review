@@ -641,6 +641,8 @@ export class GitHubClient {
     const config = options.config ?? {}
     /** Resolved plugin config (patch/body/timeout budgets). */
     this.config = config
+    /** Optional explicit token (multi-account mode); falls back to env/gh. */
+    this.explicitToken = typeof options.token === 'string' ? options.token.trim() : ''
     /** `gh` executable: config override, then GH_BIN, then PATH lookup. */
     this.ghPath = options.ghPath ?? config.ghPath ?? process.env.GH_BIN ?? 'gh'
     /** Injectable fetch (tests pass a stub). */
@@ -709,6 +711,7 @@ export class GitHubClient {
    * @returns {Promise<{ token: string, source: string }>} a token from env or gh.
    */
   async loadToken() {
+    if (this.explicitToken !== '') return { token: this.explicitToken, source: 'config' }
     for (const name of ['GH_TOKEN', 'GITHUB_TOKEN']) {
       const value = process.env[name]?.trim()
       if (value !== undefined && value !== '') return { token: value, source: 'env' }
