@@ -22,6 +22,7 @@
  * @module dsh-codex-review/lib/auto-review
  */
 
+import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -38,7 +39,64 @@ export const AUTO_REVIEW_RECENT_LIMIT = 20
 export const AUTO_REVIEW_RETRY_AFTER_MS = 30 * 60_000
 
 /**
- * Watchdog for one cycle. A hung GitHub or model call must never leave
+ * Stable fingerprint for one finding: the same file/line/title is one issue.
+ * @param {any} finding - validated finding.
+ * @returns {string} 16 hex characters.
+ */
+export function findingFingerprint(finding) {
+  const value = finding !== null && typeof finding === 'object' ? finding : {}
+  const text = [value.severity, value.file, value.line, value.lineEnd ?? '', value.title].join('|')
+  return createHash('sha1').update(text).digest('hex').slice(0, 16)
+}
+
+/**
+ * Filter one review result for automatic publishing: severity allow-list,
+ * low-confidence drop, cross-round dedup and a per-round cap.
+ * @param {Array<any>} findings - findings of one review.
+ * @param {{ onlySeverities?: string[], maxFindingsPerRound?: number, stopOnLowConfidence?: boolean }} config - auto-review config.
+ * @param {Record<string, number>} reviewed - persisted fingerprints for this PR.
+ * @param {string} scope - `repo#number` (fingerprint namespace).
+ * @param {number} now - timestamp recorded for emitted fingerprints.
+ * @returns {{ selected: Array<any>, suppressed: number, reviewed: Record<string, number> }} filtered result.
+ */
+export function filterAutoFindings(findings, config = {}, reviewed = {}, scope = '', now = Date.now()) {
+  const only = Array.isArray(config.onlySeverities) && config.onlySeverities.length > 0
+    ? config.onlySeverities
+    : ['P0', 'P1', 'P2']
+  const max = Number.isInteger(config.maxFindingsPerRound) && config.maxFindingsPerRound > 0
+    ? config.maxFindingsPerRound
+    : 10
+  const dropLow = config.stopOnLowConfidence !== false
+  const selected = []
+  const nextReviewed = { ...reviewed }
+  let suppressed = 0
+  const rows = Array.isArray(findings) ? findings : []
+  for (const finding of rows) {
+    if (!only.includes(finding?.severity)) {
+      suppressed += 1
+      continue
+    }
+    if (dropLow && finding?.confidence === 'low') {
+      suppressed += 1
+      continue
+    }
+    const key = `${scope}|${findingFingerprint(finding)}`
+    if (nextReviewed[key] !== undefined) {
+      suppressed += 1
+      continue
+    }
+    if (selected.length >= max) {
+      suppressed += 1
+      continue
+    }
+    selected.push(finding)
+    nextReviewed[key] = now
+  }
+  return { selected, suppressed, reviewed: nextReviewed }
+}
+
+/**
+ * Watchdog for one cycle: a hung GitHub or model call must never leave
  * `running` true forever: that silently stops every later automatic review
  * until the plugin is reloaded. On timeout the cycle is abandoned, `lastError`
  * records why, and the next cycle may start.
@@ -73,6 +131,9 @@ export const AUTO_REVIEW_DEFAULTS = Object.freeze({
   includeGuidelines: true,
   includeDrafts: false,
   maxPerCycle: 2,
+  onlySeverities: ['P0', 'P1', 'P2'],
+  maxFindingsPerRound: 10,
+  stopOnLowConfidence: true,
   publish: PUBLISH_DEFAULTS,
 })
 
@@ -135,6 +196,19 @@ export function sanitizeAutoReviewConfig(raw, base = AUTO_REVIEW_DEFAULTS) {
     includeGuidelines: typeof source.includeGuidelines === 'boolean' ? source.includeGuidelines : (base.includeGuidelines ?? true),
     includeDrafts: typeof source.includeDrafts === 'boolean' ? source.includeDrafts : base.includeDrafts,
     maxPerCycle: clampInteger(source.maxPerCycle, AUTO_REVIEW_MAX_PER_CYCLE_LIMITS, base.maxPerCycle),
+    onlySeverities: (() => {
+      const raw = Array.isArray(source.onlySeverities) ? source.onlySeverities : base.onlySeverities
+      const filtered = raw.filter((value) => AUTO_REVIEW_THRESHOLDS.includes(value))
+      return filtered.length > 0 ? [...new Set(filtered)] : [...base.onlySeverities]
+    })(),
+    maxFindingsPerRound: clampInteger(
+      source.maxFindingsPerRound,
+      [1, 20],
+      base.maxFindingsPerRound,
+    ),
+    stopOnLowConfidence: typeof source.stopOnLowConfidence === 'boolean'
+      ? source.stopOnLowConfidence
+      : base.stopOnLowConfidence,
     // A patch may carry a partial `publish` object; it is merged over the live one.
     publish: sanitizePublishConfig(source.publish, base.publish ?? PUBLISH_DEFAULTS),
   }
@@ -253,6 +327,29 @@ export function prunePublishedMap(published, limit = PUBLISHED_HEAD_LIMIT) {
 }
 
 /**
+ * Normalize persisted finding fingerprints; cap the map to the newest entries.
+ * @param {unknown} raw - persisted reviewed map.
+ * @param {number} [limit] - maximum fingerprints kept.
+ * @returns {Record<string, number>} sanitized map.
+ */
+export function sanitizeReviewedMap(raw, limit = 1000) {
+  /** @type {Array<[string, number]>} */
+  const entries = []
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
+      const at = Number(value)
+      if (key === '' || !Number.isFinite(at) || at < 0) continue
+      entries.push([key, Math.floor(at)])
+    }
+  }
+  entries.sort((left, right) => right[1] - left[1])
+  /** @type {Record<string, number>} */
+  const reviewed = {}
+  for (const [key, at] of entries.slice(0, Math.max(1, limit))) reviewed[key] = at
+  return reviewed
+}
+
+/**
  * Normalize the persisted `seen` map: entries need a non-empty `headSha` and a
  * usable timestamp; anything else is dropped. `failedAt` (v2.5) carries the last
  * failed attempt so retries survive both a restart and `recent` eviction.
@@ -338,6 +435,8 @@ export class AutoReviewer {
     this.seen = {}
     /** @type {Record<string, { publishedAt: number, reviewId: number, url: string }>} */
     this.published = {}
+    /** @type {Record<string, number>} finding fingerprint → first reported time. */
+    this.reviewedFindings = {}
     /** @type {any} */
     this.publisher = options.publisher
 
@@ -345,6 +444,7 @@ export class AutoReviewer {
     this.config = loaded.config
     this.seen = loaded.seen
     this.published = loaded.published
+    this.reviewedFindings = loaded.reviewedFindings
     this.recent = loaded.recent
     this.lastCycleAt = loaded.lastCycleAt
     if (loaded.recovered) this.persistState()
@@ -442,6 +542,7 @@ export class AutoReviewer {
       config: { ...AUTO_REVIEW_DEFAULTS },
       seen: /** @type {Record<string, { headSha: string, at: number }>} */ ({}),
       published: /** @type {Record<string, any>} */ ({}),
+      reviewedFindings: /** @type {Record<string, number>} */ ({}),
       recent: /** @type {Array<any>} */ ([]),
       lastCycleAt: /** @type {number | undefined} */ (undefined),
       recovered: false,
@@ -472,6 +573,7 @@ export class AutoReviewer {
       config: sanitizeAutoReviewConfig(parsed.config, AUTO_REVIEW_DEFAULTS),
       seen: sanitizeSeenMap(parsed.seen),
       published: sanitizePublishedMap(parsed.published),
+      reviewedFindings: sanitizeReviewedMap(parsed.reviewedFindings),
       // Independently-corrupt history is reset instead of failing the whole file.
       recent: sanitizeRecentList(parsed.recent, this.recentLimit),
       lastCycleAt: Number.isFinite(rawLast) && rawLast > 0 ? Math.floor(rawLast) : undefined,
@@ -498,6 +600,7 @@ export class AutoReviewer {
         config: this.config,
         seen: this.seen,
         published: prunePublishedMap(this.published),
+        reviewedFindings: this.reviewedFindings,
         recent: this.recent.slice(0, this.recentLimit),
       }
       if (this.lastCycleAt !== undefined) payload.lastCycleAt = this.lastCycleAt
@@ -708,15 +811,20 @@ export class AutoReviewer {
       if (typeof this.engine.waitForCompletion === 'function') await this.engine.waitForCompletion(started.jobId)
       const status = typeof this.engine.status === 'function' ? this.engine.status(started.jobId) : {}
       const state = status?.state === 'done' ? 'done' : status?.state === 'cancelled' ? 'cancelled' : 'error'
+      const filtered = state === 'done'
+        ? filterAutoFindings(status?.findings, this.config, this.reviewedFindings, key, this.now())
+        : { selected: [], suppressed: 0, reviewed: this.reviewedFindings }
+      if (state === 'done' && this.config.publish?.enabled === true) this.reviewedFindings = filtered.reviewed
       /** @type {any} */
       const entry = {
         repo,
         number,
         headSha,
         state,
-        findings: Array.isArray(status?.findings) ? status.findings.length : 0,
+        findings: filtered.selected.length,
         finishedAt: this.now(),
       }
+      if (filtered.suppressed > 0) entry.suppressed = filtered.suppressed
       if (status?.partial === true) entry.partial = true
       if (status?.verdict !== undefined) entry.verdict = status.verdict
       if (status?.overview !== undefined) entry.overview = status.overview
@@ -724,7 +832,8 @@ export class AutoReviewer {
         entry.error = status?.error ?? { code: 'LLM_ERROR', message: USER_MESSAGES.LLM_ERROR }
         this.logger?.warn?.(`dsh-codex-review: auto review ${key} failed: ${entry.error.message}`)
       }
-      if (state === 'done' && entry.partial !== true && this.config.publish?.enabled === true && this.publisher !== undefined) {
+      if (state === 'done' && entry.partial !== true && filtered.selected.length > 0 &&
+          this.config.publish?.enabled === true && this.publisher !== undefined) {
         // Automatic publishing targets exactly the head and job this cycle just
         // reviewed — never a historical head, never a backfill (CONTRACT §7.2 #8).
         try {
@@ -735,6 +844,7 @@ export class AutoReviewer {
             confirm: true,
             headSha,
             jobId: started.jobId,
+            review: { ...status, findings: filtered.selected },
             mode: this.config.publish.mode,
             minSeverity: this.config.publish.minSeverity,
             maxComments: this.config.publish.maxComments,
@@ -748,6 +858,8 @@ export class AutoReviewer {
           this.lastError = toPublicError(error)
           this.logger?.warn?.(`dsh-codex-review: auto publish ${key} failed: ${this.lastError.message}`)
         }
+      } else if (state === 'done' && filtered.selected.length === 0) {
+        this.logger?.warn?.(`dsh-codex-review: auto publish ${key} skipped: no findings after filtering`)
       } else if (state === 'done' && entry.partial === true && this.config.publish?.enabled === true) {
         this.logger?.warn?.(`dsh-codex-review: auto publish ${key} skipped: review is partial`)
       }
@@ -816,6 +928,7 @@ export class AutoReviewer {
       publish: { ...this.config.publish },
       running: this.running,
       seenCount: Object.keys(this.seen).length,
+      reviewedCount: Object.keys(this.reviewedFindings).length,
       recent: this.recent.map((entry) => ({
         ...entry,
         ...(entry.error === undefined ? {} : { error: { ...entry.error } }),

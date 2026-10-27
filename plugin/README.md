@@ -41,6 +41,23 @@
 - 账号存在 `<profile>/.codex-review/accounts.json`（不含 token）；token 按账号存 `~/.dsh/secrets/codex-review/<profile-hash>/<id>.token`。
 - 至少保留一个账号（允许纯 GitLab）；删除当前默认账号会自动切到第一个账号。
 
+## 审查策略与自动发布收敛
+
+`plugin/REVIEW_POLICY.md` 是审查的最高优先级约束：固定 GitLab 路径、Token、account 缺省、发布账号等策略，并要求每条发现带 diff 证据；没有证据、低置信度、重复的问题不会进入自动发布。
+
+自动审查在发布前会再过滤一次：
+
+1. 只保留 `onlySeverities`（默认 P0/P1/P2）里的严重度；
+2. 丢弃 `confidence=low`（`stopOnLowConfidence=true` 时）；
+3. 按 `severity+file+line+title` 指纹跨轮去重（`reviewedFindings`）；
+4. 按 P0→P1→P2 截断到 `maxFindingsPerRound`（默认 10）。
+
+过滤后为空则不发布，并在状态里记录 `suppressed`。可通过 `POST /codex-review/auto-review-config` 的 patch 调整这几项：
+
+```json
+{ "patch": { "onlySeverities": ["P0", "P1"], "maxFindingsPerRound": 5, "stopOnLowConfidence": true } }
+```
+
 ## 统一审查设置
 
 审查深度、严重度阈值和仓库指引由手动与自动审查共用，统一保存在宿主当前 profile 的自动审查配置文件中。工具栏齿轮与 DSH 设置 → 代码审查复用同一份表单；自动审查区域仅保留开关、检查间隔、查询范围、草稿和每轮上限。
