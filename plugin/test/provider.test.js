@@ -7,6 +7,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PROVIDER_LABELS, buildClients, createRoutes, providerCapabilities } from '../index.js'
 import { buildReviewJobKey, fileCacheKey } from '../lib/review.js'
+import { ReviewPublisher } from '../lib/publish.js'
 import { resolveConfig } from '../lib/config.js'
 
 /** Minimal GitHub client double; `mergePull` enforces the expected head like the real client. */
@@ -51,13 +52,32 @@ function fakeGithubClient(options = {}) {
 }
 
 /** Minimal read-only GitLab client double. */
-function fakeGitlabClient() {
+function fakeGitlabClient(options = {}) {
+  const calls = { publishes: [], comments: [] }
   return {
+    calls,
+    providerKind: 'gitlab',
     status: async () => ({ ok: true, provider: 'gitlab', viewer: 'shims' }),
     listPullRequests: async () => ({ query: '', totalCount: 1, items: [{ repo: 'mdesign/m-design-client', number: 7 }] }),
     getPull: async () => ({ headSha: 'gl1', summary: { repo: 'mdesign/m-design-client' }, files: [] }),
     getPullHead: async () => 'gl1',
     getAuthenticatedUser: async () => 'shims',
+    createIssueComment: async (input) => {
+      calls.comments.push(input)
+      return { id: 9, url: `http://gl.local/mr#note_9` }
+    },
+    publishReview: async (input) => {
+      calls.publishes.push(input)
+      return {
+        published: true,
+        reviewId: 42,
+        url: 'http://gl.local/mr#note_42',
+        comments: 1,
+        skipped: 0,
+        headSha: input.headSha ?? 'gl1',
+        action: 'created',
+      }
+    },
   }
 }
 
@@ -67,7 +87,23 @@ function buildRoutes(options = {}) {
   const withGithub = options.withGithub !== false
   const github = withGithub ? fakeGithubClient({ ghStatus: options.ghStatus, listRepo: 'github/primary' }) : undefined
   const fallbackGithub = withGithub ? fakeGithubClient({ listRepo: 'github/fallback', headSha: 'fallback-head' }) : undefined
-  const clients = withGithub ? { github, gitlab: fakeGitlabClient() } : { gitlab: fakeGitlabClient() }
+  const gitlab = fakeGitlabClient()
+  const clients = withGithub ? { github, gitlab } : { gitlab }
+  const engineStub = {
+    available: () => false,
+    status: () => ({ state: 'none' }),
+    existing: (repo, number, headSha, account) => ({
+      state: options.reviewDone === true ? 'done' : 'none',
+      headSha,
+      findings: options.reviewDone === true ? [{ severity: 'P1', file: 'f.js', line: 1, title: 't' }] : [],
+      overview: options.reviewDone === true ? 'overview' : undefined,
+      account,
+    }),
+    start: () => { throw new Error('review must not start in this test') },
+    cancel: () => false,
+    invalidate: () => {},
+    dispose: () => {},
+  }
   const reviewerState = { status: { config: { publish: { enabled: false } }, publish: { enabled: false }, recent: [] }, patches: [], runs: 0 }
   const reviewer = withGithub ? {
     status: () => reviewerState.status,
@@ -94,40 +130,37 @@ function buildRoutes(options = {}) {
     clients,
     defaultAccount,
     github: fallbackGithub,
-    engine: {
-      available: () => false,
-      status: () => ({ state: 'none' }),
-      existing: (repo, number, headSha, account) => ({ state: 'none', headSha, findings: [], account }),
-      start: () => { throw new Error('review must not start in this test') },
-      cancel: () => false,
-      invalidate: () => {},
-      dispose: () => {},
-    },
+    engine: engineStub,
     saveStore: options.saveStore ?? (() => {}),
     tokenWriter: options.tokenWriter ?? (() => {}),
     tokenRemover: options.tokenRemover ?? (() => {}),
     reviewer,
-    publisher: withGithub ? {
-      publish: async () => { throw new Error('publish must not run in this test') },
-      dispose: () => {},
-    } : undefined,
+    publisher: withGithub
+      ? (options.realPublisher === true
+          ? new ReviewPublisher({
+              github: fallbackGithub,
+              engine: engineStub,
+              clientFor: (id) => clients[id],
+              legacyAccount: 'github',
+            })
+          : { publish: async () => { throw new Error('publish must not run in this test') }, dispose: () => {} })
+      : undefined,
     logger: { warn: () => {} },
     llmAvailable: () => false,
     llmInfo: async () => ({}),
     version: '0.13.0',
   })
-  return { routes, github, fallbackGithub, reviewer: reviewerState }
-}
+  return { routes, github, fallbackGithub, gitlab, reviewer: reviewerState }}
 
-test('providerCapabilities keeps write operations on GitHub only', () => {
+test('providerCapabilities keeps merge/reply/resolve on GitHub; GitLab can publish and comment', () => {
   const github = providerCapabilities('github')
   const gitlab = providerCapabilities('gitlab')
   assert.equal(github.merge, true)
   assert.equal(github.publish, true)
   assert.equal(github.autoReview, true)
   assert.equal(gitlab.merge, false)
-  assert.equal(gitlab.publish, false)
-  assert.equal(gitlab.comment, false)
+  assert.equal(gitlab.publish, true)
+  assert.equal(gitlab.comment, true)
   assert.equal(gitlab.reply, false)
   assert.equal(gitlab.resolve, false)
   assert.equal(gitlab.autoReview, false)
@@ -151,6 +184,8 @@ test('health lists both accounts and marks the default one', async () => {
   assert.equal(github.capabilities.merge, true)
   assert.equal(gitlab.viewer, 'shims')
   assert.equal(gitlab.capabilities.merge, false)
+  assert.equal(gitlab.capabilities.publish, true)
+  assert.equal(gitlab.capabilities.comment, true)
 })
 
 test('health keeps the gh missing / not-logged-in / ok tri-state', async () => {
@@ -186,8 +221,6 @@ test('write routes follow the selected account capabilities', async () => {
   const gitlabPayload = { repo: 'mdesign/m-design-client', number: 7, confirm: true }
   const gitlabWrites = [
     ['/codex-review/merge', gitlabPayload],
-    ['/codex-review/review-publish', gitlabPayload],
-    ['/codex-review/comment', { ...gitlabPayload, body: 'x' }],
     ['/codex-review/reply', { ...gitlabPayload, commentId: 1, body: 'x' }],
     ['/codex-review/resolve', { ...gitlabPayload, threadId: 't1' }],
   ]
@@ -223,6 +256,34 @@ test('write routes follow the selected account capabilities', async () => {
     }),
     (error) => error.code === 'MERGE_HEAD_MOVED',
   )
+})
+
+test('the GitLab account can publish its review and comment on the MR', async () => {
+  const { routes, gitlab } = buildRoutes({ reviewDone: true, realPublisher: true })
+  const result = await routes['/codex-review/review-publish']({
+    account: 'gitlab',
+    repo: 'mdesign/m-design-client',
+    number: 7,
+    confirm: true,
+    mode: 'summary',
+    minSeverity: 'P2',
+  })
+  assert.equal(result.published, true)
+  assert.equal(result.reviewId, 42)
+  assert.equal(gitlab.calls.publishes.length, 1)
+  assert.equal(gitlab.calls.publishes[0].review.state, 'done')
+  assert.equal(gitlab.calls.publishes[0].review.findings.length, 1)
+
+  const comment = await routes['/codex-review/comment']({
+    account: 'gitlab',
+    repo: 'mdesign/m-design-client',
+    number: 7,
+    body: 'hello mr',
+    confirm: true,
+  })
+  assert.equal(comment.id, 9)
+  assert.equal(gitlab.calls.comments.length, 1)
+  assert.equal(gitlab.calls.comments[0].body, 'hello mr')
 })
 
 test('pr detail and review snapshot are account-scoped end to end', async () => {

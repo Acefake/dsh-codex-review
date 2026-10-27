@@ -1,16 +1,18 @@
 /**
- * GitLab data channel of dsh-codex-review (read-only).
+ * GitLab data channel of dsh-codex-review.
  *
- * Talks to the GitLab REST API v4 with a personal access token, normalizes
+ * Talks to the GitLab REST API v4 with a personal access token and normalizes
  * merge requests into the same `CONTRACT.md` §1.2 shapes the GitHub channel
- * produces, and never performs a write. GitLab 12.9 is the compatibility
- * floor: merge-request changes come from `/changes` (not `/diffs`) and drafts
- * are reported as `work_in_progress`.
+ * produces. Browsing is read-only; the only writes are the review publish
+ * (summary note + inline discussions) and plain MR comments. GitLab 12.9 is
+ * the compatibility floor: merge-request changes come from `/changes` (not
+ * `/diffs`) and drafts are reported as `work_in_progress`.
  * @module dsh-codex-review/lib/gitlab
  */
 
-import { AppError } from './errors.js'
+import { AppError, badRequest } from './errors.js'
 import { GUIDELINE_MAX_CHARS, GUIDELINE_PATHS, LruCache, applyPatchBudget, buildStack, truncateText } from './github.js'
+import { parsePublishMarkers, preparePublish } from './publish.js'
 import { buildChatContext } from './chat.js'
 
 /** Default request timeout when the config does not override it. */
@@ -300,13 +302,15 @@ export class GitLabClient {
       else options.signal.addEventListener('abort', onAbort, { once: true })
     }
     try {
+      const headers = {
+        authorization: `Bearer ${this.token}`,
+        accept: options.accept ?? 'application/json',
+        'user-agent': 'dsh-codex-review',
+      }
+      if (options.body !== undefined) headers['content-type'] = 'application/json'
       const response = await this.fetchImpl(this.url(path), {
         method: typeof options.method === 'string' && options.method !== '' ? options.method : 'GET',
-        headers: {
-          authorization: `Bearer ${this.token}`,
-          accept: options.accept ?? 'application/json',
-          'user-agent': 'dsh-codex-review',
-        },
+        headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         signal: controller.signal,
       })
@@ -482,8 +486,157 @@ export class GitLabClient {
    * @param {{ signal?: AbortSignal }} [options] - request signal.
    * @returns {Promise<{ loaded: boolean, files: string[], chars: number, text: string }>} guidelines.
    */
-  async getGuidelines(repo, options = {}) {
-    const key = `guidelines:${repo}`
+  /** Provider tag used by the publish flow to select the GitLab write path. */
+  providerKind = 'gitlab'
+
+  /**
+   * List MR notes (bounded to two pages of 100) in ascending order.
+   * @param {string} repo - project path.
+   * @param {number} number - MR iid.
+   * @param {{ signal?: AbortSignal }} [options] - request signal.
+   * @returns {Promise<Array<{ id: number, body: string, author?: string }>>} notes.
+   */
+  async listNotes(repo, number, options = {}) {
+    const notes = []
+    for (let page = 1; page <= 2; page += 1) {
+      const { data } = await this.requestJson(
+        `/projects/${encodeProjectId(repo)}/merge_requests/${number}/notes?sort=asc&order_by=created_at&per_page=100&page=${page}`,
+        { signal: options.signal },
+      )
+      const rows = Array.isArray(data) ? data : []
+      for (const note of rows) {
+        if (note === null || typeof note !== 'object') continue
+        notes.push({
+          id: Number(note.id) || 0,
+          body: typeof note.body === 'string' ? note.body : '',
+          author: typeof note.author?.username === 'string' ? note.author.username : '',
+        })
+      }
+      if (rows.length < 100) break
+    }
+    return notes
+  }
+
+  /**
+   * Create one MR note (top-level comment).
+   * @param {{ repo: string, number: number, body: string, signal?: AbortSignal }} input - comment input.
+   * @returns {Promise<{ id: number, url: string }>} created note.
+   */
+  async createIssueComment(input = {}) {
+    const repo = typeof input.repo === 'string' ? input.repo.trim() : ''
+    if (!isValidGitlabRepo(repo)) throw new AppError('BAD_REQUEST', 'repo 必须是 GitLab 项目路径（group/project）')
+    const body = typeof input.body === 'string' ? input.body.trim() : ''
+    if (body === '') throw badRequest('评论内容不能为空')
+    const { data } = await this.requestJson(
+      `/projects/${encodeProjectId(repo)}/merge_requests/${input.number}/notes`,
+      { method: 'POST', body: { body }, signal: input.signal },
+    )
+    const id = Number(data?.id) || 0
+    const webUrl = typeof data?.web_url === 'string' ? data.web_url : ''
+    return { id, url: id > 0 ? `${webUrl}#note_${id}` : webUrl }
+  }
+
+  /**
+   * Publish one AI review to a GitLab MR: a summary note plus inline
+   * discussions (best-effort; GitLab 12.9 text positions).
+   * Marker dedup reads the existing notes first, so a repeated publish of the
+   * same findings skips them.
+   * @param {{ repo: string, number: number, headSha?: string, review?: any, mode?: string, minSeverity?: string, maxComments?: number, body?: string, signal?: AbortSignal }} input - publish input.
+   * @returns {Promise<{ published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string, action: 'created' | 'updated' | 'unchanged' }>} publish result.
+   */
+  async publishReview(input = {}) {
+    const repo = typeof input.repo === 'string' ? input.repo.trim() : ''
+    if (!isValidGitlabRepo(repo)) throw new AppError('BAD_REQUEST', 'repo 必须是 GitLab 项目路径（group/project）')
+    const number = Number(input.number)
+    if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
+    const review = input.review ?? {}
+    const findings = Array.isArray(review.findings) ? review.findings : []
+    if (review.state !== 'done') throw new AppError('REVIEW_NOT_READY')
+
+    // Resolve the MR: head SHA + diff refs for inline anchors + web URL.
+    const { data: mr } = await this.requestJson(
+      `/projects/${encodeProjectId(repo)}/merge_requests/${number}`,
+      { signal: input.signal },
+    )
+    const headSha = typeof input.headSha === 'string' && input.headSha !== ''
+      ? input.headSha
+      : (typeof mr?.sha === 'string' ? mr.sha : (typeof mr?.diff_refs?.head_sha === 'string' ? mr.diff_refs.head_sha : ''))
+    if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 MR 的 head commit')
+    if (typeof review.headSha === 'string' && review.headSha !== '' && review.headSha !== headSha) {
+      throw new AppError('REVIEW_HEAD_MOVED')
+    }
+    const baseSha = typeof mr?.diff_refs?.base_sha === 'string' ? mr.diff_refs.base_sha : ''
+    const startSha = typeof mr?.diff_refs?.start_sha === 'string' ? mr.diff_refs.start_sha : baseSha
+    const webUrl = typeof mr?.web_url === 'string' ? mr.web_url : ''
+
+    const notes = await this.listNotes(repo, number, { signal: input.signal })
+    const existingMarkers = parsePublishMarkers(notes)
+    const prepared = preparePublish({
+      findings,
+      overview: review.overview,
+      mode: input.mode,
+      minSeverity: input.minSeverity,
+      maxComments: input.maxComments,
+      body: input.body,
+      existingMarkers,
+    })
+    const skipped = prepared.skipped
+    let comments = 0
+
+    // Inline discussions: one per finding, best-effort.
+    for (const comment of prepared.inlineComments) {
+      try {
+        await this.requestJson(
+          `/projects/${encodeProjectId(repo)}/merge_requests/${number}/discussions`,
+          {
+            method: 'POST',
+            body: {
+              body: comment.body,
+              position: {
+                position_type: 'text',
+                base_sha: baseSha,
+                start_sha: startSha,
+                head_sha: headSha,
+                old_path: comment.path,
+                new_path: comment.path,
+                new_line: comment.line,
+              },
+            },
+            signal: input.signal,
+          },
+        )
+        comments += 1
+      } catch (error) {
+        if (error instanceof AppError && ['GL_UNAUTHORIZED', 'GL_FORBIDDEN'].includes(error.code)) throw error
+        skipped += 1
+      }
+    }
+
+    // Summary note: always created in summary/both mode, or when no inline
+    // discussion could be anchored (CONTRACT §7.2 #5).
+    let reviewId = 0
+    let url = ''
+    if (prepared.summaryBody !== undefined) {
+      const { data } = await this.requestJson(
+        `/projects/${encodeProjectId(repo)}/merge_requests/${number}/notes`,
+        { method: 'POST', body: { body: prepared.summaryBody }, signal: input.signal },
+      )
+      reviewId = Number(data?.id) || 0
+      url = reviewId > 0 ? `${webUrl}#note_${reviewId}` : webUrl
+      comments += 1
+    }
+    return {
+      published: true,
+      reviewId,
+      url,
+      comments,
+      skipped,
+      headSha,
+      action: /** @type {'created'} */ ('created'),
+    }
+  }
+
+  async getGuidelines(repo, options = {}) {    const key = `guidelines:${repo}`
     const cached = this.cache.get(key, this.now())
     if (cached !== undefined) return cached
     return this.once(key, async () => {

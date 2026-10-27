@@ -481,6 +481,8 @@ export class ReviewPublisher {
   constructor(options = {}) {
     this.github = options.github
     this.engine = options.engine
+    /** Per-request client resolution for multi-account publishing. */
+    this.clientFor = typeof options.clientFor === 'function' ? options.clientFor : null
     /** Account that may read pre-account publish records. */
     this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
     this.store = options.store ?? { get: () => undefined, set: () => {} }
@@ -513,8 +515,19 @@ export class ReviewPublisher {
   async publish(input = {}) {
     if (input?.confirm !== true) throw badRequest('发布审查需要 confirm: true')
     if (this.disposed) throw new AppError('INTERNAL', '插件已卸载')
+    // Publish through the requested account's client; the primary GitHub client
+    // is only the fallback for legacy single-account callers.
+    const requestedAccount = typeof input.account === 'string' ? input.account.trim() : ''
+    const client = this.clientFor !== null && requestedAccount !== ''
+      ? (this.clientFor(requestedAccount) ?? this.github)
+      : this.github
+    const providerKind = client?.providerKind === 'gitlab' ? 'gitlab' : 'github'
     const repo = typeof input.repo === 'string' ? input.repo.trim() : ''
-    if (!REPO_RE.test(repo)) throw badRequest('repo 必须是 owner/name 形式')
+    if (providerKind === 'gitlab') {
+      // GitLab project paths are validated by the GitLab client itself.
+    } else if (!REPO_RE.test(repo)) {
+      throw badRequest('repo 必须是 owner/name 形式')
+    }
     const number = typeof input.number === 'number' ? input.number : Number(input.number)
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
     const mode = input.mode === undefined ? PUBLISH_DEFAULTS.mode : input.mode
@@ -530,7 +543,7 @@ export class ReviewPublisher {
       if (trimmed.length > PUBLISH_SUMMARY_MAX_CHARS) throw badRequest(`body 超过 ${PUBLISH_SUMMARY_MAX_CHARS} 字`)
       if (trimmed !== '') customBody = trimmed
     }
-    if (this.github === undefined || this.engine === undefined) throw new AppError('INTERNAL', '发布器未初始化')
+    if (client === undefined || this.engine === undefined) throw new AppError('INTERNAL', '发布器未初始化')
 
     const jobId = typeof input.jobId === 'string' ? input.jobId.trim() : ''
     let headSha = typeof input.headSha === 'string' ? input.headSha.trim() : ''
@@ -545,7 +558,7 @@ export class ReviewPublisher {
       if (headSha === '' && typeof review?.headSha === 'string') headSha = review.headSha
     } else {
       if (headSha === '') {
-        const detail = await this.github.getPull(repo, number)
+        const detail = await client.getPull(repo, number)
         headSha = typeof detail?.headSha === 'string' ? detail.headSha.trim() : ''
       }
       review = typeof this.engine.existing === 'function' ? this.engine.existing(repo, number, headSha) : undefined
@@ -558,8 +571,9 @@ export class ReviewPublisher {
 
     // The publish must target the PR's current head, not a stale snapshot from
     // the 60 s detail cache. The route signal keeps this read bounded too.
-    if (typeof this.github.getPullHead === 'function') {
-      const current = await this.github.getPullHead(repo, number, { signal: input.signal })
+    // GitLab checks the head inside `publishReview` (it needs the MR snapshot).
+    if (providerKind !== 'gitlab' && typeof client.getPullHead === 'function') {
+      const current = await client.getPullHead(repo, number, { signal: input.signal })
       if (current !== '' && current !== headSha) throw new AppError('REVIEW_HEAD_MOVED')
     }
 
@@ -604,18 +618,33 @@ export class ReviewPublisher {
         }
       }, PUBLISH_TIMEOUT_MS)
       if (typeof timer.unref === 'function') timer.unref()
-      return this.publishForPull({
-        account,
-        repo,
-        number,
-        headSha,
-        review,
-        mode,
-        minSeverity,
-        maxComments,
-        customBody,
-        signal: controller.signal,
-      })
+      return providerKind === 'gitlab'
+        ? this.publishForMergeRequest({
+            account,
+            repo,
+            number,
+            headSha,
+            review,
+            mode,
+            minSeverity,
+            maxComments,
+            customBody,
+            requestKey: publishRequestKey({ mode, minSeverity, maxComments, body: customBody }),
+            keys: publishRecordKeys(account, repo, number, headSha),
+            signal: controller.signal,
+          })
+        : this.publishForPull({
+            account,
+            repo,
+            number,
+            headSha,
+            review,
+            mode,
+            minSeverity,
+            maxComments,
+            customBody,
+            signal: controller.signal,
+          })
     })
     this.inflight.set(key, running)
     this.prLocks.set(prKey, running)
@@ -634,6 +663,42 @@ export class ReviewPublisher {
       this.inflight.delete(key)
       if (this.prLocks.get(prKey) === running) this.prLocks.delete(prKey)
     }
+  }
+
+  /**
+   * The GitLab write half of {@link publish}: replay a matching (head, request)
+   * record, delegate note/discussion creation to the GitLab client, and record
+   * the publish identity with the same store keys as the GitHub flow.
+   * @param {{ account: string, repo: string, number: number, headSha: string, review: any, mode: string, minSeverity: string, maxComments: number, customBody?: string, requestKey: string, keys: { prKey: string, headKey: string }, signal?: AbortSignal }} input - resolved publish request.
+   * @returns {Promise<{ published: true, reviewId: number, url: string, comments: number, skipped: number, headSha: string, action: 'created' | 'updated' | 'unchanged' }>} publish result.
+   */
+  async publishForMergeRequest(input) {
+    const { repo, number, headSha, requestKey, keys } = input
+    const recorded = this.store.get(keys.headKey) ??
+      (input.account === this.legacyAccount ? this.store.get(`${repo}#${number}@${headSha}`) : undefined)
+    if (isReplayableHead(recorded, requestKey)) return replayResult(recorded, 0, headSha, 'unchanged')
+    const publishClient = typeof this.clientFor === 'function' ? (this.clientFor(input.account) ?? this.github) : this.github
+    const result = await publishClient.publishReview({
+      repo,
+      number,
+      headSha,
+      review: input.review,
+      mode: input.mode,
+      minSeverity: input.minSeverity,
+      maxComments: input.maxComments,
+      body: input.customBody,
+      signal: input.signal,
+    })
+    this.persistRecords([{
+      key: keys.headKey,
+      record: {
+        publishedAt: this.now(),
+        reviewId: Number(result.reviewId) || 0,
+        url: typeof result.url === 'string' ? result.url : '',
+        request: requestKey,
+      },
+    }])
+    return result
   }
 
   /**

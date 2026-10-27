@@ -67,8 +67,9 @@ export const inject = ['webServer']
 export const VERSION = '0.13.0'
 
 /**
- * Capabilities of one data source. This release keeps write operations on
- * GitHub only; GitLab is read-only.
+ * Capabilities of one data source. GitLab supports publishing the review
+ * (summary note + inline discussions) and plain MR comments; replying to or
+ * resolving review threads, merging and auto-review stay GitHub-only.
  * @param {'github' | 'gitlab'} dataSource - active data source.
  * @returns {{ browse: boolean, review: boolean, chat: boolean, autoReview: boolean, publish: boolean, comment: boolean, reply: boolean, resolve: boolean, merge: boolean }} capability flags.
  */
@@ -79,8 +80,8 @@ export function providerCapabilities(dataSource) {
     review: true,
     chat: true,
     autoReview: !gitlab,
-    publish: !gitlab,
-    comment: !gitlab,
+    publish: true,
+    comment: true,
     reply: !gitlab,
     resolve: !gitlab,
     merge: !gitlab,
@@ -421,6 +422,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     github: client,
     engine,
     logger,
+    clientFor: (id) => accountRuntime.clients[id],
     legacyAccount: accountId ?? '',
     store: {
       get: (key) => (typeof reviewer?.getPublished === 'function' ? reviewer.getPublished(key) : undefined),
@@ -1156,13 +1158,18 @@ export function createRoutes(wiring) {
       const account = resolveAccount(payload)
       const { id: accountId, repo, number } = requirePullRef(payload)
       const primary = currentPrimaryGithub()
-      if (primary === undefined || accountId !== primary.id) {
+      // GitHub publishing is bound to the primary account; GitLab accounts may
+      // publish their own MR reviews directly.
+      if (account.type === 'github' && (primary === undefined || accountId !== primary.id)) {
         throw new AppError('PROVIDER_UNSUPPORTED')
       }
-      const accountCapabilities = { ...account.capabilities, publish: accountId === primary.id }
+      const accountCapabilities = {
+        ...account.capabilities,
+        publish: account.type === 'gitlab' ? true : accountId === primary.id,
+      }
       requireWrite(accountCapabilities, 'publish')
-      // Writing a GitHub review always needs the explicit confirmation flag.
-      if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
+      // Writing a review always needs the explicit confirmation flag.
+      if (payload.confirm !== true) throw badRequest('发布审查需要 confirm: true')
       // Defaults come from the persisted publish config; explicit values win.
       const publishConfig = getReviewer()?.status?.()?.config?.publish ?? PUBLISH_DEFAULTS
       const mode = payload.mode === undefined ? publishConfig.mode : payload.mode

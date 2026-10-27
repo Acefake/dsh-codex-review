@@ -570,6 +570,10 @@ type PublishConfig = {
 
 ### 7.2 路由：`POST /codex-review/review-publish`
 
+- GitHub 账号：仅**主 GitHub 账号**可发布（GitHub review：汇总 + 行内评论）。
+- GitLab 账号：发布为 **MR 汇总评论 + 行内 discussion**（GitLab 12.9 text position；定位失败逐条跳过）；`reviewId` 为摘要 note id，`url` 带 `#note_<id>`。
+- 重放记录与发布键按账号隔离（`publishRecordKeys`；内置 `github` 账号使用无前缀 legacy key）。
+
 ```ts
 // 请求
 type PublishRequest = {
