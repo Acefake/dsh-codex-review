@@ -43,7 +43,9 @@ export function accountsFilePath() {
 
 /** Token file path for one account id. */
 export function accountTokenPath(id) {
-  const safe = String(id ?? '').replace(/[^a-zA-Z0-9_-]/g, '')
+  const raw = String(id ?? '')
+  if (raw === '') throw new AppError('BAD_REQUEST', '账号 id 不能为空')
+  const safe = encodeURIComponent(raw)
   return join(dshHome(), 'secrets', `codex-review-${safe}.token`)
 }
 
@@ -172,7 +174,7 @@ export function legacyAccounts(config) {
       type: 'gitlab',
       label: 'GitLab',
       baseUrl: normalizeGitlabBaseUrl(config.gitlabBaseUrl),
-      username: text(config.viewerLogin),
+      username: '',
     })
   }
   return accounts

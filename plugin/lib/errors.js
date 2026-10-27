@@ -27,6 +27,7 @@ export const USER_MESSAGES = {
   GL_SERVER: 'GitLab 服务端错误，请稍后重试',
   GL_NETWORK: '无法连接 GitLab，请检查地址和网络',
   PROVIDER_UNSUPPORTED: '当前数据源不支持该操作',
+  ACCOUNT_UNAVAILABLE: '该账号缺少可用凭据，请在设置里补充 Token',
   LLM_UNAVAILABLE: '当前 profile 没有可用的模型服务，暂时无法运行 AI 审查',
   LLM_ERROR: 'AI 审查调用失败，请稍后重试',
   REVIEW_TIMEOUT: 'AI 审查超时，请重试或缩小审查范围',

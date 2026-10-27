@@ -292,6 +292,8 @@ export class AutoReviewer {
   constructor(options = {}) {
     /** GitHub data client (read-only methods only). */
     this.github = options.github
+    /** Account id this scheduler operates on; keeps review jobs account-scoped. */
+    this.account = typeof options.account === 'string' ? options.account : ''
     /** Review engine shared with the manual review routes. */
     this.engine = options.engine
     /** Optional logger. */
@@ -625,7 +627,7 @@ export class AutoReviewer {
       if (repo === '' || !Number.isInteger(number) || number <= 0) continue
       if (item?.state !== 'open') continue
       if (item?.isDraft === true && this.config.includeDrafts !== true) continue
-      if (typeof this.engine.hasActiveJob === 'function' && this.engine.hasActiveJob(repo, number) === true) continue
+      if (typeof this.engine.hasActiveJob === 'function' && this.engine.hasActiveJob(repo, number, this.account) === true) continue
       /** @type {any} */
       let detail
       try {
@@ -685,6 +687,7 @@ export class AutoReviewer {
       const started = this.engine.start({
         repo,
         number,
+        account: this.account,
         headSha,
         title: detail?.summary?.title,
         body: detail?.body,

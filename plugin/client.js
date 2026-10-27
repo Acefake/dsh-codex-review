@@ -399,6 +399,25 @@ const EMPTY_LIST = Object.freeze([])
       settingsAutoDesc: 'Scans the query in the background and reviews new commits. Nothing is written to GitHub.',
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
+      accountsTitle: 'Accounts',
+      accountsDesc: 'GitHub / GitLab accounts. GitLab needs a base URL and token; leave a GitHub token empty to use the gh login.',
+      accountAdd: 'Add account',
+      accountTest: 'Test connection',
+      accountDefault: 'Set as default',
+      accountRemove: 'Remove',
+      accountDefaultTag: 'Default',
+      accountType: 'Account type',
+      accountName: 'Name (optional)',
+      accountUsername: 'Username (optional)',
+      accountBaseUrlPlaceholder: 'https://gitlab.example.com',
+      accountToken: 'Token',
+      accountTokenGhPlaceholder: 'Token (leave empty to use gh login)',
+      accountGhLogin: 'gh login',
+      accountNoUsername: 'No username',
+      accountLoading: 'Loading…',
+      accountTestOk: 'Connected: ',
+      accountTestFailed: 'Connection failed',
+      accountError: 'Could not load accounts.',
       settingsSaving: 'Saving…',
       settingsIntervalHint: '60–3600 s, default 180 s.',
       settingsQueryHint: 'GitHub search syntax, default is:open author:@me.',
@@ -742,6 +761,25 @@ const EMPTY_LIST = Object.freeze([])
       settingsAutoDesc: '后台按查询扫描新提交并自动审查；不会向 GitHub 写入任何内容。',
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
+      accountsTitle: '账号',
+      accountsDesc: 'GitHub / GitLab 账号；GitLab 需要实例地址和 Token，GitHub 留空 Token 则使用 gh 登录态。',
+      accountAdd: '添加账号',
+      accountTest: '测试连接',
+      accountDefault: '设为默认',
+      accountRemove: '删除',
+      accountDefaultTag: '默认',
+      accountType: '账号类型',
+      accountName: '名称（可选）',
+      accountUsername: '用户名（可选）',
+      accountBaseUrlPlaceholder: 'https://gitlab.example.com',
+      accountToken: 'Token',
+      accountTokenGhPlaceholder: 'Token（留空使用 gh 登录态）',
+      accountGhLogin: 'gh 登录态',
+      accountNoUsername: '未填写用户名',
+      accountLoading: '加载中……',
+      accountTestOk: '连接成功：',
+      accountTestFailed: '连接失败',
+      accountError: '账号列表加载失败。',
       settingsSaving: '保存中…',
       settingsIntervalHint: '60–3600 秒，默认 180 秒。',
       settingsQueryHint: 'GitHub 搜索语法，默认 is:open author:@me。',
@@ -5972,14 +6010,17 @@ const EMPTY_LIST = Object.freeze([])
         refresh()
       }, [refresh])
 
-      const mutate = (path, payload) => {
+      const mutate = (path, payload, options = {}) => {
         setBusy(true)
         setMessage('')
-        post(ROUTE + path, payload).then((result) => {
+        post(ROUTE + path, { ...payload, confirm: true }).then((result) => {
           setBusy(false)
           if (result.ok) {
             applyList(result.value || {})
             setMessage(tx(t, 'settingsSaved'))
+            if (options.resetForm === true) {
+              setForm((previous) => ({ ...previous, label: '', username: '', baseUrl: '', token: '' }))
+            }
             try {
               window.dispatchEvent(new CustomEvent('codex-review:accounts-changed'))
             } catch {
@@ -5998,80 +6039,83 @@ const EMPTY_LIST = Object.freeze([])
 
       return h(
         SettingsSection,
-        { title: '账号', desc: 'GitHub / GitLab 账号；GitLab 需要实例地址和 Token，GitHub 留空 Token 则使用 gh 登录态。', note: message },
+        { title: tx(t, 'accountsTitle'), desc: tx(t, 'accountsDesc'), note: message },
         h(
           'div',
           { className: 'cr-set-accounts', 'data-cr-accounts': 'ready' },
           state.loading
-            ? h('div', { className: 'cr-set-note' }, '……')
-            : (state.accounts || []).map((account) =>
-                h(
-                  'div',
-                  { key: account.id, className: 'cr-set-account', 'data-account': account.id },
+            ? h('div', { className: 'cr-set-note' }, tx(t, 'accountLoading'))
+            : state.error
+              ? h('div', { className: 'cr-set-inline cr-set-inline--warn', role: 'alert' },
+                  tx(t, 'accountError') + ' ' + ((state.error && state.error.message) || ''))
+              : (state.accounts || []).map((account) =>
                   h(
                     'div',
-                    { className: 'cr-set-text' },
-                    h('div', { className: 'cr-set-label' },
-                      account.label || account.id,
-                      h('span', { className: 'cr-set-tag' }, account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
+                    { key: account.id, className: 'cr-set-account', 'data-account': account.id },
+                    h(
+                      'div',
+                      { className: 'cr-set-text' },
+                      h('div', { className: 'cr-set-label' },
+                        account.label || account.id,
+                        h('span', { className: 'cr-set-tag' }, account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
+                        account.id === state.defaultAccount
+                          ? h('span', { className: 'cr-set-tag cr-set-tag--default' }, tx(t, 'accountDefaultTag'))
+                          : null),
+                      h('div', { className: 'cr-set-hint' },
+                        (account.username || (account.type === 'github' ? tx(t, 'accountGhLogin') : tx(t, 'accountNoUsername')))
+                          + (account.baseUrl ? ' · ' + account.baseUrl : '')),
+                    ),
+                    h(
+                      'div',
+                      { className: 'cr-set-actions' },
                       account.id === state.defaultAccount
-                        ? h('span', { className: 'cr-set-tag cr-set-tag--default' }, '默认')
-                        : null),
-                    h('div', { className: 'cr-set-hint' },
-                      (account.username || (account.type === 'github' ? 'gh 登录态' : '未填写用户名'))
-                        + (account.baseUrl ? ' · ' + account.baseUrl : '')),
-                  ),
-                  h(
-                    'div',
-                    { className: 'cr-set-actions' },
-                    account.id === state.defaultAccount
-                      ? null
-                      : h('button', {
-                          type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
-                          'data-action': 'account-default', 'data-account-id': account.id,
-                          onClick: () => mutate('/accounts-default', { id: account.id }),
-                        }, '设为默认'),
-                    h('button', {
-                      type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
-                      'data-action': 'account-remove', 'data-account-id': account.id,
-                      onClick: () => mutate('/accounts-remove', { id: account.id }),
-                    }, '删除'),
+                        ? null
+                        : h('button', {
+                            type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                            'data-action': 'account-default', 'data-account-id': account.id,
+                            onClick: () => mutate('/accounts-default', { id: account.id }),
+                          }, tx(t, 'accountDefault')),
+                      h('button', {
+                        type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                        'data-action': 'account-remove', 'data-account-id': account.id,
+                        onClick: () => mutate('/accounts-remove', { id: account.id }),
+                      }, tx(t, 'accountRemove')),
+                    ),
                   ),
                 ),
-              ),
           h(
             'div',
             { className: 'cr-set-account-form' },
             h(
               'select',
               {
-                className: 'cr-set-input', value: form.type, 'aria-label': '账号类型',
+                className: 'cr-set-input', value: form.type, 'aria-label': tx(t, 'accountType'),
                 onChange: (event) => update({ type: event.target.value }),
               },
               h('option', { value: 'github' }, 'GitHub'),
               h('option', { value: 'gitlab' }, 'GitLab'),
             ),
             h('input', {
-              type: 'text', className: 'cr-set-input', placeholder: '名称（可选）',
-              value: form.label, 'aria-label': '账号名称',
+              type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountName'),
+              value: form.label, 'aria-label': tx(t, 'accountName'),
               onChange: (event) => update({ label: event.target.value }),
             }),
             h('input', {
-              type: 'text', className: 'cr-set-input', placeholder: '用户名（可选）',
-              value: form.username, 'aria-label': '用户名',
+              type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountUsername'),
+              value: form.username, 'aria-label': tx(t, 'accountUsername'),
               onChange: (event) => update({ username: event.target.value }),
             }),
             form.type === 'gitlab'
               ? h('input', {
-                  type: 'text', className: 'cr-set-input', placeholder: 'https://gitlab.example.com',
-                  value: form.baseUrl, 'aria-label': 'GitLab 地址',
+                  type: 'text', className: 'cr-set-input', placeholder: tx(t, 'accountBaseUrlPlaceholder'),
+                  value: form.baseUrl, 'aria-label': tx(t, 'accountBaseUrlPlaceholder'),
                   onChange: (event) => update({ baseUrl: event.target.value }),
                 })
               : null,
             h('input', {
               type: 'password', className: 'cr-set-input cr-set-input--wide',
-              placeholder: form.type === 'github' ? 'Token（留空使用 gh 登录态）' : 'Token',
-              value: form.token, 'aria-label': 'Token',
+              placeholder: form.type === 'github' ? tx(t, 'accountTokenGhPlaceholder') : tx(t, 'accountToken'),
+              value: form.token, 'aria-label': tx(t, 'accountToken'),
               onChange: (event) => update({ token: event.target.value }),
             }),
             h(
@@ -6085,17 +6129,20 @@ const EMPTY_LIST = Object.freeze([])
                   setMessage('')
                   post(ROUTE + '/accounts-test', form).then((result) => {
                     setBusy(false)
-                    setMessage(result.ok
-                      ? '连接成功：' + ((result.value && result.value.viewer) || '')
-                      : ((result.error && result.error.message) || '连接失败'))
+                    if (result.ok) {
+                      setForm((previous) => ({ ...previous, token: '' }))
+                      setMessage(tx(t, 'accountTestOk') + ((result.value && result.value.viewer) || ''))
+                    } else {
+                      setMessage((result.error && result.error.message) || tx(t, 'accountTestFailed'))
+                    }
                   })
                 },
-              }, '测试连接'),
+              }, tx(t, 'accountTest')),
               h('button', {
                 type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
                 'data-action': 'account-add',
-                onClick: () => mutate('/accounts-add', form),
-              }, '添加账号'),
+                onClick: () => mutate('/accounts-add', form, { resetForm: true }),
+              }, tx(t, 'accountAdd')),
             ),
           ),
         ),
@@ -7833,12 +7880,15 @@ const EMPTY_LIST = Object.freeze([])
 
       // Multi-account state is appended after the original state slots so the
       // existing render order (and its tests) stays stable.
-      const [account, setAccount] = useState('github')
+      const [account, setAccount] = useState('')
       const [listNonce, setListNonce] = useState(0)
       const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
       const currentAccount = accounts.find((entry) => entry.id === account) ?? accounts[0] ?? null
       const multiAccount = accounts.length > 1
-      const writeEnabled = health.state === 'ok' && (currentAccount === null || currentAccount.capabilities?.merge === true)
+      // Prefer the account's explicit capability; legacy health without accounts
+      // falls back to the previous provider-based read-only rule.
+      const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
+      const writeEnabled = health.state === 'ok' && (currentAccount?.capabilities?.merge ?? legacyWriteAllowed)
       /** Detail cache key; includes the account only when several are configured. */
       const detailKey = (summary) => (multiAccount ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
 
@@ -7875,6 +7925,30 @@ const EMPTY_LIST = Object.freeze([])
       const publishDialogRef = useRef(null)
       publishDialogRef.current = publishDialog
 
+      /** Drop per-account UI state: selection, detail, review polling, chat and publish dialogs. */
+      const clearSelection = () => {
+        selectedRef.current = null
+        setSelected(null)
+        setDetail({ state: 'idle', value: null, error: null })
+        setReview(normalizeReviewStatus({ state: 'none' }))
+        detailGeneration.current += 1
+        reviewGeneration.current += 1
+        detailCache.current.clear()
+        detailInflight.current.clear()
+        setList({ state: 'loading', items: [], totalCount: 0, error: null })
+        chatGeneration.current += 1
+        try {
+          chatAbortRef.current?.abort?.()
+        } catch {
+          /* an already-aborted stream is fine */
+        }
+        setChat({ open: false, messages: [], streaming: false, error: null })
+        setPublishDialog({ open: false, mode: 'inline', minSeverity: 'P2', phase: 'idle', error: null })
+        setPublishRecords({})
+        setPublishUnsupported(false)
+        setMergeDialog({ open: false, method: DEFAULT_MERGE_METHOD, deleteBranch: false, phase: 'idle', error: null })
+      }
+
       // health: one shot; also picks the initial account tab
       useEffect(() => {
         let alive = true
@@ -7902,6 +7976,7 @@ const EMPTY_LIST = Object.freeze([])
               setHealth({ state: 'ok', value })
               const list = Array.isArray(value.accounts) ? value.accounts : []
               if (list.length > 0 && !list.some((entry) => entry.id === account)) {
+                clearSelection()
                 setAccount(value.defaultAccount || list[0].id)
               }
             }
@@ -8034,11 +8109,7 @@ const EMPTY_LIST = Object.freeze([])
       /** Switch the visible account and drop the previous account's selection. */
       const switchAccount = useCallback((nextAccount) => {
         if (nextAccount === account) return
-        selectedRef.current = null
-        setSelected(null)
-        setDetail({ state: 'idle', value: null, error: null })
-        setReview(normalizeReviewStatus({ state: 'none' }))
-        detailGeneration.current += 1
+        clearSelection()
         setAccount(nextAccount)
       }, [account, multiAccount])
 

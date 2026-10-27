@@ -49,8 +49,23 @@ export const CHAT_REQUEST_DEADLINE_MS = 300_000
 /** Changed files listed in the context before summarising the rest. */
 const CONTEXT_FILE_LIST_MAX = 40
 
-/** `owner/name` or nested GitLab project path; mirrors the provider-side repo rules (kept local to avoid an import cycle). */
-const REPO_PATTERN = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){1,19}$/
+/** One repo path segment; `.`/`..`/leading `-` are rejected separately. */
+const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/
+
+/**
+ * Validate a repo path shared by both providers: 2–20 segments, no empty,
+ * `.`/`..` or leading-`-` segment. GitHub accepts 2; GitLab allows nested groups.
+ * @param {unknown} repo - candidate path.
+ * @returns {boolean} true when every segment is safe.
+ */
+export function isValidRepoPath(repo) {
+  if (typeof repo !== 'string') return false
+  const parts = repo.split('/')
+  if (parts.length < 2 || parts.length > 20) return false
+  return parts.every((part) =>
+    part !== '' && part !== '.' && part !== '..' && !part.startsWith('-') && REPO_SEGMENT_PATTERN.test(part),
+  )
+}
 
 /** Marker appended to any truncated context block. */
 const TRUNCATION_MARKER = '…（已截断）'
@@ -82,7 +97,7 @@ export function truncateChars(value, maxChars, marker = TRUNCATION_MARKER) {
 export function validateChatRequest(payload) {
   const body = payload !== null && typeof payload === 'object' ? payload : {}
   const repo = typeof body.repo === 'string' ? body.repo.trim() : ''
-  if (!REPO_PATTERN.test(repo)) throw badRequest('repo 格式不合法')
+  if (!isValidRepoPath(repo)) throw badRequest('repo 格式不合法')
   const rawNumber = body.number
   const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
   if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
@@ -114,7 +129,7 @@ export function validateChatRequest(payload) {
       focusFile = trimmed
     }
   }
-  return { repo, number, messages: normalized, focusFile }
+  return { repo, number, messages: normalized, focusFile, ...(account === '' ? {} : { account }) }
 }
 
 /**

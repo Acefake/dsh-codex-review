@@ -181,10 +181,18 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
     focusFile: 'src/a.ts',
   })
   assert.equal(validateChatRequest({ repo: 'a/b', number: '12', messages: [message('user', 'q')] }).number, 12)
+  assert.equal(
+    validateChatRequest({ account: 'gitlab', repo: 'a/b', number: 1, messages: [message('user', 'q')] }).account,
+    'gitlab',
+  )
 
   /** @type {Array<[string, Record<string, unknown>]>} */
   const invalid = [
     ['bad repo', { repo: 'not-a-repo', number: 1, messages: [message('user', 'q')] }],
+    ['repo single segment', { repo: 'single', number: 1, messages: [message('user', 'q')] }],
+    ['repo dot segment', { repo: 'a/../b', number: 1, messages: [message('user', 'q')] }],
+    ['repo dash segment', { repo: 'a/-b', number: 1, messages: [message('user', 'q')] }],
+    ['repo too many segments', { repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1, messages: [message('user', 'q')] }],
     ['bad number', { repo: 'a/b', number: 0, messages: [message('user', 'q')] }],
     ['messages missing', { repo: 'a/b', number: 1 }],
     ['messages empty', { repo: 'a/b', number: 1, messages: [] }],

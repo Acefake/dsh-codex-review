@@ -117,10 +117,12 @@ export function resolveReviewOptions(options, config = {}) {
  * @param {number} number - PR number.
  * @param {string} headSha - head commit.
  * @param {ReturnType<typeof resolveReviewOptions>} options - resolved options.
+ * @param {string} [account] - account id the pull belongs to.
  * @returns {string} job key.
  */
-export function buildReviewJobKey(repo, number, headSha, options) {
-  return `${repo}#${number}@${headSha}|${options.depth}|${options.severityThreshold}|${options.includeGuidelines === false ? '0' : '1'}`
+export function buildReviewJobKey(repo, number, headSha, options, account = '') {
+  const prefix = account === '' ? '' : `${account}|`
+  return `${prefix}${repo}#${number}@${headSha}|${options.depth}|${options.severityThreshold}|${options.includeGuidelines === false ? '0' : '1'}`
 }
 
 /**
@@ -161,9 +163,10 @@ export function deriveVerdict(findings) {
  * @param {string} patch - unified diff hunks.
  * @returns {string} cache key.
  */
-export function fileCacheKey(repo, number, path, patch) {
+export function fileCacheKey(repo, number, path, patch, account = '') {
   const hash = createHash('sha1').update(typeof patch === 'string' ? patch : '').digest('hex')
-  return `${repo}#${number}|${path}|${hash}`
+  const prefix = account === '' ? '' : `${account}|`
+  return `${prefix}${repo}#${number}|${path}|${hash}`
 }
 
 /**
@@ -713,7 +716,8 @@ export class ReviewEngine {
             !Number.isFinite(job.startedAt) || !Number.isFinite(job.endedAt)) continue
         const restored = {
           ...job,
-          key: buildReviewJobKey(job.repo, job.number, job.headSha, job.options),
+          account: typeof job.account === 'string' ? job.account : '',
+          key: buildReviewJobKey(job.repo, job.number, job.headSha, job.options, typeof job.account === 'string' ? job.account : ''),
           controller: new AbortController(),
           guidelineText: '',
           skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
@@ -787,7 +791,8 @@ export class ReviewEngine {
     if (!this.available()) throw new AppError('LLM_UNAVAILABLE')
     const model = this.resolveModel()
     const options = resolveReviewOptions(input.options, this.config)
-    const key = buildReviewJobKey(input.repo, input.number, input.headSha, options)
+    const account = typeof input.account === 'string' ? input.account : ''
+    const key = buildReviewJobKey(input.repo, input.number, input.headSha, options, account)
     const existing = this.findByKey(key)
     if (existing !== undefined) {
       if (existing.state === 'done') return { jobId: existing.id, headSha: existing.headSha, cached: true, options: existing.options }
@@ -800,6 +805,7 @@ export class ReviewEngine {
     const job = {
       id: `rv-${this.now().toString(36)}-${this.sequence += 1}`,
       key,
+      account,
       repo: input.repo,
       number: input.number,
       headSha: input.headSha,
@@ -894,8 +900,8 @@ export class ReviewEngine {
    * @param {string} headSha - PR head SHA.
    * @returns {{ state: string, jobId?: string, headSha: string, findings: any[], overview?: string, error?: { code: string, message: string }, options?: any, guidelines?: any, reusedFiles?: number, verdict?: string, partial?: boolean, partialReasons?: string[] }} review snapshot.
    */
-  existing(repo, number, headSha) {
-    const job = this.findLatestForPull(repo, number, headSha)
+  existing(repo, number, headSha, account = '') {
+    const job = this.findLatestForPull(repo, number, headSha, account)
     if (job === undefined) return { state: 'none', headSha, findings: [] }
     // PrDetail.review.state has no 'cancelled' member: a cancelled run is
     // reported as none so the UI offers a fresh review for the same head.
@@ -945,11 +951,12 @@ export class ReviewEngine {
    * @param {string} headSha - PR head SHA.
    * @returns {any | undefined} the job record.
    */
-  findLatestForPull(repo, number, headSha) {
+  findLatestForPull(repo, number, headSha, account = '') {
     /** @type {any} */
     let found
     for (const job of this.jobs.values()) {
-      if (job.repo === repo && job.number === number && job.headSha === headSha) found = job
+      if (job.repo === repo && job.number === number && job.headSha === headSha &&
+          (job.account ?? '') === account) found = job
     }
     return found
   }
@@ -961,9 +968,10 @@ export class ReviewEngine {
    * @param {number} number - PR number.
    * @returns {boolean} true when a live job exists for the PR.
    */
-  hasActiveJob(repo, number) {
+  hasActiveJob(repo, number, account = '') {
     for (const job of this.jobs.values()) {
-      if (job.repo === repo && job.number === number && (job.state === 'queued' || job.state === 'running')) return true
+      if (job.repo === repo && job.number === number && (job.account ?? '') === account &&
+          (job.state === 'queued' || job.state === 'running')) return true
     }
     return false
   }
@@ -988,15 +996,15 @@ export class ReviewEngine {
    * @param {number} number - PR number.
    * @returns {number} number of jobs removed.
    */
-  invalidate(repo, number) {
+  invalidate(repo, number, account = '') {
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {
-      if (job.repo !== repo || job.number !== number) continue
+      if (job.repo !== repo || job.number !== number || (job.account ?? '') !== account) continue
       if (job.state === 'queued' || job.state === 'running') this.cancel(id)
       this.jobs.delete(id)
       removed += 1
     }
-    const prefix = `${repo}#${number}|`
+    const prefix = `${account === '' ? '' : `${account}|`}${repo}#${number}|`
     for (const key of [...this.fileCache.entries.keys()]) {
       if (key.startsWith(prefix)) this.fileCache.delete(key)
     }
@@ -1011,9 +1019,9 @@ export class ReviewEngine {
    * @param {{ path: string, patch: string }} file - reviewable file.
    * @returns {any[] | undefined} cached findings.
    */
-  readFileCache(repo, number, file) {
+  readFileCache(repo, number, file, account = '') {
     if (typeof file?.path !== 'string' || typeof file?.patch !== 'string') return undefined
-    const cached = this.fileCache.get(fileCacheKey(repo, number, file.path, file.patch), this.now())
+    const cached = this.fileCache.get(fileCacheKey(repo, number, file.path, file.patch, account), this.now())
     return Array.isArray(cached) ? cached : undefined
   }
 
@@ -1026,11 +1034,11 @@ export class ReviewEngine {
    * @param {Array<{ path: string, patch: string }>} files - files of the chunk.
    * @param {any[]} findings - validated findings of the chunk.
    */
-  storeFileCache(repo, number, files, findings) {
+  storeFileCache(repo, number, files, findings, account = '') {
     for (const file of files) {
       if (typeof file?.path !== 'string' || typeof file?.patch !== 'string') continue
       const own = findings.filter((finding) => finding.file === file.path)
-      this.fileCache.set(fileCacheKey(repo, number, file.path, file.patch), own, Number.POSITIVE_INFINITY, this.now())
+      this.fileCache.set(fileCacheKey(repo, number, file.path, file.patch, account), own, Number.POSITIVE_INFINITY, this.now())
     }
   }
 
@@ -1084,7 +1092,7 @@ export class ReviewEngine {
       /** @type {Array<any>} */
       const misses = []
       for (const file of reviewable) {
-        const cached = this.readFileCache(job.repo, job.number, file)
+        const cached = this.readFileCache(job.repo, job.number, file, job.account ?? '')
         if (cached === undefined) misses.push(file)
         else reusedGroups.push(cached)
       }
@@ -1136,7 +1144,7 @@ export class ReviewEngine {
           const allowedFiles = new Set(chunk.files.map((file) => file.path))
           try {
             results[index] = await this.reviewChunk(job, prompt, allowedFiles, index)
-            if (results[index].ok === true) this.storeFileCache(job.repo, job.number, chunk.files, results[index].findings ?? [])
+            if (results[index].ok === true) this.storeFileCache(job.repo, job.number, chunk.files, results[index].findings ?? [], job.account ?? '')
           } catch (error) {
             // A single chunk failing (timeout, provider hiccup) must not discard
             // the chunks that did finish: record it as a partial reason.
