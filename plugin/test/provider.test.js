@@ -290,8 +290,10 @@ test('repo validation follows the selected account provider and segment rules', 
     () => routes['/codex-review/pr']({ repo: 'mdesign/-secret', number: 1 }),
     (error) => error.code === 'BAD_REQUEST',
   )
-  const single = await routes['/codex-review/pr']({ repo: 'single', number: 1 })
-  assert.equal(single.summary !== undefined, true)
+  await assert.rejects(
+    () => routes['/codex-review/pr']({ repo: 'single', number: 1 }),
+    (error) => error.code === 'BAD_REQUEST',
+  )
   await assert.rejects(
     () => routes['/codex-review/pr']({ repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1 }),
     (error) => error.code === 'BAD_REQUEST',

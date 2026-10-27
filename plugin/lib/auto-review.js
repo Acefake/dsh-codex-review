@@ -293,7 +293,9 @@ export class AutoReviewer {
     /** GitHub data client (read-only methods only). */
     this.github = options.github
     /** Account id this scheduler operates on; keeps review jobs account-scoped. */
-    this.account = typeof options.account === 'string' ? options.account : 'github'
+    this.account = typeof options.account === 'string'
+      ? options.account
+      : (typeof options.engine?.legacyAccount === 'string' ? options.engine.legacyAccount : 'github')
     /** Review engine shared with the manual review routes. */
     this.engine = options.engine
     /** Optional logger. */

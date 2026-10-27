@@ -188,6 +188,7 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
 
   /** @type {Array<[string, Record<string, unknown>]>} */
   const invalid = [
+    ['bad repo', { repo: 'not-a-repo', number: 1, messages: [message('user', 'q')] }],
     ['bad repo space', { repo: 'bad path/repo', number: 1, messages: [message('user', 'q')] }],
     ['repo dot segment', { repo: 'a/../b', number: 1, messages: [message('user', 'q')] }],
     ['repo bare dot', { repo: 'a/.', number: 1, messages: [message('user', 'q')] }],
@@ -214,7 +215,6 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
   }
   const twenty = Array.from({ length: 20 }, () => 'a').join('/')
   assert.equal(validateChatRequest({ repo: twenty, number: 1, messages: [message('user', 'q')] }).repo, twenty)
-  assert.equal(validateChatRequest({ repo: 'single', number: 1, messages: [message('user', 'q')] }).repo, 'single')
   assert.equal(validateChatRequest({ repo: 'a/b-c', number: 1, messages: [message('user', 'q')] }).repo, 'a/b-c')
   assert.throws(
     () => validateChatRequest({ repo: 'a/-b', number: 1, messages: [message('user', 'q')] }),
@@ -365,6 +365,14 @@ test('the chat flow accepts a clients-only wiring without accountRuntime', async
   const { stream, frames } = makeStream()
   await handle({ repo: 'a/b', number: 1, messages: [{ role: 'user', content: 'q' }] }, stream)
   assert.equal(JSON.parse(frames.at(-1).slice(6, -2)).done, true)
+  await assert.rejects(
+    () => handle({ repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+  await assert.rejects(
+    () => handle({ repo: 'single', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
 })
 
 test('the chat flow streams deltas, carries the sessionId and ends with a done frame', async () => {

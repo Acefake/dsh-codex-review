@@ -167,7 +167,7 @@ export function buildClients(config, logger, githubOverride, accounts, tokenRead
       continue
     }
     const stored = readToken(account.id)
-    if (githubOverride !== undefined && !githubOverrideUsed) {
+    if (githubOverride !== undefined && account.id === 'github') {
       githubOverrideUsed = true
       clients[account.id] = githubOverride
       continue
@@ -444,7 +444,8 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       try {
         reviewer?.updateConfig?.({ enabled: false })
       } catch {
-        /* stopping the scheduler is best effort */
+        // If the scheduler cannot be paused, dispose it so it cannot run empty.
+        reviewer?.dispose?.()
       }
       if (reviewer !== null && typeof reviewer === 'object') {
         reviewer.github = undefined
@@ -705,6 +706,7 @@ export function createRoutes(wiring) {
       ? payload.account.trim()
       : ''
     const id = requested !== '' ? requested : runtime.defaultAccount
+    if (runtime.accounts.length === 0) throw new AppError('ACCOUNT_UNAVAILABLE', '还没有配置任何账号')
     const client = runtime.clients[id]
     if (client === undefined) throw badRequest(`未知账号：${id}`)
     if (client.unavailable === true) throw new AppError('ACCOUNT_UNAVAILABLE', client.reason)
@@ -717,13 +719,17 @@ export function createRoutes(wiring) {
   const accountListValue = () => ({
     accounts: runtime.accounts.map((account) => {
       const type = account.type === 'gitlab' ? 'gitlab' : 'github'
+      const primary = currentPrimaryGithub()
+      const capabilities = type === 'github'
+        ? { ...providerCapabilities('github'), publish: primary?.id === account.id, autoReview: primary?.id === account.id }
+        : providerCapabilities('gitlab')
       return {
         id: account.id,
         type: account.type,
         label: account.label,
         baseUrl: account.baseUrl,
         username: account.username,
-        capabilities: providerCapabilities(type),
+        capabilities,
         labels: PROVIDER_LABELS[type],
       }
     }),
@@ -1226,6 +1232,9 @@ export function createRoutes(wiring) {
         throw badRequest('新增 GitHub 账号需要 Token')
       }
       const id = makeAccountId(input.type, input.label, runtime.accounts)
+      if (input.type === 'github' && token === '') {
+        throw badRequest('新增 GitHub 账号需要 Token')
+      }
       const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
       if (token !== '') tokenWriter(id, token)
       runtime.accounts.push({
@@ -1267,6 +1276,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.accountsTest]: async (payload) => {
+      if (payload.confirm !== true) throw badRequest('测试账号需要 confirm: true')
       const input = normalizeAccountInput(payload)
       const token = accountTokenInput(payload)
       if (input.type === 'gitlab') {

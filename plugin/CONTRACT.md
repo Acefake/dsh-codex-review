@@ -661,7 +661,7 @@ type PublishRequest = {
 | `/codex-review/accounts` | `{}` | `{ accounts: Array<{ id, type, label, baseUrl, username, capabilities, labels }>, defaultAccount }` |
 | `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token?, confirm: true }` | account list（同 `/accounts`） |
 | `/codex-review/accounts-remove` | `{ id, confirm: true }` | account list；至少保留一个账号，允许纯 GitLab |
-| `/codex-review/accounts-test` | `{ type, baseUrl?, username?, token? }` | `{ ok, type, viewer, error? }` |
+| `/codex-review/accounts-test` | `{ type, baseUrl?, username?, token?, confirm: true }` | `{ ok, type, viewer, error? }` |
 | `/codex-review/accounts-default` | `{ id, confirm: true }` | account list |
 
 校验顺序：`account`（缺省 `defaultAccount`）→ `repo/number` → `confirm===true` → 其余字段（`body` 1..4000、`commentId` 正整数、`threadId` 1..200）。错误码：`BAD_REQUEST`、`ACCOUNT_UNAVAILABLE`、`PROVIDER_UNSUPPORTED`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`GH_TIMEOUT`、`INTERNAL`。

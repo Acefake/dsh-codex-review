@@ -38,7 +38,7 @@
 - 写操作（合并、发布、评论、回复、解决）仅对 GitHub 账号可用；GitLab 账号保持只读。
 - `dataSource` 表示默认账号；另一个账号只要配置齐全就始终可用。
 - 设置 → 代码审查 → 「账号」：可**添加 / 删除 / 测试连接 / 设为默认**；新增账号必须填自己的 Token（内置默认 GitHub 账号可用 `gh` 登录态）。
-- 账号存在 `<profile>/.codex-review/accounts.json`（不含 token）；token 按账号存 `~/.dsh/secrets/codex-review-<id>.token`。
+- 账号存在 `<profile>/.codex-review/accounts.json`（不含 token）；token 按账号存 `~/.dsh/secrets/codex-review/<profile-hash>/<id>.token`。
 - 至少保留一个账号（允许纯 GitLab）；删除当前默认账号会自动切到第一个账号。
 
 ## 统一审查设置

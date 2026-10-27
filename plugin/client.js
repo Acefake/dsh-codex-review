@@ -6016,6 +6016,7 @@ const EMPTY_LIST = Object.freeze([])
       const mutate = (path, payload, options = {}) => {
         setBusy(true)
         setMessage('')
+        setPendingRemove('')
         post(ROUTE + path, { ...payload, confirm: true }).then((result) => {
           setBusy(false)
           if (result.ok) {
@@ -6112,7 +6113,10 @@ const EMPTY_LIST = Object.freeze([])
               'select',
               {
                 className: 'cr-set-input', value: form.type, 'aria-label': tx(t, 'accountType'),
-                onChange: (event) => update({ type: event.target.value, baseUrl: '', token: '' }),
+                onChange: (event) => {
+                  setPendingRemove('')
+                  update({ type: event.target.value, baseUrl: '', token: '' })
+                },
               },
               h('option', { value: 'github' }, 'GitHub'),
               h('option', { value: 'gitlab' }, 'GitLab'),
@@ -6149,7 +6153,7 @@ const EMPTY_LIST = Object.freeze([])
                 onClick: () => {
                   setBusy(true)
                   setMessage('')
-                  post(ROUTE + '/accounts-test', form).then((result) => {
+                  post(ROUTE + '/accounts-test', { ...form, confirm: true }).then((result) => {
                     setBusy(false)
                     if (result.ok) {
                       setMessage(tx(t, 'accountTestOk') + ((result.value && result.value.viewer) || ''))
