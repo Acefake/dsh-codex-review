@@ -8,7 +8,7 @@
  * @module dsh-codex-review/lib/accounts
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { AppError } from './errors.js'
@@ -53,16 +53,24 @@ export function accountTokenPath(id) {
 export function readAccountToken(id) {
   try {
     return readFileSync(accountTokenPath(id), 'utf8').trim()
-  } catch {
-    return ''
+  } catch (error) {
+    if (error?.code === 'ENOENT') return ''
+    throw new AppError('INTERNAL', '读取账号 Token 失败')
   }
 }
 
-/** Persist one account's token with owner-only intent (best effort). */
+/** Persist one account's token with owner-only permissions. */
 export function writeAccountToken(id, token) {
   const file = accountTokenPath(id)
-  mkdirSync(dirname(file), { recursive: true })
+  const directory = dirname(file)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
   writeFileSync(file, String(token), { encoding: 'utf8', mode: 0o600 })
+  try {
+    chmodSync(directory, 0o700)
+    chmodSync(file, 0o600)
+  } catch {
+    /* best effort when the platform cannot chmod */
+  }
 }
 
 /** Remove one account's token file. */
@@ -150,8 +158,13 @@ export function loadAccountStore() {
           baseUrl: account.type === 'gitlab' ? normalizeGitlabBaseUrl(account.baseUrl) : '',
           username: text(account.username),
         }))
+        // A GitLab account with an unusable base URL would build a broken client.
+        .filter((account) => account.type !== 'gitlab' || account.baseUrl !== '')
       : []
-    const defaultAccount = typeof parsed?.defaultAccount === 'string' ? parsed.defaultAccount : ''
+    const requestedDefault = typeof parsed?.defaultAccount === 'string' ? parsed.defaultAccount : ''
+    const defaultAccount = accounts.some((account) => account.id === requestedDefault)
+      ? requestedDefault
+      : (accounts[0]?.id ?? '')
     return { accounts, defaultAccount }
   } catch {
     return { accounts: [], defaultAccount: '' }

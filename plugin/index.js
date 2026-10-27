@@ -140,27 +140,41 @@ function unavailableClient(reason) {
  */
 export function buildClients(config, logger, githubOverride, accounts) {
   const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : legacyAccounts(config)
+  /** The first GitHub account may use the host gh login when it has no token. */
+  const primaryGithubId = list.find((account) => account.type === 'github')?.id
   /** @type {Record<string, any>} */
   const clients = {}
+  const readToken = (id) => {
+    try {
+      return { token: readAccountToken(id), error: '' }
+    } catch (error) {
+      return { token: '', error: error?.message || '读取 Token 失败' }
+    }
+  }
   for (const account of list) {
     if (account.type === 'gitlab') {
-      const token = readAccountToken(account.id) || (account.id === 'gitlab' ? config.gitlabToken : '')
-      clients[account.id] = token === ''
-        ? unavailableClient(`${account.label || account.id} 缺少 Token`)
-        : new GitLabClient({
-            config: { ...config, gitlabBaseUrl: account.baseUrl || config.gitlabBaseUrl || '', gitlabToken: token },
-            logger,
-          })
+      const stored = readToken(account.id)
+      const token = stored.token || (account.id === 'gitlab' ? config.gitlabToken : '')
+      clients[account.id] = stored.error !== ''
+        ? unavailableClient(stored.error)
+        : (token === ''
+            ? unavailableClient(`${account.label || account.id} 缺少 Token`)
+            : new GitLabClient({
+                config: { ...config, gitlabBaseUrl: account.baseUrl || config.gitlabBaseUrl || '', gitlabToken: token },
+                logger,
+              }))
       continue
     }
-    const token = readAccountToken(account.id)
+    const stored = readToken(account.id)
     if (githubOverride !== undefined && (account.id === 'github' || list.length === 1)) {
       clients[account.id] = githubOverride
       continue
     }
-    clients[account.id] = token === '' && account.id !== 'github'
-      ? unavailableClient(`${account.label || account.id} 缺少 Token`)
-      : new GitHubClient({ config, logger, token })
+    clients[account.id] = stored.error !== ''
+      ? unavailableClient(stored.error)
+      : (stored.token === '' && account.id !== primaryGithubId
+          ? unavailableClient(`${account.label || account.id} 缺少 Token`)
+          : new GitHubClient({ config, logger, token: stored.token }))
   }
   return clients
 }
@@ -411,9 +425,19 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     const primary = accountRuntime.accounts.find(
       (account) => account.type === 'github' && accountRuntime.clients[account.id]?.unavailable !== true,
     )
-    if (primary === undefined) return
+    if (primary === undefined) {
+      if (reviewer !== null && typeof reviewer === 'object') {
+        reviewer.github = undefined
+        reviewer.account = ''
+      }
+      if (publisher !== null && typeof publisher === 'object') publisher.github = undefined
+      return
+    }
     const client = accountRuntime.clients[primary.id]
-    if (reviewer !== null && typeof reviewer === 'object') reviewer.github = client
+    if (reviewer !== null && typeof reviewer === 'object') {
+      reviewer.github = client
+      reviewer.account = primary.id
+    }
     if (publisher !== null && typeof publisher === 'object') publisher.github = client
   }
   const routes = createRoutes({
@@ -467,7 +491,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   ctx.effect(() => () => reviewer?.dispose?.(), 'dsh-codex-review: auto-review scheduler')
   // Drop pending publish locks so a reload never leaves callers chained forever.
   ctx.effect(() => () => {
-    if (typeof publisher.dispose === 'function') publisher.dispose()
+    publisher?.dispose?.()
   }, 'dsh-codex-review: review publisher')
 }
 
@@ -1093,9 +1117,6 @@ export function createRoutes(wiring) {
       if (payload.confirm !== true) throw badRequest('添加账号需要 confirm: true')
       const input = normalizeAccountInput(payload)
       const token = accountTokenInput(payload)
-      if (input.type === 'github' && token === '') {
-        throw badRequest('新增 GitHub 账号需要 Token')
-      }
       const id = makeAccountId(input.type, input.label, runtime.accounts)
       if (token !== '') writeAccountToken(id, token)
       runtime.accounts.push({

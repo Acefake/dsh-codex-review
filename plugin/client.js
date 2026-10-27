@@ -400,7 +400,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
       accountsTitle: 'Accounts',
-      accountsDesc: 'GitHub / GitLab accounts. Every added account needs its own token; the built-in GitHub account may fall back to the gh login.',
+      accountsDesc: 'GitHub / GitLab accounts. The first GitHub account may use the gh login; additional accounts and every GitLab account need their own token.',
       accountAdd: 'Add account',
       accountTest: 'Test connection',
       accountDefault: 'Set as default',
@@ -762,7 +762,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
       accountsTitle: '账号',
-      accountsDesc: 'GitHub / GitLab 账号；新增账号必须填自己的 Token，内置默认 GitHub 账号可用 gh 登录态。',
+      accountsDesc: 'GitHub / GitLab 账号；第一个 GitHub 账号可留空 Token 使用 gh 登录态，其他账号需要自己的 Token。',
       accountAdd: '添加账号',
       accountTest: '测试连接',
       accountDefault: '设为默认',
@@ -6002,7 +6002,7 @@ const EMPTY_LIST = Object.freeze([])
       const refresh = useCallback(() => {
         post(ROUTE + '/accounts', {}).then((result) => {
           if (result.ok) applyList(result.value || {})
-          else setState({ loading: false, accounts: [], defaultAccount: '', error: result.error || null })
+          else setState((previous) => ({ ...previous, loading: false, error: result.error || null }))
         })
       }, [])
 
@@ -6033,7 +6033,9 @@ const EMPTY_LIST = Object.freeze([])
       }
 
       const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
-      const canAdd = form.token.trim() !== '' && (form.type !== 'gitlab' || form.baseUrl.trim() !== '')
+      const canAdd = form.type === 'gitlab'
+        ? form.baseUrl.trim() !== '' && form.token.trim() !== ''
+        : true
 
       return h(
         SettingsSection,
@@ -6043,10 +6045,17 @@ const EMPTY_LIST = Object.freeze([])
           { className: 'cr-set-accounts', 'data-cr-accounts': 'ready' },
           state.loading
             ? h('div', { className: 'cr-set-note' }, tx(t, 'accountLoading'))
-            : state.error
-              ? h('div', { className: 'cr-set-inline cr-set-inline--warn', role: 'alert' },
-                  tx(t, 'accountError') + ' ' + ((state.error && state.error.message) || ''))
-              : (state.accounts || []).map((account) =>
+            : null,
+          state.error
+            ? h('div', { className: 'cr-set-inline cr-set-inline--warn', role: 'alert' },
+                tx(t, 'accountError') + ' ' + ((state.error && state.error.message) || ''),
+                h('div', { className: 'cr-set-actions' },
+                  h('button', {
+                    type: 'button', className: 'cr-btn cr-btn--ghost',
+                    'data-action': 'account-retry', onClick: refresh,
+                  }, tx(t, 'retry'))))
+            : null,
+          (state.accounts || []).map((account) =>
                   h(
                     'div',
                     { key: account.id, className: 'cr-set-account', 'data-account': account.id },
@@ -6112,7 +6121,7 @@ const EMPTY_LIST = Object.freeze([])
               : null,
             h('input', {
               type: 'password', className: 'cr-set-input cr-set-input--wide',
-              placeholder: tx(t, 'accountToken'),
+              placeholder: form.type === 'github' ? tx(t, 'accountTokenGhPlaceholder') : tx(t, 'accountToken'),
               value: form.token, 'aria-label': tx(t, 'accountToken'),
               onChange: (event) => update({ token: event.target.value }),
             }),
@@ -7882,10 +7891,14 @@ const EMPTY_LIST = Object.freeze([])
       const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
       const currentAccount = accounts.find((entry) => entry.id === account) ?? null
       const multiAccount = accounts.length > 1
-      // Prefer the account's explicit capability; legacy health without accounts
-      // falls back to the previous provider-based read-only rule.
+      // Prefer the current account's explicit capability; fall back to its type,
+      // and only use the legacy provider rule when health has no accounts at all.
+      const hasAccounts = accounts.length > 0
       const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
-      const writeEnabled = health.state === 'ok' && (currentAccount?.capabilities?.merge ?? legacyWriteAllowed)
+      const currentWriteAllowed = currentAccount === null
+        ? (!hasAccounts && legacyWriteAllowed)
+        : (currentAccount.capabilities?.merge ?? currentAccount.type !== 'gitlab')
+      const writeEnabled = health.state === 'ok' && currentWriteAllowed
       /** Detail cache key; includes the account only when several are configured. */
       const detailKey = (summary) => (multiAccount ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
 

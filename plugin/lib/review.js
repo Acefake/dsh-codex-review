@@ -902,7 +902,7 @@ export class ReviewEngine {
    * @param {string} headSha - PR head SHA.
    * @returns {{ state: string, jobId?: string, headSha: string, findings: any[], overview?: string, error?: { code: string, message: string }, options?: any, guidelines?: any, reusedFiles?: number, verdict?: string, partial?: boolean, partialReasons?: string[] }} review snapshot.
    */
-  existing(repo, number, headSha, account) {
+  existing(repo, number, headSha, account = '') {
     const job = this.findLatestForPull(repo, number, headSha, account)
     if (job === undefined) return { state: 'none', headSha, findings: [] }
     // PrDetail.review.state has no 'cancelled' member: a cancelled run is
@@ -953,12 +953,12 @@ export class ReviewEngine {
    * @param {string} headSha - PR head SHA.
    * @returns {any | undefined} the job record.
    */
-  findLatestForPull(repo, number, headSha, account) {
+  findLatestForPull(repo, number, headSha, account = '') {
     /** @type {any} */
     let found
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number && job.headSha === headSha &&
-          (account === undefined || (job.account ?? '') === account)) found = job
+          (job.account ?? '') === account) found = job
     }
     return found
   }
@@ -970,10 +970,10 @@ export class ReviewEngine {
    * @param {number} number - PR number.
    * @returns {boolean} true when a live job exists for the PR.
    */
-  hasActiveJob(repo, number, account) {
+  hasActiveJob(repo, number, account = '') {
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number &&
-          (account === undefined || (job.account ?? '') === account) &&
+          (job.account ?? '') === account &&
           (job.state === 'queued' || job.state === 'running')) return true
     }
     return false
@@ -999,22 +999,18 @@ export class ReviewEngine {
    * @param {number} number - PR number.
    * @returns {number} number of jobs removed.
    */
-  invalidate(repo, number, account) {
+  invalidate(repo, number, account = '') {
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {
       if (job.repo !== repo || job.number !== number) continue
-      if (account !== undefined && (job.account ?? '') !== account) continue
+      if ((job.account ?? '') !== account) continue
       if (job.state === 'queued' || job.state === 'running') this.cancel(id)
       this.jobs.delete(id)
       removed += 1
     }
-    const exactPrefix = `${account === undefined || account === '' ? '' : `${account}|`}${repo}#${number}|`
-    const scopedSuffix = `|${repo}#${number}|`
+    const prefix = `${account === '' ? '' : `${account}|`}${repo}#${number}|`
     for (const key of [...this.fileCache.entries.keys()]) {
-      const matches = account === undefined
-        ? key.startsWith(exactPrefix) || key.includes(scopedSuffix)
-        : key.startsWith(exactPrefix)
-      if (matches) this.fileCache.delete(key)
+      if (key.startsWith(prefix)) this.fileCache.delete(key)
     }
     this.persistResults()
     return removed

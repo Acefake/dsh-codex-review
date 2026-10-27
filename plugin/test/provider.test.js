@@ -287,21 +287,13 @@ test('repo validation follows the selected account provider and segment rules', 
   assert.equal((await routes['/codex-review/pr']({ repo: twenty, number: 1 })).summary !== undefined, true)
 })
 
-test('adding a GitHub account without its own token is rejected', async () => {
-  const { routes } = buildRoutes()
-  await assert.rejects(
-    () => routes['/codex-review/accounts-add']({ type: 'github', label: 'Work', confirm: true }),
-    (error) => error.code === 'BAD_REQUEST',
-  )
-})
-
-test('buildClients marks non-default GitHub/GitLab accounts without a token unavailable', () => {  const config = resolveConfig({})
+test('buildClients marks non-primary GitHub/GitLab accounts without a token unavailable', () => {  const config = resolveConfig({})
   const clients = buildClients(config, { warn: () => {} }, undefined, [
     { id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' },
     { id: 'work', type: 'github', label: 'Work', baseUrl: '', username: '' },
     { id: 'gl', type: 'gitlab', label: 'GL', baseUrl: 'http://gitlab.local:8090', username: '' },
   ])
-  assert.equal(clients.github.unavailable, undefined, 'the legacy default may fall back to gh')
+  assert.equal(clients.github.unavailable, undefined, 'the first GitHub account may fall back to gh')
   assert.equal(clients.work.unavailable, true, 'a second GitHub account needs its own token')
   assert.equal(clients.gl.unavailable, true, 'a GitLab account needs a token')
 })

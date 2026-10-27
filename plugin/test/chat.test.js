@@ -288,7 +288,7 @@ function makeChatFlow(options = {}) {
   }
   const handle = createChatStreamHandler({
     github,
-    clients: options.clients,
+    clients: options.clients ?? options.accountRuntime?.clients,
     accountRuntime: options.accountRuntime,
     engine,
     streamLlm: async (request) => {

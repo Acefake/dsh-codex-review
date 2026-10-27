@@ -419,7 +419,8 @@ function reviewUrl(created, repo, number, reviewId) {
  * @returns {{ prKey: string, headKey: string }} rolling and per-head keys.
  */
 export function publishRecordKeys(account, repo, number, headSha) {
-  const prefix = typeof account === 'string' && account !== '' ? `${account}|` : ''
+  const id = typeof account === 'string' ? account.trim() : ''
+  const prefix = id !== '' ? `${id}|` : ''
   return { prKey: `${prefix}${repo}#${number}`, headKey: `${prefix}${repo}#${number}@${headSha}` }
 }
 
@@ -647,7 +648,8 @@ export class ReviewPublisher {
     // A repeat of the same request for the same head answers from the record and
     // performs no GitHub read at all (CONTRACT §7.2 #6). The check runs before
     // the marker read on purpose: a double click must not pay for a round trip.
-    const recorded = this.store.get(headKey)
+    // Read the account-scoped key first, then a pre-account upgrade record.
+    const recorded = this.store.get(headKey) ?? (account !== '' ? this.store.get(`${repo}#${number}@${headSha}`) : undefined)
     if (isReplayableHead(recorded, requestKey)) {
       const replay = filterPublishableFindings(review.findings, { minSeverity, maxComments })
       return replayResult(recorded, replay.selected.length + replay.overLimit, headSha, 'unchanged')
@@ -676,7 +678,7 @@ export class ReviewPublisher {
 
     // The new head produced exactly the content already on GitHub: keep the
     // head↔review pointer fresh but do not touch GitHub (CONTRACT §7.2 #6).
-    const rolling = this.store.get(prKey)
+    const rolling = this.store.get(prKey) ?? (account !== '' ? this.store.get(`${repo}#${number}`) : undefined)
     if (isReplayable(rolling, fingerprint)) {
       this.persistRecords([{ key: headKey, record: { publishedAt: this.now(), reviewId: rolling.reviewId, url: rolling.url, fingerprint, request: requestKey } }])
       return replayResult(rolling, prepared.selected.length + prepared.overLimit, headSha, 'unchanged')
