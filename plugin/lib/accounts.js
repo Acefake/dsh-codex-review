@@ -43,12 +43,13 @@ export function accountsFilePath() {
   return join(profileDirectory(), '.codex-review', 'accounts.json')
 }
 
-/** Token file path for one account id. */
+/** Token file path for one account id, isolated per profile. */
 export function accountTokenPath(id) {
   const raw = String(id ?? '')
   if (raw === '') throw new AppError('BAD_REQUEST', '账号 id 不能为空')
   const safe = encodeURIComponent(raw)
-  return join(dshHome(), 'secrets', `codex-review-${safe}.token`)
+  const profile = profileDirectory().replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'desktop'
+  return join(dshHome(), 'secrets', 'codex-review', profile, `${safe}.token`)
 }
 
 /** Read one account's token ('' when the file is missing). */
@@ -151,7 +152,7 @@ export function accountTokenInput(input) {
  */
 export function loadAccountStore() {
   const file = accountsFilePath()
-  if (!existsSync(file)) return { accounts: [], defaultAccount: '' }
+  if (!existsSync(file)) return { accounts: [], defaultAccount: '', present: false }
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'))
     const accounts = Array.isArray(parsed?.accounts)
@@ -171,7 +172,7 @@ export function loadAccountStore() {
     const defaultAccount = accounts.some((account) => account.id === requestedDefault)
       ? requestedDefault
       : (accounts[0]?.id ?? '')
-    return { accounts, defaultAccount }
+    return { accounts, defaultAccount, present: true }
   } catch {
     // Keep the unreadable file as a backup instead of silently overwriting it.
     try {
@@ -179,7 +180,7 @@ export function loadAccountStore() {
     } catch {
       /* a failed backup must not break startup */
     }
-    return { accounts: [], defaultAccount: '' }
+    return { accounts: [], defaultAccount: '', present: true }
   }
 }
 

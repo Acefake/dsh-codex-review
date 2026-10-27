@@ -7906,9 +7906,10 @@ const EMPTY_LIST = Object.freeze([])
       // and only use the legacy provider rule when health has no accounts at all.
       const hasAccounts = accounts.length > 0
       const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
-      const currentWriteAllowed = currentAccount === null
+      const writeAccount = currentAccount ?? accounts[0] ?? null
+      const currentWriteAllowed = writeAccount === null
         ? (!hasAccounts && legacyWriteAllowed)
-        : (currentAccount.capabilities?.merge ?? currentAccount.type !== 'gitlab')
+        : (writeAccount.capabilities?.merge ?? writeAccount.type !== 'gitlab')
       const writeEnabled = health.state === 'ok' && currentWriteAllowed
       /** Detail cache key; includes the account only when several are configured. */
       const detailKey = (summary) => (multiAccount && account !== '' ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
@@ -7957,7 +7958,7 @@ const EMPTY_LIST = Object.freeze([])
         listGeneration.current += 1
         if (multiAccount) {
           for (const key of [...detailCache.current.keys()]) {
-            if (key.startsWith(account + '|')) detailCache.current.delete(key)
+            if (key.startsWith(account + '|') || !key.includes('|')) detailCache.current.delete(key)
           }
         } else {
           detailCache.current.clear()

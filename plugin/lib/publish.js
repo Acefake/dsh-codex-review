@@ -481,7 +481,7 @@ export class ReviewPublisher {
     this.github = options.github
     this.engine = options.engine
     /** Account that may read pre-account publish records. */
-    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : 'github'
     this.store = options.store ?? { get: () => undefined, set: () => {} }
     this.logger = options.logger
     this.now = options.now ?? Date.now

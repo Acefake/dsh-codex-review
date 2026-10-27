@@ -102,6 +102,8 @@ export const PROVIDER_LABELS = Object.freeze({
  */
 export function resolveAccounts(config, store) {
   const saved = Array.isArray(store?.accounts) ? store.accounts : []
+  // An existing store (even with zero accounts) replaces the legacy fallback.
+  if (store?.present === true) return saved
   return saved.length > 0 ? saved : legacyAccounts(config)
 }
 
@@ -140,10 +142,9 @@ function unavailableClient(reason) {
  */
 export function buildClients(config, logger, githubOverride, accounts) {
   const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : legacyAccounts(config)
-  /** Only the primary GitHub account may borrow the host gh identity. */
-  const primaryGithubId = list.find((account) => account.type === 'github')?.id
   /** @type {Record<string, any>} */
   const clients = {}
+  let githubOverrideUsed = false
   const readToken = (id) => {
     try {
       return { token: readAccountToken(id), error: '' }
@@ -160,19 +161,24 @@ export function buildClients(config, logger, githubOverride, accounts) {
         : (token === ''
             ? unavailableClient(`${account.label || account.id} 缺少 Token`)
             : new GitLabClient({
-                config: { ...config, gitlabBaseUrl: account.baseUrl || config.gitlabBaseUrl || '', gitlabToken: token },
+                config: {
+                  ...config,
+                  gitlabBaseUrl: account.id === 'gitlab' ? (account.baseUrl || config.gitlabBaseUrl || '') : account.baseUrl,
+                  gitlabToken: token,
+                },
                 logger,
               }))
       continue
     }
     const stored = readToken(account.id)
-    if (githubOverride !== undefined && (account.id === 'github' || list.length === 1)) {
+    if (githubOverride !== undefined && !githubOverrideUsed) {
+      githubOverrideUsed = true
       clients[account.id] = githubOverride
       continue
     }
     clients[account.id] = stored.error !== ''
       ? unavailableClient(stored.error)
-      : (stored.token === '' && account.id !== primaryGithubId
+      : (stored.token === '' && account.id !== 'github'
           ? unavailableClient(`${account.label || account.id} 缺少 Token`)
           : new GitHubClient({
               config,

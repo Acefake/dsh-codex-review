@@ -589,7 +589,7 @@ export class AutoReviewer {
    */
   /** One review cycle. A profile that lost its GitHub account must not throw. */
   async runCycle(options = {}) {
-    if (this.github === undefined) return { skipped: 'no-github-account' }
+    if (this.github === undefined) return { started: 0, reason: 'no-github-account' }
     const result = this.startCycle(options)
     if (result.promise !== undefined) await result.promise
     return { started: result.started, ...(result.reason === undefined ? {} : { reason: result.reason }) }

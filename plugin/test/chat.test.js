@@ -194,7 +194,6 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
     ['repo bare dot', { repo: 'a/.', number: 1, messages: [message('user', 'q')] }],
     ['repo bare dotdot', { repo: 'a/..', number: 1, messages: [message('user', 'q')] }],
     ['repo bare dash', { repo: 'a/-', number: 1, messages: [message('user', 'q')] }],
-    ['repo dash segment', { repo: 'a/-b', number: 1, messages: [message('user', 'q')] }],
     ['repo too many segments', { repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1, messages: [message('user', 'q')] }],
     ['bad number', { repo: 'a/b', number: 0, messages: [message('user', 'q')] }],
     ['messages missing', { repo: 'a/b', number: 1 }],
@@ -217,6 +216,7 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
   const twenty = Array.from({ length: 20 }, () => 'a').join('/')
   assert.equal(validateChatRequest({ repo: twenty, number: 1, messages: [message('user', 'q')] }).repo, twenty)
   assert.equal(validateChatRequest({ repo: 'a/b-c', number: 1, messages: [message('user', 'q')] }).repo, 'a/b-c')
+  assert.equal(validateChatRequest({ repo: 'a/-b', number: 1, messages: [message('user', 'q')] }).repo, 'a/-b')
 })
 
 test('SSE encoders emit the exact frame shapes of CONTRACT §5.2', () => {

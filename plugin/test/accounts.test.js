@@ -15,6 +15,11 @@ test('account-scoped cache and publish keys differ from legacy keys', () => {
   assert.notEqual(fileCacheKey('a/b', 1, 'x.js', 'patch', 'github'), fileCacheKey('a/b', 1, 'x.js', 'patch'))
   assert.deepEqual(publishRecordKeys('', 'a/b', 1, 'sha'), { prKey: 'a/b#1', headKey: 'a/b#1@sha' })
   assert.deepEqual(publishRecordKeys(' github ', 'a/b', 1, 'sha'), { prKey: 'github|a/b#1', headKey: 'github|a/b#1@sha' })
+  assert.deepEqual(
+    buildReviewJobKey('a/b', 1, 'sha', options),
+    'a/b#1@sha|standard|P1|1',
+    'the default key keeps the legacy format',
+  )
 })
 
 test('normalizeAccountInput validates type and GitLab fields without returning the token', () => {
