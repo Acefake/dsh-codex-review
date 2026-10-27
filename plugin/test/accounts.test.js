@@ -2,11 +2,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  accountTokenInput,
   makeAccountId,
   normalizeAccountInput,
 } from '../lib/accounts.js'
 
-test('normalizeAccountInput validates type and GitLab fields', () => {
+test('normalizeAccountInput validates type and GitLab fields without returning the token', () => {
   const gitlab = normalizeAccountInput({
     type: 'gitlab',
     label: ' Work ',
@@ -19,8 +20,8 @@ test('normalizeAccountInput validates type and GitLab fields', () => {
     label: 'Work',
     baseUrl: 'http://gitlab.example.com:8090',
     username: 'shims',
-    token: 'tok',
   })
+  assert.equal(accountTokenInput({ token: ' tok ' }), 'tok')
   assert.throws(() => normalizeAccountInput({ type: 'gitee' }), (error) => error.code === 'BAD_REQUEST')
   assert.throws(() => normalizeAccountInput({ type: 'gitlab', baseUrl: 'gitlab.local:8090', token: 't' }), (error) => error.code === 'BAD_REQUEST')
   assert.throws(() => normalizeAccountInput({ type: 'gitlab', baseUrl: 'http://g', token: '' }), (error) => error.code === 'BAD_REQUEST')
@@ -28,6 +29,7 @@ test('normalizeAccountInput validates type and GitLab fields', () => {
   assert.equal(github.type, 'github')
   assert.equal(github.label, 'GitHub')
   assert.equal(github.baseUrl, '')
+  assert.equal('token' in github, false)
 })
 
 test('makeAccountId slugifies labels and avoids collisions', () => {

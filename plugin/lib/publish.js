@@ -411,6 +411,19 @@ function reviewUrl(created, repo, number, reviewId) {
 }
 
 /**
+ * Store keys for one publish, scoped to the account when one is known.
+ * @param {string} account - account id ('' for legacy single-account data).
+ * @param {string} repo - `owner/name`.
+ * @param {number} number - PR number.
+ * @param {string} headSha - head commit.
+ * @returns {{ prKey: string, headKey: string }} rolling and per-head keys.
+ */
+export function publishRecordKeys(account, repo, number, headSha) {
+  const prefix = typeof account === 'string' && account !== '' ? `${account}|` : ''
+  return { prKey: `${prefix}${repo}#${number}`, headKey: `${prefix}${repo}#${number}@${headSha}` }
+}
+
+/**
  * Hash of everything one publish was asked to write (mode, severity, cap and
  * custom body). The head record stores it so a repeat request replays even when
  * the recomputed content differs only because GitHub now has more markers.
@@ -550,10 +563,11 @@ export class ReviewPublisher {
     // instead of racing the store record (CONTRACT §7.2 #6). Different heads of
     // the same PR are serialized too, because both may update the same rolling
     // summary review.
-    const key = `${repo}#${number}@${headSha}`
+    const account = typeof input.account === 'string' ? input.account.trim() : ''
+    const key = publishRecordKeys(account, repo, number, headSha).headKey
     const pending = this.inflight.get(key)
     if (pending !== undefined) return pending
-    const prKey = `${repo}#${number}`
+    const prKey = publishRecordKeys(account, repo, number, headSha).prKey
     const previous = this.prLocks.get(prKey) ?? Promise.resolve()
 
     const controller = new AbortController()
@@ -584,6 +598,7 @@ export class ReviewPublisher {
       }, PUBLISH_TIMEOUT_MS)
       if (typeof timer.unref === 'function') timer.unref()
       return this.publishForPull({
+        account,
         repo,
         number,
         headSha,
@@ -625,8 +640,8 @@ export class ReviewPublisher {
    */
   async publishForPull(input) {
     const { repo, number, headSha, review, mode, minSeverity, maxComments, customBody, signal } = input
-    const prKey = `${repo}#${number}`
-    const headKey = `${repo}#${number}@${headSha}`
+    const account = typeof input.account === 'string' ? input.account : ''
+    const { prKey, headKey } = publishRecordKeys(account, repo, number, headSha)
     const requestKey = publishRequestKey({ mode, minSeverity, maxComments, body: customBody })
 
     // A repeat of the same request for the same head answers from the record and

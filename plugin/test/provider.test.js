@@ -11,11 +11,14 @@ import { resolveConfig } from '../lib/config.js'
 
 /** Minimal GitHub client double; `mergePull` enforces the expected head like the real client. */
 function fakeGithubClient(options = {}) {
-  const calls = { merge: [], comments: [], replies: [], resolves: [] }
+  const calls = { list: [], merge: [], comments: [], replies: [], resolves: [] }
   return {
     calls,
     ghStatus: async () => options.ghStatus ?? 'ok',
-    listPullRequests: async () => ({ query: '', totalCount: 1, items: [{ repo: 'github/only', number: 1 }] }),
+    listPullRequests: async () => {
+      calls.list.push(1)
+      return { query: '', totalCount: 1, items: [{ repo: options.listRepo ?? 'github/primary', number: 1 }] }
+    },
     getPull: async () => ({ headSha: 'gh1', summary: {}, files: [] }),
     getPullHead: async () => 'gh1',
     getAuthenticatedUser: async () => {
@@ -59,7 +62,8 @@ function fakeGitlabClient() {
 function buildRoutes(options = {}) {
   const defaultAccount = options.defaultAccount ?? 'gitlab'
   const withGithub = options.withGithub !== false
-  const github = withGithub ? fakeGithubClient({ ghStatus: options.ghStatus }) : undefined
+  const github = withGithub ? fakeGithubClient({ ghStatus: options.ghStatus, listRepo: 'github/primary' }) : undefined
+  const fallbackGithub = withGithub ? fakeGithubClient({ listRepo: 'github/fallback' }) : undefined
   const clients = withGithub ? { github, gitlab: fakeGitlabClient() } : { gitlab: fakeGitlabClient() }
   const reviewerState = { status: { config: { publish: { enabled: false } }, publish: { enabled: false }, recent: [] }, patches: [], runs: 0 }
   const reviewer = withGithub ? {
@@ -83,14 +87,13 @@ function buildRoutes(options = {}) {
     viewerLogin: 'shims',
   })
   const routes = createRoutes({
-    config,
-    clients,
+    config,    clients,
     defaultAccount,
-    github,
+    github: fallbackGithub,
     engine: {
       available: () => false,
       status: () => ({ state: 'none' }),
-      existing: () => ({ state: 'none', headSha: '', findings: [] }),
+      existing: (repo, number, headSha, account) => ({ state: 'none', headSha, findings: [], account }),
       start: () => { throw new Error('review must not start in this test') },
       cancel: () => false,
       invalidate: () => {},
@@ -106,7 +109,7 @@ function buildRoutes(options = {}) {
     llmInfo: async () => ({}),
     version: '0.13.0',
   })
-  return { routes, github, reviewer: reviewerState }
+  return { routes, github, fallbackGithub, reviewer: reviewerState }
 }
 
 test('providerCapabilities keeps write operations on GitHub only', () => {
@@ -163,7 +166,7 @@ test('prs routes each account to its own client', async () => {
   const gitlab = await routes['/codex-review/prs']({})
   assert.equal(gitlab.items[0].repo, 'mdesign/m-design-client')
   const github = await routes['/codex-review/prs']({ account: 'github' })
-  assert.equal(github.items[0].repo, 'github/only')
+  assert.equal(github.items[0].repo, 'github/primary')
   await assert.rejects(
     () => routes['/codex-review/prs']({ account: 'nope' }),
     (error) => error.code === 'BAD_REQUEST',
@@ -214,6 +217,29 @@ test('write routes follow the selected account capabilities', async () => {
   )
 })
 
+test('pr detail and review snapshot are account-scoped end to end', async () => {
+  const { routes } = buildRoutes()
+  const github = await routes['/codex-review/pr']({ account: 'github', repo: 'Acefake/yingbox', number: 1 })
+  const gitlab = await routes['/codex-review/pr']({ account: 'gitlab', repo: 'mdesign/m-design-client', number: 7 })
+  assert.equal(github.headSha, 'gh1')
+  assert.equal(gitlab.headSha, 'gl1')
+  assert.equal(github.review.account, 'github')
+  assert.equal(gitlab.review.account, 'gitlab')
+})
+
+test('comment / reply / resolve pass the selected account and payload through', async () => {
+  const { routes, github } = buildRoutes()
+  const ref = { account: 'github', repo: 'Acefake/yingbox', number: 1, confirm: true }
+  await routes['/codex-review/comment']({ ...ref, body: 'hello' })
+  await routes['/codex-review/reply']({ ...ref, commentId: 12, body: 'reply' })
+  await routes['/codex-review/resolve']({ ...ref, threadId: 't1' })
+  assert.equal(github.calls.comments[0].body, 'hello')
+  assert.equal(github.calls.replies[0].commentId, 12)
+  assert.equal(github.calls.replies[0].body, 'reply')
+  assert.equal(github.calls.resolves[0].threadId, 't1')
+  assert.equal(github.calls.comments[0].repo, 'Acefake/yingbox')
+})
+
 test('auto-review routes reflect the injected reviewer and reject GitLab-only profiles', async () => {
   const { routes, reviewer } = buildRoutes()
   const status = await routes['/codex-review/auto-review-config']({ patch: { enabled: false } })
@@ -261,8 +287,15 @@ test('repo validation follows the selected account provider and segment rules', 
   assert.equal((await routes['/codex-review/pr']({ repo: twenty, number: 1 })).summary !== undefined, true)
 })
 
-test('buildClients marks non-default GitHub/GitLab accounts without a token unavailable', () => {
-  const config = resolveConfig({})
+test('adding a GitHub account without its own token is rejected', async () => {
+  const { routes } = buildRoutes()
+  await assert.rejects(
+    () => routes['/codex-review/accounts-add']({ type: 'github', label: 'Work', confirm: true }),
+    (error) => error.code === 'BAD_REQUEST',
+  )
+})
+
+test('buildClients marks non-default GitHub/GitLab accounts without a token unavailable', () => {  const config = resolveConfig({})
   const clients = buildClients(config, { warn: () => {} }, undefined, [
     { id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' },
     { id: 'work', type: 'github', label: 'Work', baseUrl: '', username: '' },

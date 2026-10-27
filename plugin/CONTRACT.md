@@ -653,9 +653,11 @@ type PublishRequest = {
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/comment` | `{ repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
-| `/codex-review/reply` | `{ repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
-| `/codex-review/resolve` | `{ repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
+| `/codex-review/merge` | `{ account?: string, repo, number, confirm:true, method, expectedHeadSha, ... }` | `{ merged: boolean, ... }` |
+| `/codex-review/review-publish` | `{ account?: string, repo, number, confirm:true, ... }` | `{ reviewId, url, comments, ... }` |
+| `/codex-review/comment` | `{ account?: string, repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
+| `/codex-review/reply` | `{ account?: string, repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
+| `/codex-review/resolve` | `{ account?: string, repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
 | `/codex-review/accounts` | `{}` | `{ accounts: Array<{ id, type, label, baseUrl, username }>, defaultAccount }` |
 | `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token?, confirm: true }` | account list（同 `/accounts`） |
 | `/codex-review/accounts-remove` | `{ id, confirm: true }` | account list；至少保留一个账号，允许纯 GitLab |

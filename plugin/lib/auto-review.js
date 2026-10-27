@@ -725,6 +725,7 @@ export class AutoReviewer {
         // reviewed — never a historical head, never a backfill (CONTRACT §7.2 #8).
         try {
           const published = await this.publisher.publish({
+            account: this.account,
             repo,
             number,
             confirm: true,

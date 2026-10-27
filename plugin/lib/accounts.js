@@ -98,9 +98,10 @@ export function makeAccountId(type, label, existing = []) {
 }
 
 /**
- * Validate one account input from the settings form.
+ * Validate one account input from the settings form. The token is NOT part of
+ * the returned descriptor so it cannot accidentally be persisted with the store.
  * @param {Record<string, unknown>} input - raw form payload.
- * @returns {{ type: 'github' | 'gitlab', label: string, baseUrl: string, username: string, token: string }} normalized account.
+ * @returns {{ type: 'github' | 'gitlab', label: string, baseUrl: string, username: string }} normalized account.
  * @throws {AppError} BAD_REQUEST for an unsupported type or missing GitLab fields.
  */
 export function normalizeAccountInput(input) {
@@ -114,9 +115,19 @@ export function normalizeAccountInput(input) {
     const baseUrl = normalizeGitlabBaseUrl(source.baseUrl)
     if (baseUrl === '') throw new AppError('BAD_REQUEST', 'GitLab 账号需要 http/https 地址')
     if (token === '') throw new AppError('BAD_REQUEST', 'GitLab 账号需要 Token')
-    return { type, label, baseUrl, username, token }
+    return { type, label, baseUrl, username }
   }
-  return { type, label, baseUrl: '', username, token }
+  return { type, label, baseUrl: '', username }
+}
+
+/**
+ * Read the token input separately from the account descriptor.
+ * @param {Record<string, unknown>} input - raw form payload.
+ * @returns {string} trimmed token ('' when absent).
+ */
+export function accountTokenInput(input) {
+  const source = input !== null && typeof input === 'object' ? input : {}
+  return text(source.token)
 }
 
 /**
@@ -155,7 +166,7 @@ export function loadAccountStore() {
 export function saveAccountStore(store) {
   const file = accountsFilePath()
   mkdirSync(dirname(file), { recursive: true })
-  const temporary = `${file}.tmp`
+  const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   writeFileSync(temporary, JSON.stringify(store, null, 2), { encoding: 'utf8', mode: 0o600 })
   renameSync(temporary, file)
 }

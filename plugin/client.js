@@ -400,7 +400,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
       accountsTitle: 'Accounts',
-      accountsDesc: 'GitHub / GitLab accounts. GitLab needs a base URL and token; leave a GitHub token empty to use the gh login.',
+      accountsDesc: 'GitHub / GitLab accounts. Every added account needs its own token; the built-in GitHub account may fall back to the gh login.',
       accountAdd: 'Add account',
       accountTest: 'Test connection',
       accountDefault: 'Set as default',
@@ -762,7 +762,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
       accountsTitle: '账号',
-      accountsDesc: 'GitHub / GitLab 账号；GitLab 需要实例地址和 Token，GitHub 留空 Token 则使用 gh 登录态。',
+      accountsDesc: 'GitHub / GitLab 账号；新增账号必须填自己的 Token，内置默认 GitHub 账号可用 gh 登录态。',
       accountAdd: '添加账号',
       accountTest: '测试连接',
       accountDefault: '设为默认',
@@ -6033,9 +6033,7 @@ const EMPTY_LIST = Object.freeze([])
       }
 
       const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
-      const canAdd = form.type === 'gitlab'
-        ? form.baseUrl.trim() !== '' && form.token.trim() !== ''
-        : true
+      const canAdd = form.token.trim() !== '' && (form.type !== 'gitlab' || form.baseUrl.trim() !== '')
 
       return h(
         SettingsSection,
@@ -6114,7 +6112,7 @@ const EMPTY_LIST = Object.freeze([])
               : null,
             h('input', {
               type: 'password', className: 'cr-set-input cr-set-input--wide',
-              placeholder: form.type === 'github' ? tx(t, 'accountTokenGhPlaceholder') : tx(t, 'accountToken'),
+              placeholder: tx(t, 'accountToken'),
               value: form.token, 'aria-label': tx(t, 'accountToken'),
               onChange: (event) => update({ token: event.target.value }),
             }),
@@ -6130,7 +6128,6 @@ const EMPTY_LIST = Object.freeze([])
                   post(ROUTE + '/accounts-test', form).then((result) => {
                     setBusy(false)
                     if (result.ok) {
-                      setForm((previous) => ({ ...previous, token: '' }))
                       setMessage(tx(t, 'accountTestOk') + ((result.value && result.value.viewer) || ''))
                     } else {
                       setMessage((result.error && result.error.message) || tx(t, 'accountTestFailed'))
@@ -6602,7 +6599,7 @@ const EMPTY_LIST = Object.freeze([])
             'div',
             { className: 'cr-set-status' },
             statusRow(tx(t, 'settingsPluginVersion'), health ? health.version : ''),
-            statusRow('账号', health && Array.isArray(health.accounts)
+            statusRow(tx(t, 'accountsTitle'), health && Array.isArray(health.accounts)
               ? health.accounts.map((account) => account.label || account.id).join(' / ')
               : ''),
             statusRow(tx(t, 'settingsHealthGh'), health ? (health.provider === 'gitlab' ? (health.viewer || 'GitLab') : health.gh) : ''),
@@ -7883,7 +7880,7 @@ const EMPTY_LIST = Object.freeze([])
       const [account, setAccount] = useState('')
       const [listNonce, setListNonce] = useState(0)
       const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
-      const currentAccount = accounts.find((entry) => entry.id === account) ?? accounts[0] ?? null
+      const currentAccount = accounts.find((entry) => entry.id === account) ?? null
       const multiAccount = accounts.length > 1
       // Prefer the account's explicit capability; legacy health without accounts
       // falls back to the previous provider-based read-only rule.
@@ -7933,6 +7930,7 @@ const EMPTY_LIST = Object.freeze([])
         setReview(normalizeReviewStatus({ state: 'none' }))
         detailGeneration.current += 1
         reviewGeneration.current += 1
+        listGeneration.current += 1
         detailCache.current.clear()
         detailInflight.current.clear()
         setList({ state: 'loading', items: [], totalCount: 0, error: null })

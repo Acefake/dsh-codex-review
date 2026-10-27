@@ -20,6 +20,7 @@ import {
 } from './lib/github.js'
 import { GITLAB_REPO_RE, GitLabClient, isValidGitlabRepo } from './lib/gitlab.js'
 import {
+  accountTokenInput,
   accountTokenPath,
   accountsFilePath,
   legacyAccounts,
@@ -41,6 +42,7 @@ import {
   PUBLISH_SUMMARY_MAX_CHARS,
   PUBLISH_TIMEOUT_MS,
   ReviewPublisher,
+  publishRecordKeys,
 } from './lib/publish.js'
 import { ROUTE_PREFIX, createChatRouteHandler, createJsonRouteHandler } from './lib/http.js'
 import {
@@ -146,7 +148,7 @@ export function buildClients(config, logger, githubOverride, accounts) {
       clients[account.id] = token === ''
         ? unavailableClient(`${account.label || account.id} 缺少 Token`)
         : new GitLabClient({
-            config: { ...config, gitlabBaseUrl: account.baseUrl, gitlabToken: token },
+            config: { ...config, gitlabBaseUrl: account.baseUrl || config.gitlabBaseUrl || '', gitlabToken: token },
             logger,
           })
       continue
@@ -362,7 +364,9 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       const next = buildClients(config, logger, undefined, accountRuntime.accounts)
       for (const key of Object.keys(accountRuntime.clients)) delete accountRuntime.clients[key]
       Object.assign(accountRuntime.clients, next)
+      accountRuntime.onRebuild?.()
     },
+    onRebuild: undefined,
   }
   const primaryGithubAccount = accountList.find(
     (account) => account.type === 'github' && clients[account.id]?.unavailable !== true,
@@ -371,6 +375,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
+    legacyAccount: primaryGithubAccount?.id ?? '',
   })
   /** Concurrent chat streams allowed by CONTRACT §5.2. */
   const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
@@ -400,6 +405,17 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     },
   }))
   if (typeof reviewer?.setPublisher === 'function') reviewer.setPublisher(publisher)
+  // Rebuilt account clients must also replace the GitHub-bound scheduler/publisher
+  // clients, otherwise a token/IP change would keep using the old instance.
+  accountRuntime.onRebuild = () => {
+    const primary = accountRuntime.accounts.find(
+      (account) => account.type === 'github' && accountRuntime.clients[account.id]?.unavailable !== true,
+    )
+    if (primary === undefined) return
+    const client = accountRuntime.clients[primary.id]
+    if (reviewer !== null && typeof reviewer === 'object') reviewer.github = client
+    if (publisher !== null && typeof publisher === 'object') publisher.github = client
+  }
   const routes = createRoutes({
     config,
     clients,
@@ -424,7 +440,8 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     handle: createChatStreamHandler({
       github,
       clients,
-      defaultAccount,
+      accountRuntime,
+      defaultAccount: () => accountRuntime.defaultAccount,
       engine,
       streamLlm,
       llmAvailable: () => llmFace !== undefined,
@@ -465,7 +482,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
  * @returns {(payload: Record<string, unknown>, stream: { signal: AbortSignal, send: (frame: string) => void, end: () => void, clientGone: () => boolean }) => Promise<void>} the chat flow.
  */
 export function createChatStreamHandler(wiring) {
-  const { github, clients, defaultAccount, engine, streamLlm, llmAvailable, config, limiter } = wiring
+  const { github, clients, accountRuntime, defaultAccount, engine, streamLlm, llmAvailable, config, limiter } = wiring
   const callTimeoutMs = Number.isFinite(wiring.callTimeoutMs) && wiring.callTimeoutMs > 0 ? wiring.callTimeoutMs : CHAT_CALL_TIMEOUT_MS
 
   /**
@@ -505,9 +522,18 @@ export function createChatStreamHandler(wiring) {
       unlinkAbort = () => stream.signal.removeEventListener('abort', linkAbort)
 
       const requestedAccount = typeof request.account === 'string' ? request.account.trim() : ''
-      const accountId = requestedAccount !== '' ? requestedAccount : defaultAccount
-      const client = clients !== undefined ? clients[accountId] : github
+      const fallbackAccount = typeof defaultAccount === 'function' ? defaultAccount() : defaultAccount
+      const accountId = requestedAccount !== '' ? requestedAccount : fallbackAccount
+      const runtimeClients = accountRuntime?.clients
+      const client = runtimeClients !== undefined ? runtimeClients[accountId] : (clients !== undefined ? clients[accountId] : github)
       if (client === undefined) throw badRequest(`未知账号：${accountId}`)
+      if (client.unavailable === true) throw new AppError('ACCOUNT_UNAVAILABLE', client.reason)
+      const meta = accountRuntime?.accounts?.find((entry) => entry.id === accountId)
+      const accountType = meta?.type === 'gitlab' ? 'gitlab' : 'github'
+      const repoValid = accountType === 'gitlab' ? isValidGitlabRepo(request.repo) : REPO_RE.test(request.repo)
+      if (!repoValid) {
+        throw badRequest(accountType === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
+      }
       const detail = await client.getPull(request.repo, request.number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       const review = engine.existing(request.repo, request.number, headSha, accountId)
@@ -692,6 +718,7 @@ export function createRoutes(wiring) {
         const publishConfig = reviewer?.status?.()?.publish
         if (publishConfig?.enabled !== true) return
         await publisher.publish({
+          account: accountId,
           repo,
           number,
           confirm: true,
@@ -753,7 +780,7 @@ export function createRoutes(wiring) {
     const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
     const review = engine.existing(repo, number, headSha, account)
     if (headSha === '' || typeof reviewer?.getPublished !== 'function') return { ...detail, review }
-    const record = reviewer.getPublished(`${repo}#${number}@${headSha}`)
+    const record = reviewer.getPublished(publishRecordKeys(account, repo, number, headSha).headKey)
     if (record === undefined || record === null) return { ...detail, review }
     return { ...detail, review: { ...review, published: { ...record, headSha } } }
   }
@@ -932,7 +959,7 @@ export function createRoutes(wiring) {
       if (ref === undefined || typeof reviewer?.getPublished !== 'function') return status
       const headSha = typeof status?.headSha === 'string' ? status.headSha : ''
       if (headSha === '') return status
-      const record = reviewer.getPublished(`${ref.repo}#${ref.number}@${headSha}`)
+      const record = reviewer.getPublished(publishRecordKeys(ref.account, ref.repo, ref.number, headSha).headKey)
       if (record === undefined || record === null) return status
       // Lets the workbench show the "already published" badge as soon as the
       // auto-publish (or a manual publish) completed, without reloading the PR.
@@ -1020,6 +1047,7 @@ export function createRoutes(wiring) {
       const jobId = typeof payload.jobId === 'string' ? payload.jobId.trim() : ''
       const headSha = typeof payload.headSha === 'string' ? payload.headSha.trim() : ''
       return publisher.publish({
+        account: accountId,
         repo,
         number,
         confirm: true,
@@ -1064,8 +1092,12 @@ export function createRoutes(wiring) {
     [PATHS.accountsAdd]: async (payload) => {
       if (payload.confirm !== true) throw badRequest('添加账号需要 confirm: true')
       const input = normalizeAccountInput(payload)
+      const token = accountTokenInput(payload)
+      if (input.type === 'github' && token === '') {
+        throw badRequest('新增 GitHub 账号需要 Token')
+      }
       const id = makeAccountId(input.type, input.label, runtime.accounts)
-      if (input.token !== '') writeAccountToken(id, input.token)
+      if (token !== '') writeAccountToken(id, token)
       runtime.accounts.push({
         id,
         type: input.type,
@@ -1105,9 +1137,14 @@ export function createRoutes(wiring) {
 
     [PATHS.accountsTest]: async (payload) => {
       const input = normalizeAccountInput(payload)
+      const token = accountTokenInput(payload)
       if (input.type === 'gitlab') {
         const client = new GitLabClient({
-          config: { ...config, gitlabBaseUrl: input.baseUrl, gitlabToken: input.token },
+          config: {
+            ...config,
+            gitlabBaseUrl: input.baseUrl || config.gitlabBaseUrl || '',
+            gitlabToken: token,
+          },
           logger,
         })
         const status = await client.status()
@@ -1118,7 +1155,7 @@ export function createRoutes(wiring) {
           ...(typeof status.error === 'string' ? { error: status.error } : {}),
         }
       }
-      const client = new GitHubClient({ config, logger, token: input.token })
+      const client = new GitHubClient({ config, logger, token })
       try {
         const viewer = await client.getAuthenticatedUser()
         return { ok: true, type: input.type, viewer }
