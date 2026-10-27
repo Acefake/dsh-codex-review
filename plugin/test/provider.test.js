@@ -21,7 +21,7 @@ function fakeGithubClient(options = {}) {
     },
     getPull: async () => {
       calls.pulls.push(1)
-      return { headSha: options.headSha ?? 'gh1', summary: {}, files: [] }
+      return { headSha: options.headSha ?? 'gh1', summary: { repo: options.listRepo ?? 'github/primary' }, files: [] }
     },
     getPullHead: async () => 'gh1',
     getAuthenticatedUser: async () => {
@@ -55,7 +55,7 @@ function fakeGitlabClient() {
   return {
     status: async () => ({ ok: true, provider: 'gitlab', viewer: 'shims' }),
     listPullRequests: async () => ({ query: '', totalCount: 1, items: [{ repo: 'mdesign/m-design-client', number: 7 }] }),
-    getPull: async () => ({ headSha: 'gl1', summary: {}, files: [] }),
+    getPull: async () => ({ headSha: 'gl1', summary: { repo: 'mdesign/m-design-client' }, files: [] }),
     getPullHead: async () => 'gl1',
     getAuthenticatedUser: async () => 'shims',
   }
@@ -90,7 +90,8 @@ function buildRoutes(options = {}) {
     viewerLogin: 'shims',
   })
   const routes = createRoutes({
-    config,    clients,
+    config,
+    clients,
     defaultAccount,
     github: fallbackGithub,
     engine: {
@@ -102,6 +103,9 @@ function buildRoutes(options = {}) {
       invalidate: () => {},
       dispose: () => {},
     },
+    saveStore: options.saveStore ?? (() => {}),
+    tokenWriter: options.tokenWriter ?? (() => {}),
+    tokenRemover: options.tokenRemover ?? (() => {}),
     reviewer,
     publisher: withGithub ? {
       publish: async () => { throw new Error('publish must not run in this test') },
@@ -227,6 +231,8 @@ test('pr detail and review snapshot are account-scoped end to end', async () => 
   const gitlab = await routes['/codex-review/pr']({ account: 'gitlab', repo: 'mdesign/m-design-client', number: 7 })
   assert.equal(github.headSha, 'gh1')
   assert.equal(gitlab.headSha, 'gl1')
+  assert.equal(github.summary.repo, 'github/primary')
+  assert.equal(gitlab.summary.repo, 'mdesign/m-design-client')
   assert.equal(github.review.account, 'github')
   assert.equal(gitlab.review.account, 'gitlab')
   assert.equal(fallbackGithub.calls.pulls.length, 0, 'detail must use the account client, not the injected fallback')
@@ -284,10 +290,8 @@ test('repo validation follows the selected account provider and segment rules', 
     () => routes['/codex-review/pr']({ repo: 'mdesign/-secret', number: 1 }),
     (error) => error.code === 'BAD_REQUEST',
   )
-  await assert.rejects(
-    () => routes['/codex-review/pr']({ repo: 'single', number: 1 }),
-    (error) => error.code === 'BAD_REQUEST',
-  )
+  const single = await routes['/codex-review/pr']({ repo: 'single', number: 1 })
+  assert.equal(single.summary !== undefined, true)
   await assert.rejects(
     () => routes['/codex-review/pr']({ repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1 }),
     (error) => error.code === 'BAD_REQUEST',
@@ -304,6 +308,35 @@ test('adding a GitHub account without its own token is rejected', async () => {
     () => routes['/codex-review/accounts-add']({ type: 'github', label: 'Work', confirm: true }),
     (error) => error.code === 'BAD_REQUEST',
   )
+})
+
+test('account add / default / remove routes update the runtime list', async () => {
+  const writes = []
+  const { routes } = buildRoutes({
+    tokenWriter: (id, token) => writes.push(['set', id, token]),
+    tokenRemover: (id) => writes.push(['remove', id]),
+  })
+  const added = await routes['/codex-review/accounts-add']({
+    type: 'gitlab', label: 'Second', baseUrl: 'http://gl.local:8090', username: 'u', token: 'tok', confirm: true,
+  })
+  assert.equal(added.accounts.length, 3)
+  const id = added.accounts.at(-1).id
+  assert.deepEqual(writes[0], ['set', id, 'tok'])
+  const madeDefault = await routes['/codex-review/accounts-default']({ id, confirm: true })
+  assert.equal(madeDefault.defaultAccount, id)
+  const removed = await routes['/codex-review/accounts-remove']({ id, confirm: true })
+  assert.equal(removed.accounts.length, 2)
+  assert.deepEqual(writes[1], ['remove', id])
+})
+
+test('buildClients uses a stored token for a non-primary GitHub account', () => {
+  const config = resolveConfig({})
+  const clients = buildClients(config, { warn: () => {} }, undefined, [
+    { id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' },
+    { id: 'work', type: 'github', label: 'Work', baseUrl: '', username: '' },
+  ], () => 'token')
+  assert.equal(clients.github.unavailable, undefined)
+  assert.equal(clients.work.unavailable, undefined)
 })
 
 test('buildClients marks non-primary GitHub/GitLab accounts without a token unavailable', () => {  const config = resolveConfig({})

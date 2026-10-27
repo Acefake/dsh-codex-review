@@ -293,7 +293,7 @@ export class AutoReviewer {
     /** GitHub data client (read-only methods only). */
     this.github = options.github
     /** Account id this scheduler operates on; keeps review jobs account-scoped. */
-    this.account = typeof options.account === 'string' ? options.account : ''
+    this.account = typeof options.account === 'string' ? options.account : 'github'
     /** Review engine shared with the manual review routes. */
     this.engine = options.engine
     /** Optional logger. */
@@ -589,7 +589,7 @@ export class AutoReviewer {
    */
   /** One review cycle. A profile that lost its GitHub account must not throw. */
   async runCycle(options = {}) {
-    if (this.github === undefined) return { started: false, reason: 'no-github-account' }
+    if (this.github === undefined || this.github === null) return { started: false, reason: 'no-github-account' }
     const result = this.startCycle(options)
     if (result.promise !== undefined) await result.promise
     return { started: result.started, ...(result.reason === undefined ? {} : { reason: result.reason }) }

@@ -668,13 +668,23 @@ export function createRoutes(wiring) {
   const getPublisher = typeof wiring.getPublisher === 'function' ? wiring.getPublisher : () => wiring.publisher
   /** A missing writer keeps tests and fallback runtimes away from the real profile. */
   const saveStore = typeof wiring.saveStore === 'function' ? wiring.saveStore : null
-  const runtime = accountRuntime ?? {
-    accounts: Object.entries(clients ?? {}).map(([id]) => ({ id, type: id, label: id, baseUrl: '', username: '' })),
-    clients: clients ?? {},
-    defaultAccount: defaultAccount ?? 'github',
-    store: { accounts: [], defaultAccount: defaultAccount ?? '' },
-    rebuild() {},
-  }
+  const tokenWriter = typeof wiring.tokenWriter === 'function' ? wiring.tokenWriter : writeAccountToken
+  const tokenRemover = typeof wiring.tokenRemover === 'function' ? wiring.tokenRemover : removeAccountToken
+  const runtime = accountRuntime ?? (() => {
+    const fallbackAccounts = clients !== undefined
+      ? Object.entries(clients).map(([id]) => ({ id, type: id, label: id, baseUrl: '', username: '' }))
+      : (github !== undefined
+          ? [{ id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' }]
+          : [])
+    const fallbackClients = clients ?? (github !== undefined ? { github } : {})
+    return {
+      accounts: fallbackAccounts,
+      clients: fallbackClients,
+      defaultAccount: defaultAccount ?? fallbackAccounts[0]?.id ?? '',
+      store: { accounts: [], defaultAccount: defaultAccount ?? '', present: false },
+      rebuild() {},
+    }
+  })()
 
   /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number, account: string }>} */
   const jobRefs = new Map()
@@ -721,7 +731,7 @@ export function createRoutes(wiring) {
   })
 
   /** Persist the current runtime accounts and default. */
-  const persistAccounts = () => {
+  const persistAccounts = (previous) => {
     if (saveStore === null) {
       runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
       return
@@ -738,10 +748,11 @@ export function createRoutes(wiring) {
       } catch {
         reloaded = undefined
       }
-      if (reloaded !== undefined) {
-        runtime.accounts = reloaded.accounts
-        runtime.defaultAccount = reloaded.defaultAccount
-        runtime.store = reloaded
+      const restored = reloaded ?? previous
+      if (restored !== undefined) {
+        runtime.accounts = restored.accounts.slice()
+        runtime.defaultAccount = restored.defaultAccount
+        runtime.store = { ...restored, present: true }
         runtime.rebuild()
       }
       throw error
@@ -756,7 +767,9 @@ export function createRoutes(wiring) {
     if (requested === '') return
     const meta = runtime.accounts.find((account) => account.id === requested)
     if (meta === undefined) throw badRequest(`未知账号：${requested}`)
-    if (meta.type !== 'github') throw new AppError('PROVIDER_UNSUPPORTED')
+    if (meta.type !== 'github' || meta.id !== currentPrimaryGithub()?.id) {
+      throw new AppError('PROVIDER_UNSUPPORTED')
+    }
   }
 
   /**
@@ -1213,7 +1226,8 @@ export function createRoutes(wiring) {
         throw badRequest('新增 GitHub 账号需要 Token')
       }
       const id = makeAccountId(input.type, input.label, runtime.accounts)
-      if (token !== '') writeAccountToken(id, token)
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
+      if (token !== '') tokenWriter(id, token)
       runtime.accounts.push({
         id,
         type: input.type,
@@ -1222,7 +1236,7 @@ export function createRoutes(wiring) {
         username: input.username,
       })
       if (runtime.accounts.length === 1) runtime.defaultAccount = id
-      persistAccounts()
+      persistAccounts(previous)
       runtime.rebuild()
       return accountListValue()
     },
@@ -1234,10 +1248,11 @@ export function createRoutes(wiring) {
       if (target === undefined) throw badRequest('账号不存在')
       const remaining = runtime.accounts.filter((account) => account.id !== id)
       if (remaining.length === 0) throw badRequest('至少保留一个账号')
-      removeAccountToken(id)
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
+      tokenRemover(id)
       runtime.accounts = remaining
       if (runtime.defaultAccount === id) runtime.defaultAccount = remaining[0].id
-      persistAccounts()
+      persistAccounts(previous)
       runtime.rebuild()
       // Removing the last GitHub account must stop the GitHub-bound scheduler.
       if (currentPrimaryGithub() === undefined) {
@@ -1284,8 +1299,9 @@ export function createRoutes(wiring) {
       if (payload.confirm !== true) throw badRequest('设置默认账号需要 confirm: true')
       const id = requireString(payload, 'id', 'account id')
       if (!runtime.accounts.some((account) => account.id === id)) throw badRequest('账号不存在')
+      const previous = { accounts: runtime.accounts.slice(), defaultAccount: runtime.defaultAccount }
       runtime.defaultAccount = id
-      persistAccounts()
+      persistAccounts(previous)
       return accountListValue()
     },
   }

@@ -7907,7 +7907,8 @@ const EMPTY_LIST = Object.freeze([])
       const [account, setAccount] = useState('')
       const [listNonce, setListNonce] = useState(0)
       const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
-      const activeAccount = account || health.value?.defaultAccount || ''
+      const defaultAccountId = health.value?.defaultAccount || accounts[0]?.id || ''
+      const activeAccount = accounts.some((entry) => entry.id === account) ? account : defaultAccountId
       const currentAccount = accounts.find((entry) => entry.id === activeAccount) ?? null
       const multiAccount = accounts.length > 1
       // Prefer the account's explicit capability; fall back to its type, and only
@@ -7970,7 +7971,7 @@ const EMPTY_LIST = Object.freeze([])
         listGeneration.current += 1
         if (multiAccount) {
           for (const key of [...detailCache.current.keys()]) {
-            if (key.startsWith(account + '|') || !key.includes('|')) detailCache.current.delete(key)
+            if (key.startsWith(activeAccount + '|') || !key.includes('|')) detailCache.current.delete(key)
           }
         } else {
           detailCache.current.clear()

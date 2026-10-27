@@ -62,7 +62,7 @@ const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/
 export function isValidRepoPath(repo) {
   if (typeof repo !== 'string') return false
   const parts = repo.split('/')
-  if (parts.length < 2 || parts.length > 20) return false
+  if (parts.length < 1 || parts.length > 20) return false
   return parts.every((part) =>
     part !== '' && part !== '.' && part !== '..' && !part.startsWith('-') && REPO_SEGMENT_PATTERN.test(part),
   )

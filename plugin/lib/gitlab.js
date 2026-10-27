@@ -34,7 +34,7 @@ const MAX_DISCUSSION_PAGES = 10
 const MAX_COMMENT_BODY_CHARS = 4_000
 
 /** GitLab project paths may nest groups: `mdesign/beijing/graphics-library-v2`. */
-export const GITLAB_REPO_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){1,19}$/
+export const GITLAB_REPO_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){0,19}$/
 
 /**
  * Validate a GitLab project path: nested groups are allowed, but no segment

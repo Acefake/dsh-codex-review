@@ -793,7 +793,7 @@ export class ReviewEngine {
     if (!this.available()) throw new AppError('LLM_UNAVAILABLE')
     const model = this.resolveModel()
     const options = resolveReviewOptions(input.options, this.config)
-    const account = typeof input.account === 'string' ? input.account : this.legacyAccount
+    const account = typeof input.account === 'string' && input.account !== '' ? input.account : this.legacyAccount
     const key = buildReviewJobKey(input.repo, input.number, input.headSha, options, account)
     const existing = this.findByKey(key)
     if (existing !== undefined) {
