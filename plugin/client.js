@@ -5850,6 +5850,158 @@ const EMPTY_LIST = Object.freeze([])
       )
     }
 
+    /**
+     * Account management: list, add (GitHub/GitLab), test, remove and set the
+     * default account. Tokens go to the host; only labels/usernames come back.
+     */
+    function AccountsSettingsSection(props) {
+      const t = props.t
+      const [state, setState] = useState({ loading: true, accounts: [], defaultAccount: '', error: null })
+      const [form, setForm] = useState({ type: 'gitlab', label: '', baseUrl: '', username: '', token: '' })
+      const [busy, setBusy] = useState(false)
+      const [message, setMessage] = useState('')
+
+      const applyList = (value) => {
+        setState({
+          loading: false,
+          accounts: Array.isArray(value.accounts) ? value.accounts : [],
+          defaultAccount: value.defaultAccount || '',
+          error: null,
+        })
+      }
+
+      const refresh = useCallback(() => {
+        post(ROUTE + '/accounts', {}).then((result) => {
+          if (result.ok) applyList(result.value || {})
+          else setState({ loading: false, accounts: [], defaultAccount: '', error: result.error || null })
+        })
+      }, [])
+
+      useEffect(() => {
+        refresh()
+      }, [refresh])
+
+      const mutate = (path, payload) => {
+        setBusy(true)
+        setMessage('')
+        post(ROUTE + path, payload).then((result) => {
+          setBusy(false)
+          if (result.ok) {
+            applyList(result.value || {})
+            setMessage(tx(t, 'settingsSaved'))
+            try {
+              window.dispatchEvent(new CustomEvent('codex-review:accounts-changed'))
+            } catch {
+              /* event dispatch is best effort */
+            }
+            return
+          }
+          setMessage((result.error && result.error.message) || '')
+        })
+      }
+
+      const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
+      const canAdd = form.type === 'gitlab'
+        ? form.baseUrl.trim() !== '' && form.token.trim() !== ''
+        : true
+
+      return h(
+        SettingsSection,
+        { title: '账号', desc: 'GitHub / GitLab 账号；GitLab 需要实例地址和 Token，GitHub 留空 Token 则使用 gh 登录态。', note: message },
+        h(
+          'div',
+          { className: 'cr-set-accounts', 'data-cr-accounts': 'ready' },
+          state.loading
+            ? h('div', { className: 'cr-set-note' }, '……')
+            : (state.accounts || []).map((account) =>
+                h(
+                  'div',
+                  { key: account.id, className: 'cr-set-account', 'data-account': account.id },
+                  h(
+                    'div',
+                    { className: 'cr-set-text' },
+                    h('div', { className: 'cr-set-label' },
+                      (account.label || account.id) + ' · ' + (account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
+                      account.id === state.defaultAccount ? ' · 默认' : ''),
+                    h('div', { className: 'cr-set-hint' },
+                      (account.username || '—') + (account.baseUrl ? ' · ' + account.baseUrl : '')),
+                  ),
+                  h(
+                    'div',
+                    { className: 'cr-set-actions' },
+                    account.id === state.defaultAccount
+                      ? null
+                      : h('button', {
+                          type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                          'data-action': 'account-default', 'data-account-id': account.id,
+                          onClick: () => mutate('/accounts-default', { id: account.id }),
+                        }, '设为默认'),
+                    h('button', {
+                      type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
+                      'data-action': 'account-remove', 'data-account-id': account.id,
+                      onClick: () => mutate('/accounts-remove', { id: account.id }),
+                    }, '删除'),
+                  ),
+                ),
+              ),
+          h(
+            'div',
+            { className: 'cr-set-account-form' },
+            h(
+              'select',
+              {
+                className: 'cr-set-input', value: form.type, 'aria-label': '账号类型',
+                onChange: (event) => update({ type: event.target.value }),
+              },
+              h('option', { value: 'github' }, 'GitHub'),
+              h('option', { value: 'gitlab' }, 'GitLab'),
+            ),
+            h('input', {
+              type: 'text', className: 'cr-set-input', placeholder: '名称（可选）',
+              value: form.label, 'aria-label': '账号名称',
+              onChange: (event) => update({ label: event.target.value }),
+            }),
+            h('input', {
+              type: 'text', className: 'cr-set-input', placeholder: '用户名（可选）',
+              value: form.username, 'aria-label': '用户名',
+              onChange: (event) => update({ username: event.target.value }),
+            }),
+            form.type === 'gitlab'
+              ? h('input', {
+                  type: 'text', className: 'cr-set-input', placeholder: 'https://gitlab.example.com',
+                  value: form.baseUrl, 'aria-label': 'GitLab 地址',
+                  onChange: (event) => update({ baseUrl: event.target.value }),
+                })
+              : null,
+            h('input', {
+              type: 'password', className: 'cr-set-input', placeholder: 'Token',
+              value: form.token, 'aria-label': 'Token',
+              onChange: (event) => update({ token: event.target.value }),
+            }),
+            h('button', {
+              type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+              'data-action': 'account-add',
+              onClick: () => mutate('/accounts-add', form),
+            }, '添加账号'),
+            h('button', {
+              type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+              'data-action': 'account-test',
+              onClick: () => {
+                setBusy(true)
+                setMessage('')
+                post(ROUTE + '/accounts-test', form).then((result) => {
+                  setBusy(false)
+                  setMessage(result.ok
+                    ? '连接成功：' + ((result.value && result.value.viewer) || '')
+                    : ((result.error && result.error.message) || '连接失败'))
+                })
+              },
+            }, '测试连接'),
+          ),
+        ),
+      )
+    }
+
     /** Segmented radio control used by the settings rows. */
     function Segmented(props) {
       return h(
@@ -6062,6 +6214,7 @@ const EMPTY_LIST = Object.freeze([])
               ),
             )
           : null,
+        h(AccountsSettingsSection, { t }),
         h(
           SettingsSection,
           { title: tx(t, 'reviewOptions'), desc: tx(t, 'settingsReviewDesc'), note: note || (autoReview.loading ? tx(t, 'settingsLoading') : '') },
@@ -7636,6 +7789,28 @@ const EMPTY_LIST = Object.freeze([])
           alive = false
         }
       }, [])
+
+      // Account add/remove/switch invalidates the cached health snapshot.
+      useEffect(() => {
+        const reload = () => {
+          post(ROUTE + '/health', {}).then((result) => {
+            if (result.ok) {
+              const value = result.value || {}
+              setHealth({ state: 'ok', value })
+              const list = Array.isArray(value.accounts) ? value.accounts : []
+              if (list.length > 0 && !list.some((entry) => entry.id === account)) {
+                setAccount(value.defaultAccount || list[0].id)
+              }
+            }
+          })
+        }
+        try {
+          window.addEventListener('codex-review:accounts-changed', reload)
+          return () => window.removeEventListener('codex-review:accounts-changed', reload)
+        } catch {
+          return undefined
+        }
+      }, [account])
 
       const invalidateDetail = useCallback((summary) => {
         const key = detailKey(summary)

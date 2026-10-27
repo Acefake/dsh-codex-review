@@ -19,6 +19,18 @@ import {
   REPO_RE,
 } from './lib/github.js'
 import { GITLAB_REPO_RE, GitLabClient, isValidGitlabRepo } from './lib/gitlab.js'
+import {
+  accountTokenPath,
+  accountsFilePath,
+  legacyAccounts,
+  loadAccountStore,
+  makeAccountId,
+  normalizeAccountInput,
+  readAccountToken,
+  removeAccountToken,
+  saveAccountStore,
+  writeAccountToken,
+} from './lib/accounts.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
 import { dirname, join } from 'node:path'
@@ -80,20 +92,48 @@ export const PROVIDER_LABELS = Object.freeze({
 })
 
 /**
- * Build the clients available to this profile. GitHub is always present; GitLab
- * joins as a second account once both its base URL and token are configured, so
- * both accounts can be browsed side by side.
+ * Resolve the accounts the profile should expose: the saved store when it has
+ * entries, otherwise the legacy single GitHub + optional GitLab pair.
+ * @param {any} config - resolved config.
+ * @param {{ accounts?: Array<any> }} [store] - loaded account store.
+ * @returns {Array<any>} account descriptors.
+ */
+export function resolveAccounts(config, store) {
+  const saved = Array.isArray(store?.accounts) ? store.accounts : []
+  return saved.length > 0 ? saved : legacyAccounts(config)
+}
+
+/**
+ * Build one client per configured account. GitHub accounts honour an explicit
+ * token from secrets; GitLab accounts get the store's base URL plus their token.
  * @param {any} config - resolved config.
  * @param {any} logger - host logger.
- * @param {any} [githubOverride] - injected GitHub client (tests).
+ * @param {any} [githubOverride] - injected GitHub client (tests, single GitHub account).
+ * @param {Array<any>} [accounts] - account descriptors; falls back to legacy config.
  * @returns {Record<string, any>} clients keyed by account id.
  */
-export function buildClients(config, logger, githubOverride) {
+export function buildClients(config, logger, githubOverride, accounts) {
+  const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : legacyAccounts(config)
   /** @type {Record<string, any>} */
-  const clients = { github: githubOverride ?? new GitHubClient({ config, logger }) }
-  if (typeof config.gitlabBaseUrl === 'string' && config.gitlabBaseUrl !== '' &&
-      typeof config.gitlabToken === 'string' && config.gitlabToken !== '') {
-    clients.gitlab = new GitLabClient({ config, logger })
+  const clients = {}
+  for (const account of list) {
+    if (account.type === 'gitlab') {
+      clients[account.id] = new GitLabClient({
+        config: {
+          ...config,
+          gitlabBaseUrl: account.baseUrl,
+          gitlabToken: readAccountToken(account.id) || config.gitlabToken,
+        },
+        logger,
+      })
+      continue
+    }
+    const token = readAccountToken(account.id)
+    if (githubOverride !== undefined && (account.id === 'github' || list.length === 1)) {
+      clients[account.id] = githubOverride
+      continue
+    }
+    clients[account.id] = new GitHubClient({ config, logger, token })
   }
   return clients
 }
@@ -121,6 +161,11 @@ const PATHS = Object.freeze({
   comment: `${ROUTE_PREFIX}/comment`,
   reply: `${ROUTE_PREFIX}/reply`,
   resolve: `${ROUTE_PREFIX}/resolve`,
+  accounts: `${ROUTE_PREFIX}/accounts`,
+  accountsAdd: `${ROUTE_PREFIX}/accounts-add`,
+  accountsRemove: `${ROUTE_PREFIX}/accounts-remove`,
+  accountsTest: `${ROUTE_PREFIX}/accounts-test`,
+  accountsDefault: `${ROUTE_PREFIX}/accounts-default`,
 })
 
 /**
@@ -265,9 +310,36 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     return llmFace.info()
   }
 
-  const clients = deps.clients ?? buildClients(config, logger, deps.github)
-  const defaultAccount = config.dataSource === 'gitlab' && clients.gitlab !== undefined ? 'gitlab' : 'github'
-  const github = clients.github
+  // Tests inject clients; never let them read the real profile's account store.
+  const store = deps.store ?? ((deps.github !== undefined || deps.clients !== undefined || deps.store !== undefined)
+    ? { accounts: [], defaultAccount: '' }
+    : loadAccountStore())
+  const accountList = resolveAccounts(config, store)
+  const clients = deps.clients ?? buildClients(config, logger, deps.github, accountList)
+  const defaultAccount = (() => {
+    const saved = accountList.find((account) => account.id === store.defaultAccount)
+    if (saved !== undefined) return saved.id
+    const bySource = config.dataSource === 'gitlab'
+      ? accountList.find((account) => account.type === 'gitlab')
+      : accountList.find((account) => account.type === 'github')
+    return (bySource ?? accountList[0]).id
+  })()
+  /**
+   * Mutable account runtime shared with the routes: add/remove rebuilds the
+   * client map in place so every route keeps seeing the current accounts.
+   */
+  const accountRuntime = {
+    store,
+    accounts: accountList,
+    clients,
+    defaultAccount,
+    rebuild() {
+      const next = buildClients(config, logger, undefined, accountRuntime.accounts)
+      for (const key of Object.keys(accountRuntime.clients)) delete accountRuntime.clients[key]
+      Object.assign(accountRuntime.clients, next)
+    },
+  }
+  const github = clients[accountList.find((account) => account.type === 'github')?.id] ?? clients[accountList[0].id]
   /** GitHub capability flags; background publish/review are GitHub-backed. */
   const githubCapabilities = providerCapabilities('github')
   const engine = deps.engine ?? new ReviewEngine({
@@ -302,6 +374,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const routes = createRoutes({
     config,
     clients,
+    accountRuntime,
     defaultAccount,
     github,
     engine,
@@ -482,7 +555,14 @@ export function createChatStreamHandler(wiring) {
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, clients, defaultAccount, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
+  const { config, clients, accountRuntime, defaultAccount, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
+  const runtime = accountRuntime ?? {
+    accounts: Object.entries(clients ?? {}).map(([id]) => ({ id, type: id, label: id, baseUrl: '', username: '' })),
+    clients: clients ?? {},
+    defaultAccount: defaultAccount ?? 'github',
+    store: { accounts: [], defaultAccount: defaultAccount ?? '' },
+    rebuild() {},
+  }
 
   /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number, account: string }>} */
   const jobRefs = new Map()
@@ -491,17 +571,37 @@ export function createRoutes(wiring) {
    * Resolve the account a route acts on. An explicit `account` wins; otherwise
    * the profile default is used, so single-account callers keep working.
    * @param {Record<string, unknown>} payload - parsed request body.
-   * @returns {{ id: string, client: any, capabilities: ReturnType<typeof providerCapabilities>, labels: any }} resolved account.
+   * @returns {{ id: string, type: 'github' | 'gitlab', label: string, client: any, capabilities: ReturnType<typeof providerCapabilities>, labels: any }} resolved account.
    * @throws {AppError} BAD_REQUEST for an unknown account id.
    */
   const resolveAccount = (payload) => {
     const requested = payload !== null && typeof payload === 'object' && typeof payload.account === 'string'
       ? payload.account.trim()
       : ''
-    const id = requested !== '' ? requested : defaultAccount
-    const client = clients[id]
+    const id = requested !== '' ? requested : runtime.defaultAccount
+    const client = runtime.clients[id]
     if (client === undefined) throw badRequest(`未知账号：${id}`)
-    return { id, client, capabilities: providerCapabilities(id), labels: PROVIDER_LABELS[id] ?? PROVIDER_LABELS.github }
+    const meta = runtime.accounts.find((entry) => entry.id === id) ?? { id, type: id, label: id }
+    const type = meta.type === 'gitlab' ? 'gitlab' : 'github'
+    return { id, type, label: meta.label, client, capabilities: providerCapabilities(type), labels: PROVIDER_LABELS[type] }
+  }
+
+  /** Return the public account list (never includes tokens). */
+  const accountListValue = () => ({
+    accounts: runtime.accounts.map((account) => ({
+      id: account.id,
+      type: account.type,
+      label: account.label,
+      baseUrl: account.baseUrl,
+      username: account.username,
+    })),
+    defaultAccount: runtime.defaultAccount,
+  })
+
+  /** Persist the current runtime accounts and default. */
+  const persistAccounts = () => {
+    saveAccountStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
+    runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount }
   }
 
   /**
@@ -637,19 +737,27 @@ export function createRoutes(wiring) {
     [PATHS.health]: async () => {
       /** @type {Array<any>} */
       const accounts = []
-      for (const [id, client] of Object.entries(clients)) {
-        const accountCapabilities = providerCapabilities(id)
-        const accountLabels = PROVIDER_LABELS[id] ?? PROVIDER_LABELS.github
+      for (const meta of runtime.accounts) {
+        const id = meta.id
+        const type = meta.type === 'gitlab' ? 'gitlab' : 'github'
+        const client = runtime.clients[id]
+        if (client === undefined) continue
+        const accountCapabilities = providerCapabilities(type)
+        const accountLabels = PROVIDER_LABELS[type]
         /** @type {Record<string, unknown>} */
         const entry = {
           id,
-          provider: id,
+          type,
+          provider: type,
+          label: meta.label,
+          username: meta.username,
+          baseUrl: meta.baseUrl,
           ok: false,
           viewer: '',
           capabilities: accountCapabilities,
           labels: accountLabels,
         }
-        if (id === 'github') {
+        if (type === 'github') {
           let gh = 'missing'
           try {
             gh = await client.ghStatus()
@@ -669,7 +777,7 @@ export function createRoutes(wiring) {
           try {
             const accountStatus = await client.status()
             entry.ok = accountStatus.ok === true
-            entry.viewer = accountStatus.viewer || config.viewerLogin || ''
+            entry.viewer = accountStatus.viewer || meta.username || ''
             if (typeof accountStatus.error === 'string') entry.error = accountStatus.error
           } catch {
             entry.error = 'GL_NETWORK'
@@ -677,7 +785,7 @@ export function createRoutes(wiring) {
         }
         accounts.push(entry)
       }
-      const primary = accounts.find((entry) => entry.id === defaultAccount) ?? accounts[0]
+      const primary = accounts.find((entry) => entry.id === runtime.defaultAccount) ?? accounts[0]
       return {
         provider: primary.provider,
         ok: primary.ok,
@@ -687,7 +795,7 @@ export function createRoutes(wiring) {
         capabilities: primary.capabilities,
         labels: primary.labels,
         accounts,
-        defaultAccount,
+        defaultAccount: runtime.defaultAccount,
         ...(primary.gh !== undefined ? { gh: primary.gh } : {}),
         ...(primary.error !== undefined ? { error: primary.error } : {}),
       }
@@ -897,6 +1005,73 @@ export function createRoutes(wiring) {
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
       if (threadId === '' || threadId.length > 200) throw badRequest('threadId 不合法')
       return client.resolveReviewThread({ repo, number, threadId })
+    },
+
+    [PATHS.accounts]: async () => accountListValue(),
+
+    [PATHS.accountsAdd]: async (payload) => {
+      const input = normalizeAccountInput(payload)
+      const id = makeAccountId(input.type, input.label, runtime.accounts)
+      if (input.token !== '') writeAccountToken(id, input.token)
+      runtime.accounts.push({
+        id,
+        type: input.type,
+        label: input.label,
+        baseUrl: input.baseUrl,
+        username: input.username,
+      })
+      if (runtime.accounts.length === 1) runtime.defaultAccount = id
+      persistAccounts()
+      runtime.rebuild()
+      return accountListValue()
+    },
+
+    [PATHS.accountsRemove]: async (payload) => {
+      const id = requireString(payload, 'id', 'account id')
+      const target = runtime.accounts.find((account) => account.id === id)
+      if (target === undefined) throw badRequest('账号不存在')
+      const remaining = runtime.accounts.filter((account) => account.id !== id)
+      if (!remaining.some((account) => account.type === 'github')) {
+        throw badRequest('至少保留一个 GitHub 账号')
+      }
+      removeAccountToken(id)
+      runtime.accounts = remaining
+      if (runtime.defaultAccount === id) runtime.defaultAccount = remaining[0].id
+      persistAccounts()
+      runtime.rebuild()
+      return accountListValue()
+    },
+
+    [PATHS.accountsTest]: async (payload) => {
+      const input = normalizeAccountInput(payload)
+      if (input.type === 'gitlab') {
+        const client = new GitLabClient({
+          config: { ...config, gitlabBaseUrl: input.baseUrl, gitlabToken: input.token },
+          logger,
+        })
+        const status = await client.status()
+        return {
+          ok: status.ok === true,
+          type: input.type,
+          viewer: status.viewer || input.username,
+          ...(typeof status.error === 'string' ? { error: status.error } : {}),
+        }
+      }
+      const client = new GitHubClient({ config, logger, token: input.token })
+      try {
+        const viewer = await client.getAuthenticatedUser()
+        return { ok: true, type: input.type, viewer }
+      } catch (error) {
+        return { ok: false, type: input.type, viewer: '', error: error instanceof AppError ? error.code : 'GH_NOT_LOGGED_IN' }
+      }
+    },
+
+    [PATHS.accountsDefault]: async (payload) => {
+      const id = requireString(payload, 'id', 'account id')
+      if (!runtime.accounts.some((account) => account.id === id)) throw badRequest('账号不存在')
+      runtime.defaultAccount = id
+      persistAccounts()
+      return accountListValue()
     },
   }
 }

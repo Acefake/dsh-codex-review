@@ -39,7 +39,7 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/health` | `{}` | `{ provider, ok, viewer, gh?, llm, version: "0.13.0", capabilities, labels, accounts: Array<{ id, provider, ok, viewer, gh?, error?, capabilities, labels }>, defaultAccount }` |
+| `/codex-review/health` | `{}` | `{ provider, ok, viewer, gh?, llm, version: "0.13.0", capabilities, labels, accounts: Array<{ id, type, provider, label, username, baseUrl, ok, viewer, gh?, error?, capabilities, labels }>, defaultAccount }` |
 | `/codex-review/llm-info` | `{}` | `{ selection, reasoningEffort, efforts, transport, models?, pluginConfig }`（调试路由；LLM 不可用时报 `LLM_UNAVAILABLE`） |
 | `/codex-review/prs` | `{ account?: "github"\|"gitlab", query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
 | `/codex-review/pr` | `{ repo, number }` | `PrDetail` |
@@ -653,6 +653,11 @@ type PublishRequest = {
 | `/codex-review/comment` | `{ repo, number, body, confirm:true }` | `{ id, url, createdAt }`（`POST issues/{n}/comments`） |
 | `/codex-review/reply` | `{ repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
 | `/codex-review/resolve` | `{ repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
+| `/codex-review/accounts` | `{}` | `{ accounts: Array<{ id, type, label, baseUrl, username }>, defaultAccount }` |
+| `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token? }` | account list（同 `/accounts`） |
+| `/codex-review/accounts-remove` | `{ id }` | account list；至少保留一个 GitHub 账号 |
+| `/codex-review/accounts-test` | `{ type, baseUrl?, username?, token? }` | `{ ok, type, viewer, error? }` |
+| `/codex-review/accounts-default` | `{ id }` | account list |
 
 校验顺序：`repo/number` → `confirm===true` → 其余字段（`body` 1..4000、`commentId` 正整数、`threadId` 1..200）。错误码：`BAD_REQUEST`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_NETWORK`、`GH_TIMEOUT`、`INTERNAL`。
 
