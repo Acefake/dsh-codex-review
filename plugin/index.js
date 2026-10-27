@@ -18,6 +18,7 @@ import {
   MERGE_METHODS,
   REPO_RE,
 } from './lib/github.js'
+import { GITLAB_REPO_RE, GitLabClient, isValidGitlabRepo } from './lib/gitlab.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
 import { dirname, join } from 'node:path'
@@ -49,7 +50,34 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.10.0'
+export const VERSION = '0.12.0'
+
+/**
+ * Capabilities of one data source. This release keeps write operations on
+ * GitHub only; GitLab is read-only.
+ * @param {'github' | 'gitlab'} dataSource - active data source.
+ * @returns {{ browse: boolean, review: boolean, chat: boolean, autoReview: boolean, publish: boolean, comment: boolean, reply: boolean, resolve: boolean, merge: boolean }} capability flags.
+ */
+export function providerCapabilities(dataSource) {
+  const gitlab = dataSource === 'gitlab'
+  return {
+    browse: true,
+    review: true,
+    chat: true,
+    autoReview: !gitlab,
+    publish: !gitlab,
+    comment: !gitlab,
+    reply: !gitlab,
+    resolve: !gitlab,
+    merge: !gitlab,
+  }
+}
+
+/** Provider-specific UI labels; the client renders these instead of hard-coded GitHub wording. */
+export const PROVIDER_LABELS = Object.freeze({
+  github: Object.freeze({ item: 'PR', itemFull: 'Pull Request', reviewers: 'Reviewers', checks: 'Checks' }),
+  gitlab: Object.freeze({ item: 'MR', itemFull: 'Merge Request', reviewers: 'Approvals', checks: 'Pipelines' }),
+})
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -218,7 +246,11 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     return llmFace.info()
   }
 
-  const github = deps.github ?? new GitHubClient({ config, logger })
+  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
+  const capabilities = providerCapabilities(dataSource)
+  const github = deps.github ?? (dataSource === 'gitlab'
+    ? new GitLabClient({ config, logger })
+    : new GitHubClient({ config, logger }))
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
@@ -248,6 +280,15 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     },
   })
   if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
+  // GitLab 只读：后台自动审查/自动发布不能绕过路由层的能力位。
+  if (!capabilities.autoReview && typeof reviewer.updateConfig === 'function') {
+    try {
+      reviewer.updateConfig({ enabled: false })
+    } catch {
+      // A test double or a persisted config that refuses the patch: the route
+      // guards below still reject explicit enable attempts.
+    }
+  }
   const routes = createRoutes({
     config,
     github,
@@ -428,6 +469,21 @@ export function createRoutes(wiring) {
   /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number }>} */
   const jobRefs = new Map()
 
+  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
+  const capabilities = providerCapabilities(dataSource)
+  const labels = PROVIDER_LABELS[dataSource]
+  const repoPattern = dataSource === 'gitlab' ? GITLAB_REPO_RE : REPO_RE
+
+  /**
+   * Reject a write operation the active data source cannot perform.
+   * @param {keyof ReturnType<typeof providerCapabilities>} capability - capability flag.
+   * @returns {void}
+   * @throws {AppError} PROVIDER_UNSUPPORTED when the flag is off.
+   */
+  const requireWrite = (capability) => {
+    if (!capabilities[capability]) throw new AppError('PROVIDER_UNSUPPORTED')
+  }
+
   /**
    * Publish a manually started review once it finishes, when the user enabled
    * automatic publishing. Fire-and-forget: the review route must not block on a
@@ -440,6 +496,7 @@ export function createRoutes(wiring) {
    * @returns {void}
    */
   const autoPublishAfterReview = (jobId, repo, number) => {
+    if (!capabilities.publish) return
     if (typeof engine.waitForCompletion !== 'function' || typeof publisher?.publish !== 'function') return
     const isEnabled = () => {
       try {
@@ -499,7 +556,8 @@ export function createRoutes(wiring) {
    */
   const requirePullRef = (payload) => {
     const repo = requireString(payload, 'repo', 'repo')
-    if (!REPO_RE.test(repo)) throw badRequest('repo 必须是 owner/name 形式')
+    const validRepo = dataSource === 'gitlab' ? isValidGitlabRepo(repo) : repoPattern.test(repo)
+    if (!validRepo) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
@@ -545,14 +603,37 @@ export function createRoutes(wiring) {
 
   return {
     [PATHS.health]: async () => {
-      /** @type {'ok' | 'not-logged-in' | 'missing'} */
-      let gh
-      try {
-        gh = await github.ghStatus()
-      } catch {
-        gh = 'not-logged-in'
+      /** @type {any} */
+      let status
+      if (dataSource === 'github') {
+        // Keep the three-state answer: missing vs not-logged-in is actionable.
+        let gh = 'missing'
+        try {
+          gh = await github.ghStatus()
+        } catch {
+          gh = 'not-logged-in'
+        }
+        status = { ok: gh === 'ok', viewer: '', gh }
+      } else {
+        try {
+          status = await github.status()
+        } catch {
+          status = { ok: false, viewer: '', error: 'GL_NETWORK' }
+        }
       }
-      return { gh, llm: llmAvailable() ? 'ok' : 'unavailable', version }
+      /** @type {Record<string, unknown>} */
+      const value = {
+        provider: dataSource,
+        ok: status.ok === true,
+        viewer: status.viewer || config.viewerLogin || '',
+        llm: llmAvailable() ? 'ok' : 'unavailable',
+        version,
+        capabilities,
+        labels,
+      }
+      if (dataSource === 'github') value.gh = status.gh
+      if (typeof status.error === 'string') value.error = status.error
+      return value
     },
 
     [PATHS.llmInfo]: async () => {
@@ -650,6 +731,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.merge]: async (payload) => {
+      requireWrite('merge')
       const { repo, number } = requirePullRef(payload)
       // Guard 1: a write operation always needs an explicit confirmation.
       if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
@@ -685,6 +767,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewConfig]: async (payload) => {
+      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       if (payload.patch === undefined) return reviewer.status()
       if (payload.patch === null || typeof payload.patch !== 'object' || Array.isArray(payload.patch)) {
@@ -694,11 +777,13 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewRun]: async (payload) => {
+      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       return reviewer.runOnce({ force: payload.force === true })
     },
 
     [PATHS.reviewPublish]: async (payload, context) => {
+      requireWrite('publish')
       const { repo, number } = requirePullRef(payload)
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
@@ -733,6 +818,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.comment]: async (payload) => {
+      requireWrite('comment')
       const { repo, number } = requirePullRef(payload)
       // Every comment write needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
@@ -740,6 +826,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.reply]: async (payload) => {
+      requireWrite('reply')
       const { repo, number } = requirePullRef(payload)
       if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
       const commentId = Number(payload.commentId)
@@ -748,6 +835,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.resolve]: async (payload) => {
+      requireWrite('resolve')
       const { repo, number } = requirePullRef(payload)
       if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''

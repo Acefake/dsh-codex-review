@@ -294,7 +294,13 @@ test('health reports gh, llm and version', async () => {
   const { handler } = mount()
   const answer = await call(handler, '/codex-review/health')
   assert.equal(answer.status, 200)
-  assert.deepEqual(answer.body, { ok: true, value: { gh: 'ok', llm: 'unavailable', version: VERSION } })
+  const health = answer.body.value
+  assert.equal(health.provider, 'github')
+  assert.equal(health.gh, 'ok')
+  assert.equal(health.llm, 'unavailable')
+  assert.equal(health.version, VERSION)
+  assert.equal(health.capabilities.merge, true)
+  assert.deepEqual(health.labels, { item: 'PR', itemFull: 'Pull Request', reviewers: 'Reviewers', checks: 'Checks' })
 })
 
 test('prs applies the configured default query and clamps the limit', async () => {
@@ -576,7 +582,10 @@ test('optional llm injection wires ctx.llm.stream into the real review engine', 
   assert.equal(selectionCalls, 1)
 
   const health = await call(handler, '/codex-review/health')
-  assert.deepEqual(health.body.value, { gh: 'ok', llm: 'ok', version: VERSION })
+  assert.equal(health.body.value.provider, 'github')
+  assert.equal(health.body.value.gh, 'ok')
+  assert.equal(health.body.value.llm, 'ok')
+  assert.equal(health.body.value.version, VERSION)
   for (const dispose of disposers) dispose()
 })
 
