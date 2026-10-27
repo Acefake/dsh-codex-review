@@ -3247,6 +3247,97 @@ const EMPTY_LIST = Object.freeze([])
 .cr-set-status-row:last-child{border-bottom:0}
 .cr-set-status-key{flex:1;font:12.5px/18px ${SANS};color:var(--cr-text-2)}
 .cr-set-status-val{font:12px/18px var(--cr-mono);color:var(--cr-text)}
+
+/* ── compact pass: quiet, dense, scrollbar-free ───────────────────────── */
+.cr-root,.cr-root *,.cr-panel-root,.cr-panel-root *,.cr-modal,.cr-modal *{scrollbar-width:none;-ms-overflow-style:none}
+.cr-root ::-webkit-scrollbar,.cr-panel-root ::-webkit-scrollbar,.cr-modal::-webkit-scrollbar{width:0;height:0;display:none;background:transparent}
+.cr-root ::-webkit-scrollbar-thumb,.cr-panel-root ::-webkit-scrollbar-thumb{background:transparent}
+.cr-side{flex:0 0 222px;width:222px}
+.cr-side-head{padding:12px 10px 4px 16px}
+.cr-side-title{font-size:16px;line-height:22px;letter-spacing:-.015em}
+.cr-search{height:32px;border-radius:8px}
+.cr-list{padding:0 8px 12px;gap:1px}
+.cr-row{min-height:0;padding:8px 9px;border-radius:8px}
+.cr-row-title{font-size:12.5px;line-height:18px}
+.cr-row-meta{margin-top:4px;font-size:10.5px;line-height:15px}
+.cr-list-state{font-size:12px;line-height:18px;padding:12px 8px}
+.cr-toolbar{height:46px;gap:8px;padding:0 12px 0 20px}
+.cr-tab{height:27px;padding:0 10px;font-size:12px}
+.cr-diffstat{font-size:11.5px}
+.cr-review-main{font-size:12px;padding:0 10px;gap:6px}
+.cr-btn{height:28px;padding:0 11px;font-size:12px;border-radius:14px}
+.cr-btn--ghost{height:24px;padding:0 7px;font-size:11px;border-radius:5px}
+.cr-iconbtn{width:26px;height:26px;border-radius:7px}
+.cr-doc{width:720px;padding:2px 0 64px;scrollbar-gutter:auto}
+.cr-details{width:280px;padding:8px 0 56px}
+.cr-pr-repo{font-size:12px}
+.cr-pr-title{margin:12px 0 8px;font-size:22px;line-height:1.3}
+.cr-pr-meta{margin-top:8px;font-size:11.5px;gap:6px}
+.cr-md{margin-top:22px;font-size:13.5px;line-height:1.68}
+.cr-md h2{margin:22px 0 8px;font-size:17px}
+.cr-md h3{margin:16px 0 6px;font-size:15px}
+.cr-md code{font-size:11.5px}
+.cr-sec-title{font-size:12px}
+.cr-finding-title{font-size:13.5px;line-height:20px;margin-top:6px}
+.cr-finding-body{margin-top:8px;font-size:12.5px;line-height:20px}
+.cr-finding-loc{margin-top:4px;font-size:10.5px;line-height:16px}
+.cr-diff{font-size:11.5px;line-height:18px}
+.cr-diff-hunk{padding:1px 10px;font-size:11px;line-height:17px}
+.cr-diff-meta{font-size:10.5px}
+.cr-review-card-title{font-size:13px}
+.cr-review-card-meta{font-size:11.5px}
+.cr-verdict-hint{font-size:11.5px}
+.cr-review-counts{margin-top:12px;padding:10px 0;gap:18px;font-size:11.5px}
+.cr-review-meta-row{margin-top:7px;font-size:11px;line-height:16px}
+.cr-chip{height:24px;padding:0 8px;font-size:11px}
+.cr-filter-empty{font-size:11.5px}
+.cr-changes-row{margin-top:4px;font-size:12px}
+.cr-toast{font-size:12px;padding:7px 12px}
+.cr-accounts{display:flex;gap:4px;padding:0 8px 6px;margin:0;flex-wrap:wrap;background:transparent;border-radius:0}
+.cr-accounts .cr-tab{height:24px;padding:0 8px;font-size:11.5px;border-radius:6px;border:1px solid transparent}
+.cr-accounts .cr-tab--active{border-color:var(--cr-border-2)}
+/* settings */
+.cr-set-page{padding:12px 18px 24px;max-width:740px}
+.cr-set-sec{margin-bottom:18px}
+.cr-set-head{gap:8px;margin-bottom:2px}
+.cr-set-title{font:600 13px/18px ${SANS};letter-spacing:-.01em}
+.cr-set-note{font:10.5px/14px ${SANS}}
+.cr-set-desc{margin-bottom:4px;font:11px/16px ${SANS};max-width:62ch}
+.cr-set-row{padding:7px 0;gap:6px 16px}
+.cr-set-row--stack{gap:5px}
+.cr-set-text{flex:1 1 200px}
+.cr-set-label{font:12px/17px ${SANS}}
+.cr-set-hint{margin-top:1px;font:10.5px/15px ${SANS};max-width:58ch}
+.cr-set-control{gap:6px}
+.cr-set-input{height:24px;padding:0 7px;border-radius:5px;font:11.5px/22px ${MONO}}
+.cr-set-num{width:56px;height:24px;padding:0 6px;font:11px/22px ${MONO}}
+.cr-set-unit{font:10.5px/15px ${SANS}}
+.cr-set-inline{margin-top:6px;padding:6px 8px;border-radius:5px;font:11px/16px ${SANS}}
+.cr-set-actions{gap:6px;margin-top:5px}
+.cr-set-status-row{padding:6px 0;gap:10px}
+.cr-set-status-key{font:11.5px/16px ${SANS}}
+.cr-set-status-val{font:11px/16px ${MONO}}
+.cr-shared-settings{width:min(660px,calc(100% - 28px))}
+.cr-shared-settings .cr-set-page{padding:4px 0 0;max-width:none}
+.cr-modal{max-height:calc(100% - 44px);padding:11px 13px 12px;border-radius:10px}
+.cr-modal-head{margin-bottom:5px}
+.cr-modal-title{font-size:13px}
+.cr-modal-backdrop{padding:40px 14px 14px}
+/* account manager */
+.cr-set-accounts{display:flex;flex-direction:column;border-top:1px solid var(--cr-hair-soft)}
+.cr-set-account{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--cr-hair-soft)}
+.cr-set-account .cr-set-text{flex:1 1 auto;min-width:0}
+.cr-set-account .cr-set-label{display:flex;align-items:center;gap:6px;font-size:12px;line-height:17px}
+.cr-set-account .cr-set-hint{margin-top:0;font-size:10.5px;line-height:15px;max-width:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-set-account .cr-set-actions{flex:none;margin-top:0;gap:4px}
+.cr-set-account .cr-btn{height:22px;padding:0 7px;font-size:11px;border-radius:5px}
+.cr-set-tag{display:inline-flex;align-items:center;height:16px;padding:0 5px;border-radius:4px;background:var(--cr-raised);color:var(--cr-text-3);font-size:9.5px;font-weight:600;letter-spacing:.02em}
+.cr-set-tag--default{background:color-mix(in srgb,var(--cr-blue) 14%,transparent);color:var(--cr-blue)}
+.cr-set-account-form{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 0;align-items:center}
+.cr-set-account-form .cr-set-input{height:24px;padding:0 7px;border-radius:5px;font-family:inherit;font-size:11.5px}
+.cr-set-account-form .cr-set-input--wide{grid-column:1 / -1}
+.cr-set-account-form .cr-set-account-buttons{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:6px;padding-top:2px}
+.cr-set-account-form .cr-btn{height:24px;padding:0 9px;font-size:11px;border-radius:5px}
 `
 
     // ---------------------------------------------------------------------
@@ -3589,7 +3680,7 @@ const EMPTY_LIST = Object.freeze([])
         Array.isArray(props.accounts) && props.accounts.length > 1
           ? h(
               'div',
-              { className: 'cr-tabs', role: 'tablist', 'aria-label': 'accounts', style: { margin: '0 10px 8px' } },
+              { className: 'cr-tabs cr-accounts', role: 'tablist', 'aria-label': 'accounts' },
               props.accounts.map((entry) =>
                 h(
                   'button',
@@ -5921,10 +6012,14 @@ const EMPTY_LIST = Object.freeze([])
                     'div',
                     { className: 'cr-set-text' },
                     h('div', { className: 'cr-set-label' },
-                      (account.label || account.id) + ' · ' + (account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
-                      account.id === state.defaultAccount ? ' · 默认' : ''),
+                      account.label || account.id,
+                      h('span', { className: 'cr-set-tag' }, account.type === 'gitlab' ? 'GitLab' : 'GitHub'),
+                      account.id === state.defaultAccount
+                        ? h('span', { className: 'cr-set-tag cr-set-tag--default' }, '默认')
+                        : null),
                     h('div', { className: 'cr-set-hint' },
-                      (account.username || '—') + (account.baseUrl ? ' · ' + account.baseUrl : '')),
+                      (account.username || (account.type === 'github' ? 'gh 登录态' : '未填写用户名'))
+                        + (account.baseUrl ? ' · ' + account.baseUrl : '')),
                   ),
                   h(
                     'div',
@@ -5974,29 +6069,34 @@ const EMPTY_LIST = Object.freeze([])
                 })
               : null,
             h('input', {
-              type: 'password', className: 'cr-set-input', placeholder: 'Token',
+              type: 'password', className: 'cr-set-input cr-set-input--wide',
+              placeholder: form.type === 'github' ? 'Token（留空使用 gh 登录态）' : 'Token',
               value: form.token, 'aria-label': 'Token',
               onChange: (event) => update({ token: event.target.value }),
             }),
-            h('button', {
-              type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
-              'data-action': 'account-add',
-              onClick: () => mutate('/accounts-add', form),
-            }, '添加账号'),
-            h('button', {
-              type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
-              'data-action': 'account-test',
-              onClick: () => {
-                setBusy(true)
-                setMessage('')
-                post(ROUTE + '/accounts-test', form).then((result) => {
-                  setBusy(false)
-                  setMessage(result.ok
-                    ? '连接成功：' + ((result.value && result.value.viewer) || '')
-                    : ((result.error && result.error.message) || '连接失败'))
-                })
-              },
-            }, '测试连接'),
+            h(
+              'div',
+              { className: 'cr-set-account-buttons' },
+              h('button', {
+                type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+                'data-action': 'account-test',
+                onClick: () => {
+                  setBusy(true)
+                  setMessage('')
+                  post(ROUTE + '/accounts-test', form).then((result) => {
+                    setBusy(false)
+                    setMessage(result.ok
+                      ? '连接成功：' + ((result.value && result.value.viewer) || '')
+                      : ((result.error && result.error.message) || '连接失败'))
+                  })
+                },
+              }, '测试连接'),
+              h('button', {
+                type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy || !canAdd,
+                'data-action': 'account-add',
+                onClick: () => mutate('/accounts-add', form),
+              }, '添加账号'),
+            ),
           ),
         ),
       )
@@ -6214,7 +6314,6 @@ const EMPTY_LIST = Object.freeze([])
               ),
             )
           : null,
-        h(AccountsSettingsSection, { t }),
         h(
           SettingsSection,
           { title: tx(t, 'reviewOptions'), desc: tx(t, 'settingsReviewDesc'), note: note || (autoReview.loading ? tx(t, 'settingsLoading') : '') },
@@ -6448,6 +6547,7 @@ const EMPTY_LIST = Object.freeze([])
                     ),
               ),
         ),
+        h(AccountsSettingsSection, { t }),
         h(
           SettingsSection,
           { title: tx(t, 'settingsStatus') },
@@ -6455,6 +6555,9 @@ const EMPTY_LIST = Object.freeze([])
             'div',
             { className: 'cr-set-status' },
             statusRow(tx(t, 'settingsPluginVersion'), health ? health.version : ''),
+            statusRow('账号', health && Array.isArray(health.accounts)
+              ? health.accounts.map((account) => account.label || account.id).join(' / ')
+              : ''),
             statusRow(tx(t, 'settingsHealthGh'), health ? (health.provider === 'gitlab' ? (health.viewer || 'GitLab') : health.gh) : ''),
             statusRow(tx(t, 'settingsHealthLlm'), health ? health.llm : ''),
           ),
