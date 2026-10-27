@@ -3,15 +3,15 @@
 把 Codex 桌面版「代码审查」窗口的核心体验搬进 DeepSeek Harness Web GUI：左栏 PR 列表、中间 Summary / Changes 与逐文件 unified diff、右栏 Changes / Stack / 评论 / Reviewers / Checks、以及用当前 DSH 模型跑的 **AI 审查**（P0/P1/P2 + 文件:行 + 原因 + 修复建议，可点击定位到 diff）。
 
 - **入口**：安装后左栏出现「代码审查」；点开即进入工作台（`main` 面板 key = `codex-review`）。
-- **数据**：Host 侧经 `gh` CLI 凭据读取 GitHub，或经 GitLab REST v4 读取 GitLab（只读，见下文）。GitHub 默认搜索 `is:open author:@me`。
+- **数据**：Host 侧经 `gh` CLI 凭据读取 GitHub，或经 GitLab REST v4 读取 GitLab。GitHub 默认搜索 `is:open author:@me`。
 - **AI 审查**：Host 侧走 DSH `ctx.llm`，使用当前默认模型（`agentDefaultModel`），失败/未配置时浏览功能不受影响。
-- **范围**：v1 只读 + AI 审查；合并、发评论、向 PR 提问、指派 reviewer 为禁用只读态（v2 计划）。
+- **范围**：浏览 + AI 审查；GitLab 支持发布审查与 MR 评论；合并、回复/解决讨论、自动审查仍仅 GitHub。
 
 > 本目录与仓库根目录都是有效的 npm / DSH 组合包入口（声明 `dsh.bundle.patch` + `dsh.client`）。从 Git 地址安装时使用根目录声明；已有 `plugin/` 目录安装继续兼容。详见[根目录安装说明](../README.md)。
 
-## GitLab 只读（0.12.0）
+## GitLab 通道（0.12.0）
 
-新增 GitLab REST v4 只读通道（兼容 GitLab 12.9）。在 profile patch 里切换数据源：
+新增 GitLab REST v4 通道（兼容 GitLab 12.9）。在 profile patch 里切换数据源：
 
 ```yaml
 - id: dsh-codex-review
@@ -26,8 +26,8 @@
 ```
 
 - 列表用 `scope=created_by_me`（GitLab 服务端解析，不需要本地登录名）；12.9 用 `/merge_requests/:iid/changes`，草稿字段是 `work_in_progress`。
-- 只读：合并、发布评论、回复、解决讨论在 GitLab 下返回 `PROVIDER_UNSUPPORTED`，界面隐藏对应按钮；自动审查仅 GitHub。
-- Token 建议 `read_api` 权限；自建 HTTP 实例只在内网使用。
+- GitLab 写操作：**发布审查**（汇总评论 + 行内 discussion）与 **MR 评论**可用；合并、回复/解决讨论、自动审查仅 GitHub（GitLab 下返回 `PROVIDER_UNSUPPORTED` 并隐藏按钮）。
+- Token 建议 `api` 或 `read_api`+`api` 权限；自建 HTTP 实例只在内网使用。
 - GitHub 行为不变，默认 `dataSource: github`。
 
 ## 多账号与刷新（0.13.0）
@@ -35,7 +35,7 @@
 - 同时配置 GitHub（gh CLI）与 GitLab（baseUrl + token）后，左栏顶部出现账号切换：`PR · Acefake` / `MR · shims`。
 - 两个账号各自查询列表与详情；切换账号会清空当前选中并加载对应账号数据。
 - 工具栏新增刷新按钮：刷新当前账号列表，并刷新已打开的详情。
-- 写操作（合并、发布、评论、回复、解决）仅对**主 GitHub 账号**可用；GitLab 与其他 GitHub 账号保持只读。
+- 写操作：**主 GitHub 账号**可合并/发布/评论；**GitLab 账号**可发布/评论（合并与讨论解决仅 GitHub）；其他 GitHub 账号只读。
 - `dataSource` 表示默认账号；另一个账号只要配置齐全就始终可用。
 - 设置 → 代码审查 → 「账号」：可**添加 / 删除 / 测试连接 / 设为默认**；新增账号必须填自己的 Token（内置默认 GitHub 账号可用 `gh` 登录态）。
 - 账号存在 `<profile>/.codex-review/accounts.json`（不含 token）；token 按账号存 `~/.dsh/secrets/codex-review/<profile-hash>/<id>.token`。
