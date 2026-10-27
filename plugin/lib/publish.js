@@ -643,7 +643,7 @@ export class ReviewPublisher {
    */
   async publishForPull(input) {
     const { repo, number, headSha, review, mode, minSeverity, maxComments, customBody, signal } = input
-    const account = typeof input.account === 'string' ? input.account : ''
+    const account = typeof input.account === 'string' ? input.account.trim() : ''
     const { prKey, headKey } = publishRecordKeys(account, repo, number, headSha)
     const requestKey = publishRequestKey({ mode, minSeverity, maxComments, body: customBody })
 

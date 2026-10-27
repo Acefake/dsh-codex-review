@@ -954,7 +954,7 @@ export class ReviewEngine {
    * @returns {any | undefined} the job record.
    */
   findLatestForPull(repo, number, headSha, account) {
-    const scope = account === undefined ? this.legacyAccount : account
+    const scope = typeof account === 'string' ? account : this.legacyAccount
     /** @type {any} */
     let found
     for (const job of this.jobs.values()) {
@@ -972,7 +972,7 @@ export class ReviewEngine {
    * @returns {boolean} true when a live job exists for the PR.
    */
   hasActiveJob(repo, number, account) {
-    const scope = account === undefined ? this.legacyAccount : account
+    const scope = typeof account === 'string' ? account : this.legacyAccount
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number &&
           (job.account ?? '') === scope &&
@@ -1002,7 +1002,7 @@ export class ReviewEngine {
    * @returns {number} number of jobs removed.
    */
   invalidate(repo, number, account) {
-    const scope = account === undefined ? this.legacyAccount : account
+    const scope = typeof account === 'string' ? account : this.legacyAccount
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {
       if (job.repo !== repo || job.number !== number) continue
@@ -1012,8 +1012,9 @@ export class ReviewEngine {
       removed += 1
     }
     const prefix = `${scope === '' ? '' : `${scope}|`}${repo}#${number}|`
+    const legacyPrefix = `${repo}#${number}|`
     for (const key of [...this.fileCache.entries.keys()]) {
-      if (key.startsWith(prefix)) this.fileCache.delete(key)
+      if (key.startsWith(prefix) || key.startsWith(legacyPrefix)) this.fileCache.delete(key)
     }
     this.persistResults()
     return removed

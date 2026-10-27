@@ -53,11 +53,13 @@ test('invalidate clears only the selected account jobs and file cache', () => {
   engine.jobs.set('gl', { id: 'gl', repo: 'r/x', number: 1, headSha: 's', account: 'gitlab', state: 'done' })
   engine.fileCache.set('github|r/x#1|f|h', [], Number.POSITIVE_INFINITY, 1)
   engine.fileCache.set('gitlab|r/x#1|f|h', [], Number.POSITIVE_INFINITY, 1)
+  engine.fileCache.set('r/x#1|legacy|h', [], Number.POSITIVE_INFINITY, 1)
   engine.invalidate('r/x', 1, 'github')
   assert.equal(engine.jobs.has('gh'), false)
   assert.equal(engine.jobs.has('gl'), true)
   const keys = [...engine.fileCache.entries.keys()]
   assert.equal(keys.includes('github|r/x#1|f|h'), false)
+  assert.equal(keys.includes('r/x#1|legacy|h'), false)
   assert.equal(keys.includes('gitlab|r/x#1|f|h'), true)
   engine.invalidate('r/x', 1, 'gitlab')
   assert.equal(engine.jobs.has('gl'), false)

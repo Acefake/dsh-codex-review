@@ -350,7 +350,13 @@ test('the chat flow validates the repo against the resolved account provider', a
     (error) => error.code === 'BAD_REQUEST',
   )
   // GitLab nested project paths stay valid on the GitLab account.
-  await handle({ account: 'gitlab', repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream)
+  const nested = makeStream()
+  await handle({ account: 'gitlab', repo: 'a/b/c', number: 1, messages: [{ role: 'user', content: 'q' }] }, nested.stream)
+  assert.equal(JSON.parse(nested.frames.at(-1).slice(6, -2)).done, true)
+  await assert.rejects(
+    () => handle({ account: 'nope', repo: 'a/b', number: 1, messages: [{ role: 'user', content: 'q' }] }, makeStream().stream),
+    (error) => error.code === 'BAD_REQUEST',
+  )
 })
 
 test('the chat flow streams deltas, carries the sessionId and ends with a done frame', async () => {

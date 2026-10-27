@@ -411,7 +411,6 @@ const EMPTY_LIST = Object.freeze([])
       accountUsername: 'Username (optional)',
       accountBaseUrlPlaceholder: 'https://gitlab.example.com',
       accountToken: 'Token',
-      accountTokenGhPlaceholder: 'Token (leave empty to use gh login)',
       accountGhLogin: 'gh login',
       accountNoUsername: 'No username',
       accountLoading: 'Loading…',
@@ -774,7 +773,6 @@ const EMPTY_LIST = Object.freeze([])
       accountUsername: '用户名（可选）',
       accountBaseUrlPlaceholder: 'https://gitlab.example.com',
       accountToken: 'Token',
-      accountTokenGhPlaceholder: 'Token（留空使用 gh 登录态）',
       accountGhLogin: 'gh 登录态',
       accountNoUsername: '未填写用户名',
       accountLoading: '加载中……',
@@ -6114,7 +6112,7 @@ const EMPTY_LIST = Object.freeze([])
               'select',
               {
                 className: 'cr-set-input', value: form.type, 'aria-label': tx(t, 'accountType'),
-                onChange: (event) => update({ type: event.target.value }),
+                onChange: (event) => update({ type: event.target.value, baseUrl: '', token: '' }),
               },
               h('option', { value: 'github' }, 'GitHub'),
               h('option', { value: 'gitlab' }, 'GitLab'),
@@ -8151,10 +8149,10 @@ const EMPTY_LIST = Object.freeze([])
 
       /** Switch the visible account and drop the previous account's selection. */
       const switchAccount = useCallback((nextAccount) => {
-        if (nextAccount === account) return
+        if (nextAccount === activeAccount) return
         clearSelection()
         setAccount(nextAccount)
-      }, [account, multiAccount])
+      }, [activeAccount, multiAccount])
 
       /** Refresh the current list and, when a PR is open, its detail. */
       const refreshView = useCallback(() => {

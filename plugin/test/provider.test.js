@@ -311,7 +311,7 @@ test('buildClients marks non-primary GitHub/GitLab accounts without a token unav
     { id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' },
     { id: 'work', type: 'github', label: 'Work', baseUrl: '', username: '' },
     { id: 'gl', type: 'gitlab', label: 'GL', baseUrl: 'http://gitlab.local:8090', username: '' },
-  ])
+  ], () => '')
   assert.equal(clients.github.unavailable, undefined, 'the first GitHub account may fall back to gh')
   assert.equal(clients.work.unavailable, true, 'a second GitHub account needs its own token')
   assert.equal(clients.gl.unavailable, true, 'a GitLab account needs a token')

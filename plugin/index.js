@@ -140,14 +140,14 @@ function unavailableClient(reason) {
  * @param {Array<any>} [accounts] - account descriptors; falls back to legacy config.
  * @returns {Record<string, any>} clients keyed by account id.
  */
-export function buildClients(config, logger, githubOverride, accounts) {
+export function buildClients(config, logger, githubOverride, accounts, tokenReader = readAccountToken) {
   const list = Array.isArray(accounts) ? accounts : legacyAccounts(config)
   /** @type {Record<string, any>} */
   const clients = {}
   let githubOverrideUsed = false
   const readToken = (id) => {
     try {
-      return { token: readAccountToken(id), error: '' }
+      return { token: tokenReader(id), error: '' }
     } catch (error) {
       return { token: '', error: error?.message || '读取 Token 失败' }
     }
@@ -156,18 +156,14 @@ export function buildClients(config, logger, githubOverride, accounts) {
     if (account.type === 'gitlab') {
       const stored = readToken(account.id)
       const token = stored.token || (account.id === 'gitlab' ? config.gitlabToken : '')
+      const baseUrl = account.id === 'gitlab' ? (account.baseUrl || config.gitlabBaseUrl || '') : account.baseUrl
       clients[account.id] = stored.error !== ''
         ? unavailableClient(stored.error)
         : (token === ''
             ? unavailableClient(`${account.label || account.id} 缺少 Token`)
-            : new GitLabClient({
-                config: {
-                  ...config,
-                  gitlabBaseUrl: account.id === 'gitlab' ? (account.baseUrl || config.gitlabBaseUrl || '') : account.baseUrl,
-                  gitlabToken: token,
-                },
-                logger,
-              }))
+            : (baseUrl === ''
+                ? unavailableClient(`${account.label || account.id} 缺少地址`)
+                : new GitLabClient({ config: { ...config, gitlabBaseUrl: baseUrl, gitlabToken: token }, logger })))
       continue
     }
     const stored = readToken(account.id)
@@ -383,9 +379,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     store,
     accounts: accountList,
     clients,
+    githubOverride: deps.github,
     defaultAccount,
     rebuild() {
-      const next = buildClients(config, logger, undefined, accountRuntime.accounts)
+      const next = buildClients(config, logger, accountRuntime.githubOverride, accountRuntime.accounts)
       for (const key of Object.keys(accountRuntime.clients)) delete accountRuntime.clients[key]
       Object.assign(accountRuntime.clients, next)
       const current = accountRuntime.accounts.find((account) => account.id === accountRuntime.defaultAccount)
@@ -420,11 +417,11 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
    * the auto-review state file, so a restarted Host remembers which heads were
    * already published and which review to update in place.
    */
-  const makePublisher = (client) => new ReviewPublisher({
+  const makePublisher = (client, accountId) => new ReviewPublisher({
     github: client,
     engine,
     logger,
-    legacyAccount: accountRuntime.accounts.find((entry) => entry.type === 'github')?.id ?? '',
+    legacyAccount: accountId ?? '',
     store: {
       get: (key) => (typeof reviewer?.getPublished === 'function' ? reviewer.getPublished(key) : undefined),
       set: (key, record) => {
@@ -435,7 +432,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       },
     },
   })
-  let publisher = deps.publisher ?? (primaryGithubAccount === undefined ? undefined : makePublisher(github))
+  let publisher = deps.publisher ?? (primaryGithubAccount === undefined ? undefined : makePublisher(github, primaryGithubAccount.id))
   if (typeof reviewer?.setPublisher === 'function') reviewer.setPublisher(publisher)
   // Rebuilt account clients must also replace the GitHub-bound scheduler/publisher
   // clients; a profile that starts without GitHub can create them lazily.
@@ -463,7 +460,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       reviewer.github = client
       reviewer.account = primary.id
     }
-    if (publisher === undefined) publisher = makePublisher(client)
+    if (publisher === undefined) publisher = makePublisher(client, primary.id)
     else publisher.github = client
     if (publisher !== null && typeof publisher === 'object') publisher.legacyAccount = primary.id
     if (engine !== null && typeof engine === 'object') engine.legacyAccount = primary.id
@@ -476,6 +473,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     defaultAccount,
     github,
     engine,
+    saveStore: saveAccountStore,
     getReviewer: () => reviewer,
     getPublisher: () => publisher,
     logger,
@@ -668,6 +666,8 @@ export function createRoutes(wiring) {
   // routes must read them through accessors instead of a construction snapshot.
   const getReviewer = typeof wiring.getReviewer === 'function' ? wiring.getReviewer : () => wiring.reviewer
   const getPublisher = typeof wiring.getPublisher === 'function' ? wiring.getPublisher : () => wiring.publisher
+  /** A missing writer keeps tests and fallback runtimes away from the real profile. */
+  const saveStore = typeof wiring.saveStore === 'function' ? wiring.saveStore : null
   const runtime = accountRuntime ?? {
     accounts: Object.entries(clients ?? {}).map(([id]) => ({ id, type: id, label: id, baseUrl: '', username: '' })),
     clients: clients ?? {},
@@ -722,16 +722,28 @@ export function createRoutes(wiring) {
 
   /** Persist the current runtime accounts and default. */
   const persistAccounts = () => {
+    if (saveStore === null) {
+      runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
+      return
+    }
     try {
-      saveAccountStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
+      saveStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
       runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
     } catch (error) {
       // A failed write must roll the in-memory account list back to disk.
-      const reloaded = loadAccountStore()
-      runtime.accounts = reloaded.accounts
-      runtime.defaultAccount = reloaded.defaultAccount
-      runtime.store = reloaded
-      runtime.rebuild()
+      /** @type {any} */
+      let reloaded
+      try {
+        reloaded = loadAccountStore()
+      } catch {
+        reloaded = undefined
+      }
+      if (reloaded !== undefined) {
+        runtime.accounts = reloaded.accounts
+        runtime.defaultAccount = reloaded.defaultAccount
+        runtime.store = reloaded
+        runtime.rebuild()
+      }
       throw error
     }
   }
