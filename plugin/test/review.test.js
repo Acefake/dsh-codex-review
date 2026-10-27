@@ -873,16 +873,16 @@ test('invalidate drops the review jobs and file-cache entries of one merged PR',
   const otherFiles = [makeFile('src/a.ts', '@@ -1 +1 @@\n+other')]
   const other = engine.start({ ...PR_INPUT, number: 10, files: otherFiles, options: { depth: 'fast' } })
   await engine.jobs.get(other.jobId).done
-  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('github|Acme/repo#9|')))
-  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('github|Acme/repo#10|')))
+  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('Acme/repo#9|')))
+  assert.ok([...engine.fileCache.entries.keys()].some((key) => key.startsWith('Acme/repo#10|')))
   engine.fileCache.set('gitlab|Acme/repo#9|src/a.ts|hash', [], Number.POSITIVE_INFINITY, 1)
 
   assert.equal(engine.invalidate('Acme/repo', 9), 1)
   assert.equal(engine.existing('Acme/repo', 9, 'sha-1').state, 'none')
   assert.equal(engine.status(other.jobId).state, 'done')
   const keys = [...engine.fileCache.entries.keys()]
-  assert.equal(keys.some((key) => key.startsWith('github|Acme/repo#9|')), false)
-  assert.ok(keys.some((key) => key.startsWith('github|Acme/repo#10|')))
+  assert.equal(keys.some((key) => key.startsWith('Acme/repo#9|')), false)
+  assert.ok(keys.some((key) => key.startsWith('Acme/repo#10|')))
   assert.ok(keys.includes('gitlab|Acme/repo#9|src/a.ts|hash'), 'other accounts keep their cache')
   assert.equal(engine.invalidate('Acme/repo', 999), 0)
   // A running job for the PR is cancelled and removed as well.

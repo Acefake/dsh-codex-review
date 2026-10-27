@@ -6092,9 +6092,7 @@ const EMPTY_LIST = Object.freeze([])
                         type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
                         'data-action': 'account-remove', 'data-account-id': account.id,
                         onClick: () => {
-                          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-                            if (!window.confirm(tx(t, 'accountRemove') + ' ' + (account.label || account.id) + '?')) return
-                          } else if (pendingRemove !== account.id) {
+                          if (pendingRemove !== account.id) {
                             setPendingRemove(account.id)
                             setMessage(tx(t, 'accountRemoveConfirm'))
                             return

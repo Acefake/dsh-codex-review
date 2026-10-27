@@ -121,7 +121,8 @@ export function resolveReviewOptions(options, config = {}) {
  * @returns {string} job key.
  */
 export function buildReviewJobKey(repo, number, headSha, options, account = '') {
-  const prefix = account === '' ? '' : `${account}|`
+  const scope = account === 'github' ? '' : account
+  const prefix = scope === '' ? '' : `${scope}|`
   return `${prefix}${repo}#${number}@${headSha}|${options.depth}|${options.severityThreshold}|${options.includeGuidelines === false ? '0' : '1'}`
 }
 
@@ -165,7 +166,8 @@ export function deriveVerdict(findings) {
  */
 export function fileCacheKey(repo, number, path, patch, account = '') {
   const hash = createHash('sha1').update(typeof patch === 'string' ? patch : '').digest('hex')
-  const prefix = account === '' ? '' : `${account}|`
+  const scope = account === 'github' ? '' : account
+  const prefix = scope === '' ? '' : `${scope}|`
   return `${prefix}${repo}#${number}|${path}|${hash}`
 }
 
@@ -699,7 +701,7 @@ export class ReviewEngine {
     this.fileCache = new LruCache(this.fileCacheMax)
     this.statePath = options.statePath
     /** Account that owns jobs persisted before account-scoped keys existed. */
-    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : 'github'
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
     this.loadResults()
   }
 
@@ -793,8 +795,9 @@ export class ReviewEngine {
     if (!this.available()) throw new AppError('LLM_UNAVAILABLE')
     const model = this.resolveModel()
     const options = resolveReviewOptions(input.options, this.config)
-    const account = typeof input.account === 'string' && input.account !== '' ? input.account : this.legacyAccount
-    const key = buildReviewJobKey(input.repo, input.number, input.headSha, options, account)
+    const account = typeof input.account === 'string' && input.account.trim() !== '' ? input.account.trim() : this.legacyAccount
+    const scope = account === 'github' ? '' : account
+    const key = buildReviewJobKey(input.repo, input.number, input.headSha, options, scope)
     const existing = this.findByKey(key)
     if (existing !== undefined) {
       if (existing.state === 'done') return { jobId: existing.id, headSha: existing.headSha, cached: true, options: existing.options }
@@ -807,7 +810,7 @@ export class ReviewEngine {
     const job = {
       id: `rv-${this.now().toString(36)}-${this.sequence += 1}`,
       key,
-      account,
+      account: scope,
       repo: input.repo,
       number: input.number,
       headSha: input.headSha,
@@ -954,7 +957,8 @@ export class ReviewEngine {
    * @returns {any | undefined} the job record.
    */
   findLatestForPull(repo, number, headSha, account) {
-    const scope = typeof account === 'string' && account !== '' ? account : this.legacyAccount
+    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const scope = raw === 'github' ? '' : raw
     /** @type {any} */
     let found
     for (const job of this.jobs.values()) {
@@ -972,7 +976,8 @@ export class ReviewEngine {
    * @returns {boolean} true when a live job exists for the PR.
    */
   hasActiveJob(repo, number, account) {
-    const scope = typeof account === 'string' && account !== '' ? account : this.legacyAccount
+    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const scope = raw === 'github' ? '' : raw
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number &&
           (job.account ?? '') === scope &&
@@ -1002,7 +1007,8 @@ export class ReviewEngine {
    * @returns {number} number of jobs removed.
    */
   invalidate(repo, number, account) {
-    const scope = typeof account === 'string' && account !== '' ? account : this.legacyAccount
+    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const scope = raw === 'github' ? '' : raw
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {
       if (job.repo !== repo || job.number !== number) continue

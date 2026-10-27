@@ -1154,11 +1154,12 @@ export function createRoutes(wiring) {
     [PATHS.reviewPublish]: async (payload, context) => {
       const account = resolveAccount(payload)
       const { id: accountId, repo, number } = requirePullRef(payload)
-      requireWrite(account.capabilities, 'publish')
       const primary = currentPrimaryGithub()
       if (primary === undefined || accountId !== primary.id) {
         throw new AppError('PROVIDER_UNSUPPORTED')
       }
+      const accountCapabilities = { ...account.capabilities, publish: accountId === primary.id }
+      requireWrite(accountCapabilities, 'publish')
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
       // Defaults come from the persisted publish config; explicit values win.

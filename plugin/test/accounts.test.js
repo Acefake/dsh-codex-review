@@ -11,10 +11,13 @@ import { publishRecordKeys } from '../lib/publish.js'
 
 test('account-scoped cache and publish keys differ from legacy keys', () => {
   const options = { depth: 'standard', severityThreshold: 'P1', includeGuidelines: true }
-  assert.notEqual(buildReviewJobKey('a/b', 1, 'sha', options, 'github'), buildReviewJobKey('a/b', 1, 'sha', options))
-  assert.notEqual(fileCacheKey('a/b', 1, 'x.js', 'patch', 'github'), fileCacheKey('a/b', 1, 'x.js', 'patch'))
+  assert.equal(buildReviewJobKey('a/b', 1, 'sha', options, 'github'), buildReviewJobKey('a/b', 1, 'sha', options))
+  assert.notEqual(buildReviewJobKey('a/b', 1, 'sha', options, 'gitlab'), buildReviewJobKey('a/b', 1, 'sha', options))
+  assert.equal(fileCacheKey('a/b', 1, 'x.js', 'patch', 'github'), fileCacheKey('a/b', 1, 'x.js', 'patch'))
+  assert.notEqual(fileCacheKey('a/b', 1, 'x.js', 'patch', 'gitlab'), fileCacheKey('a/b', 1, 'x.js', 'patch'))
   assert.deepEqual(publishRecordKeys('', 'a/b', 1, 'sha'), { prKey: 'a/b#1', headKey: 'a/b#1@sha' })
-  assert.deepEqual(publishRecordKeys(' github ', 'a/b', 1, 'sha'), { prKey: 'github|a/b#1', headKey: 'github|a/b#1@sha' })
+  assert.deepEqual(publishRecordKeys('github', 'a/b', 1, 'sha'), { prKey: 'a/b#1', headKey: 'a/b#1@sha' })
+  assert.deepEqual(publishRecordKeys('work', 'a/b', 1, 'sha'), { prKey: 'work|a/b#1', headKey: 'work|a/b#1@sha' })
   assert.deepEqual(
     buildReviewJobKey('a/b', 1, 'sha', options),
     'a/b#1@sha|standard|P1|1',
@@ -49,7 +52,7 @@ test('normalizeAccountInput validates type and GitLab fields without returning t
 
 test('invalidate clears only the selected account jobs and file cache', () => {
   const engine = new ReviewEngine({})
-  engine.jobs.set('gh', { id: 'gh', repo: 'r/x', number: 1, headSha: 's', account: 'github', state: 'done' })
+  engine.jobs.set('gh', { id: 'gh', repo: 'r/x', number: 1, headSha: 's', account: '', state: 'done' })
   engine.jobs.set('gl', { id: 'gl', repo: 'r/x', number: 1, headSha: 's', account: 'gitlab', state: 'done' })
   const ghKey = fileCacheKey('r/x', 1, 'f', 'h', 'github')
   const glKey = fileCacheKey('r/x', 1, 'f', 'h', 'gitlab')

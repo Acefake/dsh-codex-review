@@ -331,7 +331,7 @@ test('pr attaches the persisted publish record to the review snapshot', async ()
   const { handler, doubles } = mount()
   doubles.engine.existing = () => ({ state: 'done', headSha: 'abc123', findings: [], verdict: 'changes' })
   doubles.reviewer.getPublished = (key) => (
-    key === 'github|Acefake/yingbox#129@abc123'
+    key === 'Acefake/yingbox#129@abc123'
       ? { publishedAt: 1234, reviewId: 77, url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77' }
       : undefined
   )
@@ -379,7 +379,7 @@ test('review-start auto-publishes a finished review only when publish.enabled is
 test('review-status carries the publish record once the head is published', async () => {  const { handler, doubles } = mount({ llmAvailable: true })
   await call(handler, '/codex-review/review-start', { repo: 'Acefake/yingbox', number: 129 })
   doubles.reviewer.getPublished = (key) => (
-    key === 'github|Acefake/yingbox#129@abc123'
+    key === 'Acefake/yingbox#129@abc123'
       ? { publishedAt: 1234, reviewId: 77, url: 'https://github.com/Acefake/yingbox/pull/129#pullrequestreview-77' }
       : undefined
   )

@@ -420,7 +420,8 @@ function reviewUrl(created, repo, number, reviewId) {
  */
 export function publishRecordKeys(account, repo, number, headSha) {
   const id = typeof account === 'string' ? account.trim() : ''
-  const prefix = id !== '' ? `${id}|` : ''
+  const scope = id === 'github' ? '' : id
+  const prefix = scope !== '' ? `${scope}|` : ''
   return { prKey: `${prefix}${repo}#${number}`, headKey: `${prefix}${repo}#${number}@${headSha}` }
 }
 
@@ -481,7 +482,7 @@ export class ReviewPublisher {
     this.github = options.github
     this.engine = options.engine
     /** Account that may read pre-account publish records. */
-    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : 'github'
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
     this.store = options.store ?? { get: () => undefined, set: () => {} }
     this.logger = options.logger
     this.now = options.now ?? Date.now
@@ -566,7 +567,9 @@ export class ReviewPublisher {
     // instead of racing the store record (CONTRACT §7.2 #6). Different heads of
     // the same PR are serialized too, because both may update the same rolling
     // summary review.
-    const account = typeof input.account === 'string' ? input.account.trim() : ''
+    const account = typeof input.account === 'string' && input.account.trim() !== ''
+      ? input.account.trim()
+      : this.legacyAccount
     const key = publishRecordKeys(account, repo, number, headSha).headKey
     const pending = this.inflight.get(key)
     if (pending !== undefined) return pending
@@ -643,7 +646,9 @@ export class ReviewPublisher {
    */
   async publishForPull(input) {
     const { repo, number, headSha, review, mode, minSeverity, maxComments, customBody, signal } = input
-    const account = typeof input.account === 'string' ? input.account.trim() : ''
+    const account = typeof input.account === 'string' && input.account.trim() !== ''
+      ? input.account.trim()
+      : this.legacyAccount
     const { prKey, headKey } = publishRecordKeys(account, repo, number, headSha)
     const requestKey = publishRequestKey({ mode, minSeverity, maxComments, body: customBody })
 
