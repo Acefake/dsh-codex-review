@@ -6075,7 +6075,7 @@ const EMPTY_LIST = Object.freeze([])
                           ? h('span', { className: 'cr-set-tag cr-set-tag--default' }, tx(t, 'accountDefaultTag'))
                           : null),
                       h('div', { className: 'cr-set-hint' },
-                        (account.username || (account.type === 'github' ? tx(t, 'accountGhLogin') : tx(t, 'accountNoUsername')))
+                        (account.username || tx(t, 'accountNoUsername'))
                           + (account.baseUrl ? ' · ' + account.baseUrl : '')),
                     ),
                     h(
@@ -7925,7 +7925,6 @@ const EMPTY_LIST = Object.freeze([])
       const canMerge = health.state === 'ok' && capability('merge')
       const canPublish = health.state === 'ok' && capability('publish')
       const canComment = health.state === 'ok' && capability('comment')
-      const writeEnabled = canMerge
       /** Detail cache key; includes the account only when several are configured. */
       const detailKey = (summary) => (multiAccount && activeAccount !== '' ? activeAccount + '|' : '') + String(summary.repo) + '#' + String(summary.number)
 

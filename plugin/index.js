@@ -451,6 +451,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
         reviewer.github = undefined
         reviewer.account = ''
       }
+      if (engine !== null && typeof engine === 'object') engine.legacyAccount = ''
       if (publisher !== null && typeof publisher === 'object') publisher.github = undefined
       return
     }
@@ -474,7 +475,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     defaultAccount,
     github,
     engine,
-    saveStore: saveAccountStore,
+    saveStore: deps.store !== undefined ? () => {} : saveAccountStore,
     getReviewer: () => reviewer,
     getPublisher: () => publisher,
     logger,
@@ -1278,7 +1279,7 @@ export function createRoutes(wiring) {
 
     [PATHS.accountsTest]: async (payload) => {
       if (payload.confirm !== true) throw badRequest('测试账号需要 confirm: true')
-      const input = normalizeAccountInput(payload)
+      const input = normalizeAccountInput(payload, { requireToken: false })
       const token = accountTokenInput(payload)
       if (input.type === 'gitlab') {
         const client = new GitLabClient({

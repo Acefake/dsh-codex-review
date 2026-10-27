@@ -35,7 +35,7 @@
 - 同时配置 GitHub（gh CLI）与 GitLab（baseUrl + token）后，左栏顶部出现账号切换：`PR · Acefake` / `MR · shims`。
 - 两个账号各自查询列表与详情；切换账号会清空当前选中并加载对应账号数据。
 - 工具栏新增刷新按钮：刷新当前账号列表，并刷新已打开的详情。
-- 写操作（合并、发布、评论、回复、解决）仅对 GitHub 账号可用；GitLab 账号保持只读。
+- 写操作（合并、发布、评论、回复、解决）仅对**主 GitHub 账号**可用；GitLab 与其他 GitHub 账号保持只读。
 - `dataSource` 表示默认账号；另一个账号只要配置齐全就始终可用。
 - 设置 → 代码审查 → 「账号」：可**添加 / 删除 / 测试连接 / 设为默认**；新增账号必须填自己的 Token（内置默认 GitHub 账号可用 `gh` 登录态）。
 - 账号存在 `<profile>/.codex-review/accounts.json`（不含 token）；token 按账号存 `~/.dsh/secrets/codex-review/<profile-hash>/<id>.token`。

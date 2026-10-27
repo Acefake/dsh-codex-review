@@ -43,11 +43,12 @@ test('normalizeAccountInput validates type and GitLab fields without returning t
   assert.throws(() => normalizeAccountInput({ type: 'gitee' }), (error) => error.code === 'BAD_REQUEST')
   assert.throws(() => normalizeAccountInput({ type: 'gitlab', baseUrl: 'gitlab.local:8090', token: 't' }), (error) => error.code === 'BAD_REQUEST')
   assert.throws(() => normalizeAccountInput({ type: 'gitlab', baseUrl: 'http://g', token: '' }), (error) => error.code === 'BAD_REQUEST')
-  const github = normalizeAccountInput({ type: 'github', label: '' })
+  const github = normalizeAccountInput({ type: 'github', label: '', token: 'tok' })
   assert.equal(github.type, 'github')
   assert.equal(github.label, 'GitHub')
   assert.equal(github.baseUrl, '')
   assert.equal('token' in github, false)
+  assert.throws(() => normalizeAccountInput({ type: 'github', label: '' }), (error) => error.code === 'BAD_REQUEST')
 })
 
 test('invalidate clears only the selected account jobs and file cache', () => {

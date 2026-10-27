@@ -718,10 +718,12 @@ export class ReviewEngine {
             !Number.isInteger(job.number) || job.number <= 0 || typeof job.headSha !== 'string' ||
             job.headSha === '' || !Array.isArray(job.findings) || !job.options ||
             !Number.isFinite(job.startedAt) || !Number.isFinite(job.endedAt)) continue
+        const restoredAccount = typeof job.account === 'string' ? job.account : this.legacyAccount
+        const normalizedAccount = restoredAccount === 'github' ? '' : restoredAccount
         const restored = {
           ...job,
-          account: typeof job.account === 'string' ? job.account : this.legacyAccount,
-          key: buildReviewJobKey(job.repo, job.number, job.headSha, job.options, typeof job.account === 'string' ? job.account : this.legacyAccount),
+          account: normalizedAccount,
+          key: buildReviewJobKey(job.repo, job.number, job.headSha, job.options, normalizedAccount),
           controller: new AbortController(),
           guidelineText: '',
           skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
@@ -957,7 +959,7 @@ export class ReviewEngine {
    * @returns {any | undefined} the job record.
    */
   findLatestForPull(repo, number, headSha, account) {
-    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const raw = account === undefined || account === null || account === '' ? this.legacyAccount : account
     const scope = raw === 'github' ? '' : raw
     /** @type {any} */
     let found
@@ -976,7 +978,7 @@ export class ReviewEngine {
    * @returns {boolean} true when a live job exists for the PR.
    */
   hasActiveJob(repo, number, account) {
-    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const raw = account === undefined || account === null || account === '' ? this.legacyAccount : account
     const scope = raw === 'github' ? '' : raw
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number &&
@@ -1007,7 +1009,7 @@ export class ReviewEngine {
    * @returns {number} number of jobs removed.
    */
   invalidate(repo, number, account) {
-    const raw = account === undefined || account === '' ? this.legacyAccount : account
+    const raw = account === undefined || account === null || account === '' ? this.legacyAccount : account
     const scope = raw === 'github' ? '' : raw
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {

@@ -47,7 +47,7 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 | `/codex-review/review-status` | `{ jobId }` | `ReviewStatus` |
 | `/codex-review/review-cancel` | `{ jobId }` | `{ cancelled: boolean }` |
 
-`account` 为账号 id（`/accounts` 返回）；缺省使用 `defaultAccount`。审查作业与文件缓存按 `account + repo#number` 隔离。
+`account` 为账号 id（`/accounts` 返回）；缺省使用引擎的 `legacyAccount`（默认 GitHub 账号）。审查作业与文件缓存按 `account + repo#number` 隔离。
 
 错误码（`code`）：`BAD_REQUEST`、`GH_MISSING`（gh 未安装）、`GH_NOT_LOGGED_IN`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_TIMEOUT`、`GH_NETWORK`、`GL_MISSING_CONFIG`、`GL_UNAUTHORIZED`、`GL_NOT_FOUND`、`GL_RATE_LIMIT`、`GL_TIMEOUT`、`GL_ABORTED`、`GL_SERVER`、`GL_NETWORK`、`PROVIDER_UNSUPPORTED`、`ACCOUNT_UNAVAILABLE`、`LLM_UNAVAILABLE`、`LLM_ERROR`、`REVIEW_TIMEOUT`、`INTERNAL`。`message` 为面向用户的中文短句（可含恢复建议）。
 
@@ -659,7 +659,7 @@ type PublishRequest = {
 | `/codex-review/reply` | `{ account?: string, repo, number, commentId, body, confirm:true }` | `{ id, url, createdAt }`（`POST pulls/{n}/comments/{commentId}/replies`） |
 | `/codex-review/resolve` | `{ account?: string, repo, number, threadId, confirm:true }` | `{ resolved: boolean }`（GraphQL `resolveReviewThread`） |
 | `/codex-review/accounts` | `{}` | `{ accounts: Array<{ id, type, label, baseUrl, username, capabilities, labels }>, defaultAccount }` |
-| `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token?, confirm: true }` | account list（同 `/accounts`） |
+| `/codex-review/accounts-add` | `{ type, label?, baseUrl?, username?, token, confirm: true }` | account list（同 `/accounts`）；`token` 必填 |
 | `/codex-review/accounts-remove` | `{ id, confirm: true }` | account list；至少保留一个账号，允许纯 GitLab |
 | `/codex-review/accounts-test` | `{ type, baseUrl?, username?, token?, confirm: true }` | `{ ok, type, viewer, error? }` |
 | `/codex-review/accounts-default` | `{ id, confirm: true }` | account list |

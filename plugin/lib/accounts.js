@@ -120,7 +120,7 @@ export function makeAccountId(type, label, existing = []) {
  * @returns {{ type: 'github' | 'gitlab', label: string, baseUrl: string, username: string }} normalized account.
  * @throws {AppError} BAD_REQUEST for an unsupported type or missing GitLab fields.
  */
-export function normalizeAccountInput(input) {
+export function normalizeAccountInput(input, options = {}) {
   const source = input !== null && typeof input === 'object' ? input : {}
   const type = ACCOUNT_TYPES.includes(source.type) ? source.type : ''
   if (type === '') throw new AppError('BAD_REQUEST', '账号类型必须是 github 或 gitlab')
@@ -132,6 +132,9 @@ export function normalizeAccountInput(input) {
     if (baseUrl === '') throw new AppError('BAD_REQUEST', 'GitLab 账号需要 http/https 地址')
     if (token === '') throw new AppError('BAD_REQUEST', 'GitLab 账号需要 Token')
     return { type, label, baseUrl, username }
+  }
+  if (options.requireToken !== false && token === '') {
+    throw new AppError('BAD_REQUEST', 'GitHub 账号需要 Token')
   }
   return { type, label, baseUrl: '', username }
 }
@@ -166,8 +169,6 @@ export function loadAccountStore() {
           baseUrl: account.type === 'gitlab' ? normalizeGitlabBaseUrl(account.baseUrl) : '',
           username: text(account.username),
         }))
-        // A GitLab account with an unusable base URL would build a broken client.
-        .filter((account) => account.type !== 'gitlab' || account.baseUrl !== '')
       : []
     const requestedDefault = typeof parsed?.defaultAccount === 'string' ? parsed.defaultAccount : ''
     const defaultAccount = accounts.some((account) => account.id === requestedDefault)
