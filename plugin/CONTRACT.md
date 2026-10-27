@@ -39,9 +39,9 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/health` | `{}` | `{ provider: "github"\|"gitlab", ok: boolean, viewer: string, gh?: "ok"\|"not-logged-in"\|"missing", llm: "ok"\|"unavailable", version: "0.12.0", capabilities: { browse, review, chat, autoReview, publish, comment, reply, resolve, merge }, labels: { item, itemFull, reviewers, checks } }` |
+| `/codex-review/health` | `{}` | `{ provider, ok, viewer, gh?, llm, version: "0.13.0", capabilities, labels, accounts: Array<{ id, provider, ok, viewer, gh?, error?, capabilities, labels }>, defaultAccount }` |
 | `/codex-review/llm-info` | `{}` | `{ selection, reasoningEffort, efforts, transport, models?, pluginConfig }`（调试路由；LLM 不可用时报 `LLM_UNAVAILABLE`） |
-| `/codex-review/prs` | `{ query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
+| `/codex-review/prs` | `{ account?: "github"\|"gitlab", query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
 | `/codex-review/pr` | `{ repo, number }` | `PrDetail` |
 | `/codex-review/review-start` | `{ repo, number }` | `{ jobId, headSha, cached }` |
 | `/codex-review/review-status` | `{ jobId }` | `ReviewStatus` |

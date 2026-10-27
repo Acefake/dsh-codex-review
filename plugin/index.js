@@ -50,7 +50,7 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.12.0'
+export const VERSION = '0.13.0'
 
 /**
  * Capabilities of one data source. This release keeps write operations on
@@ -78,6 +78,25 @@ export const PROVIDER_LABELS = Object.freeze({
   github: Object.freeze({ item: 'PR', itemFull: 'Pull Request', reviewers: 'Reviewers', checks: 'Checks' }),
   gitlab: Object.freeze({ item: 'MR', itemFull: 'Merge Request', reviewers: 'Approvals', checks: 'Pipelines' }),
 })
+
+/**
+ * Build the clients available to this profile. GitHub is always present; GitLab
+ * joins as a second account once both its base URL and token are configured, so
+ * both accounts can be browsed side by side.
+ * @param {any} config - resolved config.
+ * @param {any} logger - host logger.
+ * @param {any} [githubOverride] - injected GitHub client (tests).
+ * @returns {Record<string, any>} clients keyed by account id.
+ */
+export function buildClients(config, logger, githubOverride) {
+  /** @type {Record<string, any>} */
+  const clients = { github: githubOverride ?? new GitHubClient({ config, logger }) }
+  if (typeof config.gitlabBaseUrl === 'string' && config.gitlabBaseUrl !== '' &&
+      typeof config.gitlabToken === 'string' && config.gitlabToken !== '') {
+    clients.gitlab = new GitLabClient({ config, logger })
+  }
+  return clients
+}
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -246,11 +265,11 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     return llmFace.info()
   }
 
-  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
-  const capabilities = providerCapabilities(dataSource)
-  const github = deps.github ?? (dataSource === 'gitlab'
-    ? new GitLabClient({ config, logger })
-    : new GitHubClient({ config, logger }))
+  const clients = deps.clients ?? buildClients(config, logger, deps.github)
+  const defaultAccount = config.dataSource === 'gitlab' && clients.gitlab !== undefined ? 'gitlab' : 'github'
+  const github = clients.github
+  /** GitHub capability flags; background publish/review are GitHub-backed. */
+  const githubCapabilities = providerCapabilities('github')
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
@@ -280,17 +299,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     },
   })
   if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
-  // GitLab 只读：后台自动审查/自动发布不能绕过路由层的能力位。
-  if (!capabilities.autoReview && typeof reviewer.updateConfig === 'function') {
-    try {
-      reviewer.updateConfig({ enabled: false })
-    } catch {
-      // A test double or a persisted config that refuses the patch: the route
-      // guards below still reject explicit enable attempts.
-    }
-  }
   const routes = createRoutes({
     config,
+    clients,
+    defaultAccount,
     github,
     engine,
     reviewer,
@@ -309,6 +321,8 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const chatHandler = createChatRouteHandler({
     handle: createChatStreamHandler({
       github,
+      clients,
+      defaultAccount,
       engine,
       streamLlm,
       llmAvailable: () => llmFace !== undefined,
@@ -349,7 +363,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
  * @returns {(payload: Record<string, unknown>, stream: { signal: AbortSignal, send: (frame: string) => void, end: () => void, clientGone: () => boolean }) => Promise<void>} the chat flow.
  */
 export function createChatStreamHandler(wiring) {
-  const { github, engine, streamLlm, llmAvailable, config, limiter } = wiring
+  const { github, clients, defaultAccount, engine, streamLlm, llmAvailable, config, limiter } = wiring
   const callTimeoutMs = Number.isFinite(wiring.callTimeoutMs) && wiring.callTimeoutMs > 0 ? wiring.callTimeoutMs : CHAT_CALL_TIMEOUT_MS
 
   /**
@@ -388,10 +402,14 @@ export function createChatStreamHandler(wiring) {
       else stream.signal.addEventListener('abort', linkAbort, { once: true })
       unlinkAbort = () => stream.signal.removeEventListener('abort', linkAbort)
 
-      const detail = await github.getPull(request.repo, request.number)
+      const requestedAccount = typeof request.account === 'string' ? request.account.trim() : ''
+      const accountId = requestedAccount !== '' ? requestedAccount : defaultAccount
+      const client = clients !== undefined ? clients[accountId] : github
+      if (client === undefined) throw badRequest(`未知账号：${accountId}`)
+      const detail = await client.getPull(request.repo, request.number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       const review = engine.existing(request.repo, request.number, headSha)
-      const context = await github.chatContext({
+      const context = await client.chatContext({
         repo: request.repo,
         number: request.number,
         focusFile: request.focusFile,
@@ -464,23 +482,36 @@ export function createChatStreamHandler(wiring) {
  * @returns {Record<string, (payload: Record<string, unknown>, context: { signal: AbortSignal }) => Promise<unknown>>} dispatch table.
  */
 export function createRoutes(wiring) {
-  const { config, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
+  const { config, clients, defaultAccount, github, engine, reviewer, publisher, logger, llmAvailable, llmInfo, version = VERSION } = wiring
 
-  /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number }>} */
+  /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number, account: string }>} */
   const jobRefs = new Map()
 
-  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
-  const capabilities = providerCapabilities(dataSource)
-  const labels = PROVIDER_LABELS[dataSource]
-  const repoPattern = dataSource === 'gitlab' ? GITLAB_REPO_RE : REPO_RE
+  /**
+   * Resolve the account a route acts on. An explicit `account` wins; otherwise
+   * the profile default is used, so single-account callers keep working.
+   * @param {Record<string, unknown>} payload - parsed request body.
+   * @returns {{ id: string, client: any, capabilities: ReturnType<typeof providerCapabilities>, labels: any }} resolved account.
+   * @throws {AppError} BAD_REQUEST for an unknown account id.
+   */
+  const resolveAccount = (payload) => {
+    const requested = payload !== null && typeof payload === 'object' && typeof payload.account === 'string'
+      ? payload.account.trim()
+      : ''
+    const id = requested !== '' ? requested : defaultAccount
+    const client = clients[id]
+    if (client === undefined) throw badRequest(`未知账号：${id}`)
+    return { id, client, capabilities: providerCapabilities(id), labels: PROVIDER_LABELS[id] ?? PROVIDER_LABELS.github }
+  }
 
   /**
-   * Reject a write operation the active data source cannot perform.
+   * Reject a write operation the account cannot perform.
+   * @param {ReturnType<typeof providerCapabilities>} capabilities - account flags.
    * @param {keyof ReturnType<typeof providerCapabilities>} capability - capability flag.
    * @returns {void}
    * @throws {AppError} PROVIDER_UNSUPPORTED when the flag is off.
    */
-  const requireWrite = (capability) => {
+  const requireWrite = (capabilities, capability) => {
     if (!capabilities[capability]) throw new AppError('PROVIDER_UNSUPPORTED')
   }
 
@@ -495,8 +526,8 @@ export function createRoutes(wiring) {
    * @param {number} number - PR number.
    * @returns {void}
    */
-  const autoPublishAfterReview = (jobId, repo, number) => {
-    if (!capabilities.publish) return
+  const autoPublishAfterReview = (jobId, repo, number, accountId) => {
+    if (accountId !== 'github') return
     if (typeof engine.waitForCompletion !== 'function' || typeof publisher?.publish !== 'function') return
     const isEnabled = () => {
       try {
@@ -555,13 +586,14 @@ export function createRoutes(wiring) {
    * @throws {AppError} BAD_REQUEST for a malformed repo or number.
    */
   const requirePullRef = (payload) => {
+    const account = resolveAccount(payload)
     const repo = requireString(payload, 'repo', 'repo')
-    const validRepo = dataSource === 'gitlab' ? isValidGitlabRepo(repo) : repoPattern.test(repo)
-    if (!validRepo) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
+    const validRepo = account.id === 'gitlab' ? isValidGitlabRepo(repo) : REPO_RE.test(repo)
+    if (!validRepo) throw badRequest(account.id === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
-    return { repo, number }
+    return { ...account, repo, number }
   }
 
   /**
@@ -603,37 +635,62 @@ export function createRoutes(wiring) {
 
   return {
     [PATHS.health]: async () => {
-      /** @type {any} */
-      let status
-      if (dataSource === 'github') {
-        // Keep the three-state answer: missing vs not-logged-in is actionable.
-        let gh = 'missing'
-        try {
-          gh = await github.ghStatus()
-        } catch {
-          gh = 'not-logged-in'
+      /** @type {Array<any>} */
+      const accounts = []
+      for (const [id, client] of Object.entries(clients)) {
+        const accountCapabilities = providerCapabilities(id)
+        const accountLabels = PROVIDER_LABELS[id] ?? PROVIDER_LABELS.github
+        /** @type {Record<string, unknown>} */
+        const entry = {
+          id,
+          provider: id,
+          ok: false,
+          viewer: '',
+          capabilities: accountCapabilities,
+          labels: accountLabels,
         }
-        status = { ok: gh === 'ok', viewer: '', gh }
-      } else {
-        try {
-          status = await github.status()
-        } catch {
-          status = { ok: false, viewer: '', error: 'GL_NETWORK' }
+        if (id === 'github') {
+          let gh = 'missing'
+          try {
+            gh = await client.ghStatus()
+          } catch {
+            gh = 'not-logged-in'
+          }
+          entry.ok = gh === 'ok'
+          entry.gh = gh
+          if (entry.ok) {
+            try {
+              entry.viewer = await client.getAuthenticatedUser()
+            } catch {
+              entry.viewer = ''
+            }
+          }
+        } else {
+          try {
+            const accountStatus = await client.status()
+            entry.ok = accountStatus.ok === true
+            entry.viewer = accountStatus.viewer || config.viewerLogin || ''
+            if (typeof accountStatus.error === 'string') entry.error = accountStatus.error
+          } catch {
+            entry.error = 'GL_NETWORK'
+          }
         }
+        accounts.push(entry)
       }
-      /** @type {Record<string, unknown>} */
-      const value = {
-        provider: dataSource,
-        ok: status.ok === true,
-        viewer: status.viewer || config.viewerLogin || '',
+      const primary = accounts.find((entry) => entry.id === defaultAccount) ?? accounts[0]
+      return {
+        provider: primary.provider,
+        ok: primary.ok,
+        viewer: primary.viewer,
         llm: llmAvailable() ? 'ok' : 'unavailable',
         version,
-        capabilities,
-        labels,
+        capabilities: primary.capabilities,
+        labels: primary.labels,
+        accounts,
+        defaultAccount,
+        ...(primary.gh !== undefined ? { gh: primary.gh } : {}),
+        ...(primary.error !== undefined ? { error: primary.error } : {}),
       }
-      if (dataSource === 'github') value.gh = status.gh
-      if (typeof status.error === 'string') value.error = status.error
-      return value
     },
 
     [PATHS.llmInfo]: async () => {
@@ -652,34 +709,35 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.prs]: async (payload) => {
+      const account = resolveAccount(payload)
       const query = typeof payload.query === 'string' && payload.query.trim() !== '' ? payload.query.trim() : config.defaultQuery
       const rawLimit = payload.limit
       const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
         ? Math.min(100, Math.max(1, Math.floor(rawLimit)))
         : config.limit
-      return github.listPullRequests({ query, limit })
+      return account.client.listPullRequests({ query, limit })
     },
 
     [PATHS.pr]: async (payload) => {
-      const { repo, number } = requirePullRef(payload)
-      const detail = await github.getPull(repo, number)
+      const { client, repo, number } = requirePullRef(payload)
+      const detail = await client.getPull(repo, number)
       return withReview(repo, number, detail)
     },
 
     [PATHS.reviewStart]: async (payload, context) => {
-      const { repo, number } = requirePullRef(payload)
+      const { id: accountId, client, repo, number } = requirePullRef(payload)
       if (!engine.available()) throw new AppError('LLM_UNAVAILABLE')
       // Resolve the v1.1 options here as well so the guideline fetch happens
       // only when requested; the engine resolves the same values internally.
       const shared = reviewer?.status?.()?.config ?? {}
       const options = resolveReviewOptions({ ...shared, ...(payload.options ?? {}) }, config)
-      const detail = await github.getPull(repo, number)
+      const detail = await client.getPull(repo, number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')
       let guidelines
-      if (options.includeGuidelines && typeof github.getGuidelines === 'function') {
+      if (options.includeGuidelines && typeof client.getGuidelines === 'function') {
         try {
-          guidelines = await github.getGuidelines(repo, { signal: context?.signal })
+          guidelines = await client.getGuidelines(repo, { signal: context?.signal })
         } catch {
           // Guidelines are an enhancement: never let them block the review.
           guidelines = undefined
@@ -697,12 +755,12 @@ export function createRoutes(wiring) {
         options,
         guidelines,
       })
-      jobRefs.set(started.jobId, { repo, number })
+      jobRefs.set(started.jobId, { repo, number, account: accountId })
       if (jobRefs.size > 200) {
         const oldest = jobRefs.keys().next()
         if (oldest.done !== true) jobRefs.delete(oldest.value)
       }
-      autoPublishAfterReview(started.jobId, repo, number)
+      autoPublishAfterReview(started.jobId, repo, number, accountId)
       return {
         jobId: started.jobId,
         headSha: started.headSha,
@@ -731,8 +789,8 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.merge]: async (payload) => {
-      requireWrite('merge')
-      const { repo, number } = requirePullRef(payload)
+      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
+      requireWrite(accountCapabilities, 'merge')
       // Guard 1: a write operation always needs an explicit confirmation.
       if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
       const method = typeof payload.method === 'string' ? payload.method.trim().toLowerCase() : ''
@@ -746,7 +804,7 @@ export function createRoutes(wiring) {
         if (typeof payload.deleteBranch !== 'boolean') throw badRequest('deleteBranch 必须是布尔值')
         deleteBranch = payload.deleteBranch
       }
-      const result = await github.mergePull({
+      const result = await client.mergePull({
         repo,
         number,
         method,
@@ -767,7 +825,6 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewConfig]: async (payload) => {
-      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       if (payload.patch === undefined) return reviewer.status()
       if (payload.patch === null || typeof payload.patch !== 'object' || Array.isArray(payload.patch)) {
@@ -777,14 +834,13 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewRun]: async (payload) => {
-      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       return reviewer.runOnce({ force: payload.force === true })
     },
 
     [PATHS.reviewPublish]: async (payload, context) => {
-      requireWrite('publish')
-      const { repo, number } = requirePullRef(payload)
+      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
+      requireWrite(accountCapabilities, 'publish')
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
       // Defaults come from the persisted publish config; explicit values win.
@@ -818,29 +874,29 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.comment]: async (payload) => {
-      requireWrite('comment')
-      const { repo, number } = requirePullRef(payload)
+      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
+      requireWrite(accountCapabilities, 'comment')
       // Every comment write needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
-      return github.createIssueComment({ repo, number, body: payload.body })
+      return client.createIssueComment({ repo, number, body: payload.body })
     },
 
     [PATHS.reply]: async (payload) => {
-      requireWrite('reply')
-      const { repo, number } = requirePullRef(payload)
+      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
+      requireWrite(accountCapabilities, 'reply')
       if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
       const commentId = Number(payload.commentId)
       if (!Number.isInteger(commentId) || commentId <= 0) throw badRequest('commentId 必须是正整数')
-      return github.replyToReviewComment({ repo, number, commentId, body: payload.body })
+      return client.replyToReviewComment({ repo, number, commentId, body: payload.body })
     },
 
     [PATHS.resolve]: async (payload) => {
-      requireWrite('resolve')
-      const { repo, number } = requirePullRef(payload)
+      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
+      requireWrite(accountCapabilities, 'resolve')
       if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
       if (threadId === '' || threadId.length > 200) throw badRequest('threadId 不合法')
-      return github.resolveReviewThread({ repo, number, threadId })
+      return client.resolveReviewThread({ repo, number, threadId })
     },
   }
 }

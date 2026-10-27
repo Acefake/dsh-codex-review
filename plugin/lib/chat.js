@@ -49,8 +49,8 @@ export const CHAT_REQUEST_DEADLINE_MS = 300_000
 /** Changed files listed in the context before summarising the rest. */
 const CONTEXT_FILE_LIST_MAX = 40
 
-/** `owner/name` shape accepted from the browser; mirrors github.js `REPO_RE` (kept local to avoid an import cycle). */
-const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+/** `owner/name` or nested GitLab project path; mirrors the provider-side repo rules (kept local to avoid an import cycle). */
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){1,19}$/
 
 /** Marker appended to any truncated context block. */
 const TRUNCATION_MARKER = '…（已截断）'
@@ -82,7 +82,7 @@ export function truncateChars(value, maxChars, marker = TRUNCATION_MARKER) {
 export function validateChatRequest(payload) {
   const body = payload !== null && typeof payload === 'object' ? payload : {}
   const repo = typeof body.repo === 'string' ? body.repo.trim() : ''
-  if (!REPO_PATTERN.test(repo)) throw badRequest('repo 必须是 owner/name 形式')
+  if (!REPO_PATTERN.test(repo)) throw badRequest('repo 格式不合法')
   const rawNumber = body.number
   const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
   if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
@@ -102,6 +102,7 @@ export function validateChatRequest(payload) {
     normalized.push({ role, content })
   }
   if (normalized[normalized.length - 1].role !== 'user') throw badRequest('最后一条消息必须是 user')
+  const account = typeof body.account === 'string' ? body.account.trim() : ''
   /** @type {string | undefined} */
   let focusFile
   const rawFocus = body.focusFile

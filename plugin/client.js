@@ -3586,6 +3586,25 @@ const EMPTY_LIST = Object.freeze([])
             Icon('more', 18, { strokeWidth: 2.4 }),
           ),
         ),
+        Array.isArray(props.accounts) && props.accounts.length > 1
+          ? h(
+              'div',
+              { className: 'cr-tabs', role: 'tablist', 'aria-label': 'accounts', style: { margin: '0 10px 8px' } },
+              props.accounts.map((entry) =>
+                h(
+                  'button',
+                  {
+                    key: entry.id,
+                    type: 'button',
+                    className: 'cr-tab' + (props.account === entry.id ? ' cr-tab--active' : ''),
+                    title: entry.viewer || entry.id,
+                    onClick: () => props.onAccountChange(entry.id),
+                  },
+                  ((entry.labels && entry.labels.item) || entry.id) + ' · ' + (entry.viewer || entry.id),
+                ),
+              ),
+            )
+          : null,
         h(
           'div',
           { className: 'cr-search-wrap' },
@@ -3746,6 +3765,18 @@ const EMPTY_LIST = Object.freeze([])
         h(
           'div',
           { className: 'cr-toolbar-icons' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'cr-iconbtn',
+              'data-action': 'refresh',
+              'aria-label': tx(t, 'refresh'),
+              title: tx(t, 'refresh'),
+              onClick: props.onRefresh,
+            },
+            Icon('refresh', 15),
+          ),
           h(
             'button',
             {
@@ -7469,10 +7500,6 @@ const EMPTY_LIST = Object.freeze([])
     function Workbench(props) {
       const t = props && props.t
       const [health, setHealth] = useState({ state: 'loading', value: null })
-      const providerValue = health.state === 'ok' ? health.value : null
-      // Loading or failed health keeps write entries off: GitLab users must not
-      // see merge/publish buttons flash before the provider is known.
-      const writeEnabled = health.state === 'ok' && (providerValue?.provider ?? 'github') !== 'gitlab'
       const [queryInput, setQueryInput] = useState(DEFAULT_QUERY)
       const [query, setQuery] = useState(DEFAULT_QUERY)
       const [list, setList] = useState({ state: 'loading', items: [], totalCount: 0, error: null })
@@ -7548,6 +7575,17 @@ const EMPTY_LIST = Object.freeze([])
       const [publishRecords, setPublishRecords] = useState({})
       const [publishUnsupported, setPublishUnsupported] = useState(false)
 
+      // Multi-account state is appended after the original state slots so the
+      // existing render order (and its tests) stays stable.
+      const [account, setAccount] = useState('github')
+      const [listNonce, setListNonce] = useState(0)
+      const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
+      const currentAccount = accounts.find((entry) => entry.id === account) ?? accounts[0] ?? null
+      const multiAccount = accounts.length > 1
+      const writeEnabled = health.state === 'ok' && (currentAccount === null || currentAccount.capabilities?.merge === true)
+      /** Detail cache key; includes the account only when several are configured. */
+      const detailKey = (summary) => (multiAccount ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
+
       const docRef = useRef(null)
       const listGeneration = useRef(0)
       const detailGeneration = useRef(0)
@@ -7581,16 +7619,18 @@ const EMPTY_LIST = Object.freeze([])
       const publishDialogRef = useRef(null)
       publishDialogRef.current = publishDialog
 
-      // health: one shot, drives the top notice bar only
+      // health: one shot; also picks the initial account tab
       useEffect(() => {
         let alive = true
         post(ROUTE + '/health', {}).then((result) => {
           if (!alive) return
-          setHealth(
-            result.ok
-              ? { state: 'ok', value: result.value || {} }
-              : { state: 'error', error: result.error },
-          )
+          const value = result.ok ? result.value || {} : null
+          setHealth(result.ok ? { state: 'ok', value } : { state: 'error', error: result.error })
+          if (result.ok) {
+            const list = Array.isArray(value.accounts) ? value.accounts : []
+            const preferred = value.defaultAccount || (list[0] && list[0].id) || 'github'
+            setAccount((previous) => (list.some((entry) => entry.id === previous) ? previous : preferred))
+          }
         })
         return () => {
           alive = false
@@ -7598,22 +7638,22 @@ const EMPTY_LIST = Object.freeze([])
       }, [])
 
       const invalidateDetail = useCallback((summary) => {
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         detailVersions.current.set(key, (detailVersions.current.get(key) || 0) + 1)
         detailCache.current.delete(key)
         detailInflight.current.delete(key)
-      }, [])
+      }, [account, multiAccount])
 
       /** Fetch one PR detail, sharing only requests from the current cache epoch. */
       const fetchDetail = useCallback((summary) => {
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const pending = detailInflight.current.get(key)
         if (pending) return pending
         const version = detailVersions.current.get(key) || 0
         const release = () => {
           if (detailInflight.current.get(key) === request) detailInflight.current.delete(key)
         }
-        const request = post(ROUTE + '/pr', { repo: summary.repo, number: summary.number })
+        const request = post(ROUTE + '/pr', { account, repo: summary.repo, number: summary.number })
           .then((result) => {
             release()
             // An obsolete response cannot update either the cache or its caller.
@@ -7630,7 +7670,7 @@ const EMPTY_LIST = Object.freeze([])
           })
         detailInflight.current.set(key, request)
         return request
-      }, [])
+      }, [account, multiAccount])
 
       /**
        * Warm a PR's detail when the pointer or focus rests on its row: by the time
@@ -7639,12 +7679,12 @@ const EMPTY_LIST = Object.freeze([])
        */
       const prefetchDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const cached = detailCache.current.get(key)
         if (cached && Date.now() - cached.at < DETAIL_CACHE_TTL_MS) return
         if (detailInflight.current.has(key)) return
         void fetchDetail(summary)
-      }, [fetchDetail])
+      }, [account, multiAccount, fetchDetail])
 
       const loadDetail = useCallback((summary) => {
         if (!summary || summary.repo === undefined || summary.number === undefined) return
@@ -7653,7 +7693,7 @@ const EMPTY_LIST = Object.freeze([])
         setReview(normalizeReviewStatus({ state: 'none' }))
         const seedGeneration = reviewGeneration.current
         let restoredGeneration = seedGeneration
-        const key = String(summary.repo) + '#' + String(summary.number)
+        const key = detailKey(summary)
         const cached = detailCache.current.get(key)
         if (cached) {
           // A cached PR renders instantly; an expired entry refreshes in the background.
@@ -7695,7 +7735,7 @@ const EMPTY_LIST = Object.freeze([])
             setReview(seed || normalizeReviewStatus({ state: 'none' }))
           }
         })
-      }, [fetchDetail])
+      }, [account, multiAccount, fetchDetail])
 
       /**
        * Re-fetch one PR's detail without resetting the review card. Used after a
@@ -7712,6 +7752,24 @@ const EMPTY_LIST = Object.freeze([])
           setDetail({ state: 'ready', value: result.value, error: null })
         })
       }, [fetchDetail, invalidateDetail])
+
+      /** Switch the visible account and drop the previous account's selection. */
+      const switchAccount = useCallback((nextAccount) => {
+        if (nextAccount === account) return
+        selectedRef.current = null
+        setSelected(null)
+        setDetail({ state: 'idle', value: null, error: null })
+        setReview(normalizeReviewStatus({ state: 'none' }))
+        detailGeneration.current += 1
+        setAccount(nextAccount)
+      }, [account, multiAccount])
+
+      /** Refresh the current list and, when a PR is open, its detail. */
+      const refreshView = useCallback(() => {
+        setListNonce((previous) => previous + 1)
+        const current = selectedRef.current
+        if (current) refreshDetail(current)
+      }, [refreshDetail])
 
       // Remember when the current head's review finished so the summary header can
       // show a relative timestamp (the review status payload has no finishedAt).
@@ -7761,9 +7819,10 @@ const EMPTY_LIST = Object.freeze([])
       }, [queryInput])
 
       useEffect(() => {
+        if (account === '') return undefined
         const generation = ++listGeneration.current
         setList((previous) => Object.assign({}, previous, { state: 'loading' }))
-        post(ROUTE + '/prs', { query }).then((result) => {
+        post(ROUTE + '/prs', { account, query }).then((result) => {
           if (generation !== listGeneration.current) return
           if (result.ok) {
             const value = result.value || {}
@@ -7776,7 +7835,8 @@ const EMPTY_LIST = Object.freeze([])
             )
           }
         })
-      }, [query, selectPr])
+        return undefined
+      }, [account, query, listNonce, selectPr])
 
       /** Poll review-status until a terminal state, guarded by a generation counter. */
       const pollReview = useCallback(async (generation, jobId, summary) => {
@@ -7839,7 +7899,7 @@ const EMPTY_LIST = Object.freeze([])
             progress: {},
           }),
         )
-        post(ROUTE + '/review-start', { repo: current.repo, number: current.number }).then(
+        post(ROUTE + '/review-start', { account, repo: current.repo, number: current.number }).then(
           (result) => {
             if (generation !== reviewGeneration.current) return
             if (!result.ok) {
@@ -8229,7 +8289,7 @@ const EMPTY_LIST = Object.freeze([])
           chatAbortRef.current = controller
           const requestMessages = chatRequestMessages(baseMessages.concat([userMessage]))
           const focusFile = resolveFocusFile()
-          const payload = { repo: current.repo, number: current.number, messages: requestMessages }
+          const payload = { account, repo: current.repo, number: current.number, messages: requestMessages }
           if (focusFile !== '') payload.focusFile = focusFile
           setComposerText('')
           setChat({
@@ -8382,7 +8442,7 @@ const EMPTY_LIST = Object.freeze([])
           return
         }
         setMergeDialog((previous) => Object.assign({}, previous, { phase: 'submitting', error: null }))
-        post(ROUTE + '/merge', request).then((result) => {
+        post(ROUTE + '/merge', Object.assign({}, request, { account })).then((result) => {
           if (result.ok) {
             const value = result.value || {}
             const sha = shortSha(value.sha, 7) || shortSha(request.expectedHeadSha, 7)
@@ -8598,6 +8658,7 @@ const EMPTY_LIST = Object.freeze([])
           Object.assign({}, previous, { phase: 'submitting', error: null }),
         )
         post(ROUTE + '/comment', {
+          account,
           repo: current.repo,
           number: current.number,
           body,
@@ -8613,7 +8674,7 @@ const EMPTY_LIST = Object.freeze([])
             Object.assign({}, previous, { phase: 'error', error: result.error || null }),
           )
         })
-      }, [commentDialog, refreshDetail, showToast, t])
+      }, [account, commentDialog, refreshDetail, showToast, t])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
@@ -8633,6 +8694,7 @@ const EMPTY_LIST = Object.freeze([])
             const current = selectedRef.current
             if (!current || !comment || !Number.isInteger(comment.id)) return Promise.resolve(false)
             return post(ROUTE + '/reply', {
+              account,
               repo: current.repo,
               number: current.number,
               commentId: comment.id,
@@ -8646,6 +8708,7 @@ const EMPTY_LIST = Object.freeze([])
               return Promise.resolve(false)
             }
             return post(ROUTE + '/resolve', {
+              account,
               repo: current.repo,
               number: current.number,
               threadId: comment.threadId,
@@ -8653,7 +8716,7 @@ const EMPTY_LIST = Object.freeze([])
             }).then((result) => finish(result, 'resolveDone', current))
           },
         }
-      }, [writeEnabled, refreshDetail, showToast, t])
+      }, [account, writeEnabled, refreshDetail, showToast, t])
 
       // -------------------------------------------------------------------
       // v2.2: publish the current review to GitHub (CONTRACT §7.3)
@@ -8719,7 +8782,7 @@ const EMPTY_LIST = Object.freeze([])
         setPublishDialog((previous) =>
           Object.assign({}, previous, { phase: 'submitting', error: null }),
         )
-        post(ROUTE + '/review-publish', request, { timeoutMs: PUBLISH_TIMEOUT_MS }).then((result) => {
+        post(ROUTE + '/review-publish', Object.assign({}, request, { account }), { timeoutMs: PUBLISH_TIMEOUT_MS }).then((result) => {
           if (result.ok) {
             const value = result.value || {}
             const record = normalizePublishResult(value)
@@ -8953,6 +9016,8 @@ const EMPTY_LIST = Object.freeze([])
         h('div', { className: 'cr-layout' },
           h(PrList, {
             state: list,
+            accounts,
+            account,
             queryInput,
             selectedNumber: selected ? selected.number : null,
             t,
@@ -8962,7 +9027,8 @@ const EMPTY_LIST = Object.freeze([])
             onSelect: selectPr,
             onPrefetch: prefetchDetail,
             onQueryChange: setQueryInput,
-            onRefresh: () => setQuery(queryInput),
+            onAccountChange: switchAccount,
+            onRefresh: refreshView,
             onRetry: () => setQuery(queryInput + ' '),
             onClearQuery: () => {
               setQueryInput('')
@@ -8998,6 +9064,7 @@ const EMPTY_LIST = Object.freeze([])
               onGithub: openGithub,
               onReview: startReview,
               onGear: () => setSettingsOpen(true),
+              onRefresh: refreshView,
               mergeEnabled: writeEnabled && mergeState.enabled,
               mergeVisible: writeEnabled,
               mergeTitle,
