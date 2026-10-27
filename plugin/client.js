@@ -6018,7 +6018,8 @@ const EMPTY_LIST = Object.freeze([])
         post(ROUTE + path, { ...payload, confirm: true }).then((result) => {
           setBusy(false)
           if (result.ok) {
-            applyList(result.value || {})
+            if (result.value && Array.isArray(result.value.accounts)) applyList(result.value)
+            else refresh()
             setMessage(tx(t, 'settingsSaved'))
             if (options.resetForm === true) {
               setForm((previous) => ({ ...previous, label: '', username: '', baseUrl: '', token: '' }))
@@ -6088,7 +6089,11 @@ const EMPTY_LIST = Object.freeze([])
                       h('button', {
                         type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
                         'data-action': 'account-remove', 'data-account-id': account.id,
-                        onClick: () => mutate('/accounts-remove', { id: account.id }),
+                        onClick: () => {
+                          if (typeof window !== 'undefined' && typeof window.confirm === 'function' &&
+                              !window.confirm(tx(t, 'accountRemove') + ' ' + (account.label || account.id) + '?')) return
+                          mutate('/accounts-remove', { id: account.id })
+                        },
                       }, tx(t, 'accountRemove')),
                     ),
                   ),
@@ -7906,7 +7911,7 @@ const EMPTY_LIST = Object.freeze([])
         : (currentAccount.capabilities?.merge ?? currentAccount.type !== 'gitlab')
       const writeEnabled = health.state === 'ok' && currentWriteAllowed
       /** Detail cache key; includes the account only when several are configured. */
-      const detailKey = (summary) => (multiAccount ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
+      const detailKey = (summary) => (multiAccount && account !== '' ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
 
       const docRef = useRef(null)
       const listGeneration = useRef(0)

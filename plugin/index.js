@@ -140,6 +140,8 @@ function unavailableClient(reason) {
  */
 export function buildClients(config, logger, githubOverride, accounts) {
   const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : legacyAccounts(config)
+  /** Only the primary GitHub account may borrow the host gh identity. */
+  const primaryGithubId = list.find((account) => account.type === 'github')?.id
   /** @type {Record<string, any>} */
   const clients = {}
   const readToken = (id) => {
@@ -170,9 +172,13 @@ export function buildClients(config, logger, githubOverride, accounts) {
     }
     clients[account.id] = stored.error !== ''
       ? unavailableClient(stored.error)
-      : (stored.token === '' && account.id !== 'github'
+      : (stored.token === '' && account.id !== primaryGithubId
           ? unavailableClient(`${account.label || account.id} 缺少 Token`)
-          : new GitHubClient({ config, logger, token: stored.token }))
+          : new GitHubClient({
+              config,
+              logger,
+              ...(stored.token === '' ? {} : { token: stored.token }),
+            }))
   }
   return clients
 }
@@ -378,7 +384,9 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       Object.assign(accountRuntime.clients, next)
       const current = accountRuntime.accounts.find((account) => account.id === accountRuntime.defaultAccount)
       const saved = accountRuntime.accounts.find((account) => account.id === accountRuntime.store?.defaultAccount)
-      const first = accountRuntime.accounts.find((account) => accountRuntime.clients[account.id] !== undefined)
+      const first = accountRuntime.accounts.find(
+        (account) => accountRuntime.clients[account.id] !== undefined && accountRuntime.clients[account.id]?.unavailable !== true,
+      )
       accountRuntime.defaultAccount = (current ?? saved ?? first)?.id ?? ''
       accountRuntime.onRebuild?.()
     },

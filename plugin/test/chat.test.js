@@ -188,7 +188,8 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
 
   /** @type {Array<[string, Record<string, unknown>]>} */
   const invalid = [
-    ['bad repo', { repo: 'bad path/repo', number: 1, messages: [message('user', 'q')] }],
+    ['bad repo', { repo: 'not-a-repo', number: 1, messages: [message('user', 'q')] }],
+    ['bad repo space', { repo: 'bad path/repo', number: 1, messages: [message('user', 'q')] }],
     ['repo dot segment', { repo: 'a/../b', number: 1, messages: [message('user', 'q')] }],
     ['repo bare dot', { repo: 'a/.', number: 1, messages: [message('user', 'q')] }],
     ['repo bare dotdot', { repo: 'a/..', number: 1, messages: [message('user', 'q')] }],

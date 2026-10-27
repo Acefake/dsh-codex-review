@@ -22,8 +22,10 @@ function profileDirectory() {
   const configured = process.env.DSH_PROFILE_DIR
   if (typeof configured === 'string' && configured !== '') return configured
   const home = process.env.DSH_HOME
-  const profile = process.env.DSH_PROFILE
-  if (typeof home === 'string' && home !== '' && typeof profile === 'string' && profile !== '') {
+  if (typeof home === 'string' && home !== '') {
+    const profile = typeof process.env.DSH_PROFILE === 'string' && process.env.DSH_PROFILE !== ''
+      ? process.env.DSH_PROFILE
+      : 'desktop'
     return join(home, 'profiles', profile)
   }
   return join(homedir(), '.dsh', 'profiles', 'desktop')
