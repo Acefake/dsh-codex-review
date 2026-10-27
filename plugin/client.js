@@ -7470,7 +7470,9 @@ const EMPTY_LIST = Object.freeze([])
       const t = props && props.t
       const [health, setHealth] = useState({ state: 'loading', value: null })
       const providerValue = health.state === 'ok' ? health.value : null
-      const writeEnabled = !providerValue || providerValue.provider !== 'gitlab'
+      // Loading or failed health keeps write entries off: GitLab users must not
+      // see merge/publish buttons flash before the provider is known.
+      const writeEnabled = health.state === 'ok' && (providerValue?.provider ?? 'github') !== 'gitlab'
       const [queryInput, setQueryInput] = useState(DEFAULT_QUERY)
       const [query, setQuery] = useState(DEFAULT_QUERY)
       const [list, setList] = useState({ state: 'loading', items: [], totalCount: 0, error: null })
@@ -8615,7 +8617,7 @@ const EMPTY_LIST = Object.freeze([])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
-        if (!writeEnabled) return undefined
+        if (!writeEnabled) return {}
         const finish = (result, doneKey, origin) => {
           if (result && result.ok) {
             showToast(tx(t, doneKey))

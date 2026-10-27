@@ -30,7 +30,7 @@
 ### 2.1 目标
 
 - 新增 GitLab provider，实现只读浏览：MR 列表、MR 详情（正文/文件 diff/讨论/审批/pipeline）、AI 审查、PR 对话。
-- GitHub 路径行为不变，默认仍为 `provider: github`。
+- GitHub 路径行为不变，默认仍为 `dataSource: github`。
 - 账号判定沿用“本地优先”：列表用 GitLab 的 `scope=created_by_me`（服务端解析），不需要本地登录名；`viewerLogin` 仅用于展示与后续写操作。
 - 写操作（发布评论、回复、解决、合并）在 GitLab 下明确禁用并给出稳定错误码。
 
@@ -50,8 +50,8 @@
 
 ```text
 index.js
-  ├─ config.provider === 'github' → GitHubClient（现有，保持不动）
-  └─ config.provider === 'gitlab' → GitLabClient（新增 lib/gitlab.js）
+  ├─ config.dataSource === 'github' → GitHubClient（现有，保持不动）
+  └─ config.dataSource === 'gitlab' → GitLabClient（新增 lib/gitlab.js）
 ```
 
 只读阶段 `GitLabClient` 只需实现 routes 用到的读路径：
@@ -101,8 +101,8 @@ index.js
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `provider` | `'github' \| 'gitlab'` | `'github'` | 数据通道 |
-| `gitlabBaseUrl` | string | `''` | 例 `http://gitlab.mbse.design:8090`；为空时 provider=gitlab 视为未配置 |
+| `dataSource` | `'github' \| 'gitlab'` | `'github'` | 数据通道；非法值在 `resolveConfig` 报 `BAD_REQUEST` |
+| `gitlabBaseUrl` | string | `''` | 例 `http://gitlab.mbse.design:8090`；必须是 http/https，否则视为未配置 |
 | `gitlabToken` | string | `''` | PAT；建议从 `~/.dsh/secrets/gitlab.token` 经 `!!js` 注入，或读 `GITLAB_TOKEN` |
 | `viewerLogin` | string | `''` | 当前 GitLab 用户名；只读阶段仅用于展示 |
 
@@ -111,7 +111,7 @@ index.js
 ```yaml
 - id: dsh-codex-review
   config:
-    provider: gitlab
+    dataSource: gitlab
     gitlabBaseUrl: http://gitlab.mbse.design:8090
     gitlabToken: !!js >-
       (() => { try { return process.getBuiltinModule("node:fs")
@@ -130,7 +130,7 @@ Token 需要 `read_api` 权限即可（只读）；不要 `api` 全权。HTTP �
 | --- | --- | --- |
 | MR 列表 | `GET /merge_requests?scope=created_by_me&state=opened&order_by=updated_at&per_page={limit}` | `scope` 由服务端解析，等价 `author:@me`；`query` 作为 `search` 参数 |
 | MR 详情 | `GET /projects/:id/merge_requests/:iid` | `description`、`diff_refs`、`detailed_merge_status`、`draft` |
-| 文件 diff | `GET /projects/:id/merge_requests/:iid/diffs?per_page=100` | 分页；`diff` 字段是 unified diff 文本；旧版本（<15.7）回退 `/changes` |
+| 文件 diff | GitLab 12.9：`GET /projects/:id/merge_requests/:iid/changes`；≥15.7 优先 `/diffs?per_page=100`，失败或旧实例回退 `/changes` | 两种响应都归一化成 unified diff 文本；`/changes` 分页/`overflow` 按版本降级 |
 | 讨论/行内评论 | `GET /projects/:id/merge_requests/:iid/discussions?per_page=100` | `notes[].position` 给 `new_path`/`new_line`/`old_line` |
 | 审批 | `GET /projects/:id/merge_requests/:iid/approvals` | `approved`、`approved_by`；CE/Premium 差异要降级处理 |
 | Pipeline | `GET /projects/:id/merge_requests/:iid/pipelines` | 取最近一条，jobs 可选 |
@@ -152,9 +152,9 @@ Token 需要 `read_api` 权限即可（只读）；不要 `api` 全权。HTTP �
 GitLab 支持嵌套 group（本机就有 `mdesign/beijing/graphics-library-v2`，3 段）。现有 `REPO_RE`（`lib/github.js:42`）只允许 `owner/name` 两段，需要改为 provider 感知：
 
 - GitHub：保持两段校验。
-- GitLab：`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){0,19}$`（最多 20 段）。
+- GitLab：`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){0,19}$`（最多 20 段），且每一段不得为 `.` 或 `..`、不得以 `-` 开头，防止构造跨段路径。
 
-`requirePullRef`（`index.js:500`）改为调用 provider 的校验函数，避免 GitLab 项目路径被拒。
+`requirePullRef`（`index.js`）按 `config.dataSource` 选择校验函数，避免 GitLab 项目路径被拒。
 
 ### 3.6 错误码
 
@@ -200,8 +200,8 @@ fixture 按 GitLab REST v4 真实响应结构手写，放 `plugin/dev/mock/gitla
 
 ## 5. 验收标准
 
-1. 默认 `provider: github` 时，现有全部测试与行为不变。
-2. `provider: gitlab` + 有效 token 时，列表返回当前用户创建的 open MR（`scope=created_by_me`）。
+1. 默认 `dataSource: github` 时，现有全部测试与行为不变。
+2. `dataSource: gitlab` + 有效 token 时，列表返回当前用户创建的 open MR（`scope=created_by_me`）。
 3. 打开 MR 能显示正文、逐文件 diff、讨论、审批、pipeline 状态。
 4. AI 审查可运行，结果与 GitHub 路径同样展示（P0/P1/P2、文件:行、定位）。
 5. 合并/发布/评论/回复/解决按钮在 GitLab 下不可见；直接调用路由返回 `PROVIDER_UNSUPPORTED`。
@@ -211,7 +211,7 @@ fixture 按 GitLab REST v4 真实响应结构手写，放 `plugin/dev/mock/gitla
 
 **风险**
 
-- GitLab 版本差异：`/diffs`（15.7+）与旧 `/changes` 字段不同；审批接口在 CE/Premium 能力不同。需要按响应降级，不能假定字段存在。
+- GitLab 版本差异：12.9 只有 `/changes`，`/diffs` 从 15.7 起可用；实现先 `/diffs`、失败回退 `/changes`。审批接口在 CE/Premium 能力不同，需要按响应降级。
 - 自建 GitLab 为 HTTP，token 明文传输；建议确认内网隔离或推动 HTTPS。
 - 网络可达性不稳定（本机时通时不通），联调与验收可能被阻塞；单测用 fixture 规避。
 - 客户端文案/能力位改动涉及 `client.js` 多处分支，需回归现有 GitHub UI。
@@ -227,7 +227,7 @@ fixture 按 GitLab REST v4 真实响应结构手写，放 `plugin/dev/mock/gitla
 
 ## 7. 里程碑
 
-1. **P0**：provider 选择点 + 能力位 + health 形状；GitHub 回归全绿。
+1. **P0**：dataSource 选择点 + 能力位 + health 形状；GitHub 回归全绿。
 2. **P1**：`lib/gitlab.js` 只读实现（列表/详情/diff/讨论/审批/pipeline）+ fixture 单测。
 3. **P2**：客户端 labels/capabilities + 写操作隐藏；路由保护与错误码。
 4. **P3**：guidelines、chat、AI 审查联调；真实 GitLab 验收（网络可用后）。

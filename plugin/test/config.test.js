@@ -59,3 +59,11 @@ test('Config is a Standard Schema the Cordis Loader can validate', () => {
   assert.equal(overridden.value.provider, 'p')
   assert.equal(overridden.value.model, 'm')
 })
+
+test('resolveConfig rejects an unknown dataSource and normalizes the GitLab base URL', () => {
+  assert.throws(() => resolveConfig({ dataSource: 'gitlabx' }), (error) => error.code === 'BAD_REQUEST')
+  assert.equal(resolveConfig({ dataSource: 'gitlab', gitlabBaseUrl: 'http://gitlab.local:8090/' }).gitlabBaseUrl, 'http://gitlab.local:8090')
+  assert.equal(resolveConfig({ dataSource: 'gitlab', gitlabBaseUrl: 'gitlab.local:8090' }).gitlabBaseUrl, '')
+  assert.equal(resolveConfig({ dataSource: 'gitlab', gitlabBaseUrl: 'ftp://gitlab.local' }).gitlabBaseUrl, '')
+  assert.equal(resolveConfig({ dataSource: 'gitlab' }).dataSource, 'gitlab')
+})

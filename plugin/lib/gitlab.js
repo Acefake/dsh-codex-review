@@ -21,6 +21,7 @@ const LIST_TTL_MS = 60_000
 const DETAIL_TTL_MS = 60_000
 const PATCH_TTL_MS = 30 * 60_000
 const CHECKS_TTL_MS = 30_000
+const HEAD_TTL_MS = 30_000
 const GUIDELINE_TTL_MS = 10 * 60_000
 
 /** File/discussion page budgets (CONTRACT §1.4). */
@@ -34,6 +35,18 @@ const MAX_COMMENT_BODY_CHARS = 4_000
 
 /** GitLab project paths may nest groups: `mdesign/beijing/graphics-library-v2`. */
 export const GITLAB_REPO_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){0,19}$/
+
+/**
+ * Validate a GitLab project path: nested groups are allowed, but no segment
+ * may be `.`/`..` or start with `-`, so a crafted path cannot walk out of the
+ * project scope.
+ * @param {unknown} repo - project path.
+ * @returns {boolean} whether the path is safe to use as a project id.
+ */
+export function isValidGitlabRepo(repo) {
+  if (typeof repo !== 'string' || !GITLAB_REPO_RE.test(repo)) return false
+  return repo.split('/').every((segment) => segment !== '.' && segment !== '..' && !segment.startsWith('-'))
+}
 
 /** Whether a query string looks like GitHub search syntax rather than plain text. */
 const GITHUB_QUERY_RE = /\b(?:is|author|repo|label|review|assignee|user):/i
@@ -59,7 +72,7 @@ export function countDiffLines(diff) {
   let additions = 0
   let deletions = 0
   for (const line of text.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) continue
     if (line.startsWith('+')) additions += 1
     else if (line.startsWith('-')) deletions += 1
   }
@@ -311,7 +324,7 @@ export class GitLabClient {
       return { text, headers: response.headers }
     } catch (error) {
       if (error instanceof AppError) throw error
-      if (controller.signal.aborted && options.signal?.aborted !== true) throw new AppError('GL_TIMEOUT')
+      if (options.signal?.aborted === true) throw new AppError('GL_ABORTED')
       if (controller.signal.aborted) throw new AppError('GL_TIMEOUT')
       throw new AppError('GL_NETWORK', undefined, { cause: error })
     } finally {
@@ -349,7 +362,7 @@ export class GitLabClient {
   /**
    * List merge requests. GitHub-style query text is ignored; plain text is
    * passed through GitLab's `search` parameter.
-   * @param {{ query?: string, limit?: number }} [input] - list knobs.
+   * @param {{ query?: string, limit?: number, signal?: AbortSignal }} [input] - list knobs.
    * @returns {Promise<{ query: string, totalCount: number, items: any[] }>} normalized list page.
    */
   async listPullRequests(input = {}) {
@@ -361,7 +374,7 @@ export class GitLabClient {
     return this.once(key, async () => {
       let path = `/merge_requests?scope=created_by_me&state=opened&order_by=updated_at&sort=desc&per_page=${limit}`
       if (query !== '' && !GITHUB_QUERY_RE.test(query)) path += `&search=${encodeURIComponent(query)}`
-      const { data, headers } = await this.requestJson(path)
+      const { data, headers } = await this.requestJson(path, { signal: input.signal })
       const list = Array.isArray(data) ? data : []
       const items = list.map((mr) => normalizeGitLabSummary(mr)).filter((item) => item !== null)
       const totalHeader = Number(headers?.get?.('x-total'))
@@ -409,6 +422,7 @@ export class GitLabClient {
       this.requestJson(`${base}/pipelines`),
     ])
     if (mrResult.status === 'rejected') throw mrResult.reason
+    if (changesResult.status === 'rejected') throw changesResult.reason
     const mr = mrResult.value.data
     if (mr === null || typeof mr !== 'object') throw new AppError('GL_NOT_FOUND')
     const changesBody = changesResult.status === 'fulfilled' ? changesResult.value.data : null
@@ -433,7 +447,7 @@ export class GitLabClient {
       body: body.text,
       bodyTruncated: body.truncated,
       files: files.files,
-      filesTruncated: files.filesTruncated || changesBody?.overflow === true,
+      filesTruncated: files.filesTruncated || changes.length > MAX_FILES || changesBody?.overflow === true,
       comments: { total: comments.total, issue: comments.issue, reviews: [], inline: comments.inline },
       checks: normalizeGitLabChecks(pipelines),
       stack: buildStack({ baseRefName, parents: [] }),
@@ -448,9 +462,17 @@ export class GitLabClient {
    * @returns {Promise<string>} head SHA or ''.
    */
   async getPullHead(repo, number, options = {}) {
-    const { data } = await this.requestJson(`/projects/${encodeProjectId(repo)}/merge_requests/${number}`, { signal: options.signal })
-    if (typeof data?.sha === 'string' && data.sha !== '') return data.sha
-    return typeof data?.diff_refs?.head_sha === 'string' ? data.diff_refs.head_sha : ''
+    const key = `head:${repo}#${number}`
+    const cached = this.cache.get(key, this.now())
+    if (cached !== undefined) return cached
+    return this.once(key, async () => {
+      const { data } = await this.requestJson(`/projects/${encodeProjectId(repo)}/merge_requests/${number}`, { signal: options.signal })
+      const headSha = typeof data?.sha === 'string' && data.sha !== ''
+        ? data.sha
+        : typeof data?.diff_refs?.head_sha === 'string' ? data.diff_refs.head_sha : ''
+      this.cache.set(key, headSha, HEAD_TTL_MS, this.now())
+      return headSha
+    })
   }
 
   /**
@@ -576,7 +598,7 @@ export function httpStatusToGlCode(status, message = '') {
   if (status === 401 || status === 403) return 'GL_UNAUTHORIZED'
   if (status === 404) return 'GL_NOT_FOUND'
   if (status === 429) return 'GL_RATE_LIMIT'
-  if (status >= 500) return 'GL_NETWORK'
+  if (status >= 500) return 'GL_SERVER'
   if (/rate limit/i.test(message)) return 'GL_RATE_LIMIT'
   return 'INTERNAL'
 }

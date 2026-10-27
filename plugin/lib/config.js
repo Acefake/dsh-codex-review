@@ -18,6 +18,7 @@ import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { AppError } from './errors.js'
 
 /** Default values; also the code-level fallback when no config is supplied. */
 export const DEFAULT_CONFIG = Object.freeze({
@@ -88,13 +89,38 @@ export function clampString(value, key) {
 }
 
 /**
+ * Normalize the GitLab base URL; only http/https URLs survive, so a bare
+ * `host:port` value fails fast as "not configured" instead of surfacing as a
+ * confusing network error later.
+ * @param {unknown} value - raw config value.
+ * @returns {string} normalized base URL without a trailing slash, or ''.
+ */
+export function normalizeGitlabBaseUrl(value) {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  if (trimmed === '') return ''
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    return trimmed.replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Code-level config resolution: defaults for absent fields, clamps for
  * numeric ones, trimmed strings. Unknown keys are ignored.
  * @param {Record<string, unknown> | undefined | null} raw - validated or raw config.
  * @returns {{ dataSource: 'github' | 'gitlab', defaultQuery: string, limit: number, maxPatchChars: number, maxBodyChars: number, reviewChunkChars: number, maxChunks: number, maxOutputTokens: number, provider: string, model: string, maxJobs: number, requestTimeoutMs: number, ghPath: string, gitlabBaseUrl: string, gitlabToken: string, viewerLogin: string }} resolved config.
+ * @throws {AppError} BAD_REQUEST when `dataSource` is neither github nor gitlab.
  */
 export function resolveConfig(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
+  const rawDataSource = typeof source.dataSource === 'string' ? source.dataSource.trim() : ''
+  if (rawDataSource !== '' && rawDataSource !== 'github' && rawDataSource !== 'gitlab') {
+    throw new AppError('BAD_REQUEST', 'dataSource 必须是 github 或 gitlab')
+  }
   return {
     defaultQuery: clampString(source.defaultQuery, 'defaultQuery'),
     limit: clampInt(source.limit, 'limit'),
@@ -109,8 +135,8 @@ export function resolveConfig(raw) {
     maxJobs: clampInt(source.maxJobs, 'maxJobs'),
     requestTimeoutMs: clampInt(source.requestTimeoutMs, 'requestTimeoutMs'),
     ghPath: clampString(source.ghPath, 'ghPath'),
-    dataSource: source.dataSource === 'gitlab' ? 'gitlab' : 'github',
-    gitlabBaseUrl: typeof source.gitlabBaseUrl === 'string' ? source.gitlabBaseUrl.trim() : '',
+    dataSource: rawDataSource === 'gitlab' ? 'gitlab' : 'github',
+    gitlabBaseUrl: normalizeGitlabBaseUrl(source.gitlabBaseUrl),
     gitlabToken: typeof source.gitlabToken === 'string' ? source.gitlabToken.trim() : '',
     viewerLogin: typeof source.viewerLogin === 'string' ? source.viewerLogin.trim() : '',
   }
@@ -210,7 +236,7 @@ export const configSchemaKind = z === undefined ? 'standard' : 'schemastery'
  */
 function buildSchemastery(library) {
   return library.object({
-    dataSource: library.string().default(DEFAULT_CONFIG.dataSource),
+    dataSource: library.union([library.const('github'), library.const('gitlab')]).default(DEFAULT_CONFIG.dataSource),
     defaultQuery: library.string().default(DEFAULT_CONFIG.defaultQuery),
     limit: library.number().step(1).min(1).max(100).default(DEFAULT_CONFIG.limit),
     maxPatchChars: library.number().step(1).min(1000).default(DEFAULT_CONFIG.maxPatchChars),
@@ -226,7 +252,7 @@ function buildSchemastery(library) {
     requestTimeoutMs: library.number().step(1).min(1000).max(600_000).default(DEFAULT_CONFIG.requestTimeoutMs),
     ghPath: library.string().default(DEFAULT_CONFIG.ghPath),
     gitlabBaseUrl: library.string().default(DEFAULT_CONFIG.gitlabBaseUrl),
-    gitlabToken: library.string().default(DEFAULT_CONFIG.gitlabToken),
+    gitlabToken: library.string().role('secret').default(DEFAULT_CONFIG.gitlabToken),
     viewerLogin: library.string().default(DEFAULT_CONFIG.viewerLogin),
   })
 }

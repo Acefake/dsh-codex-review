@@ -23,6 +23,8 @@ export const USER_MESSAGES = {
   GL_NOT_FOUND: 'GitLab 项目或 MR 不存在，或当前账号无权访问',
   GL_RATE_LIMIT: 'GitLab 接口触发限流，请稍后重试',
   GL_TIMEOUT: '访问 GitLab 超时，请检查网络后重试',
+  GL_ABORTED: 'GitLab 请求已取消',
+  GL_SERVER: 'GitLab 服务端错误，请稍后重试',
   GL_NETWORK: '无法连接 GitLab，请检查地址和网络',
   PROVIDER_UNSUPPORTED: '当前数据源不支持该操作',
   LLM_UNAVAILABLE: '当前 profile 没有可用的模型服务，暂时无法运行 AI 审查',

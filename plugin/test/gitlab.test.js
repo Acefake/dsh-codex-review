@@ -10,6 +10,7 @@ import {
   GitLabClient,
   countDiffLines,
   httpStatusToGlCode,
+  isValidGitlabRepo,
   normalizeGitLabChecks,
   normalizeGitLabDiscussions,
   normalizeGitLabFile,
@@ -132,6 +133,14 @@ test('listPullRequests passes plain text as the GitLab search parameter', async 
   assert.match(calls[0].url, /search=login%20bug/)
 })
 
+test('listPullRequests keeps plain keywords that contain a colon', async () => {
+  const { client, calls } = makeClient([
+    ['/merge_requests?', () => response([], { headers: { 'x-total': '0' } })],
+  ])
+  await client.listPullRequests({ query: 'fix: crash', limit: 5 })
+  assert.match(calls[0].url, /search=fix%3A%20crash/)
+})
+
 test('getPull normalizes detail, changes, discussions, approvals and pipelines', async () => {
   const { client, calls } = makeClient([
     ['/merge_requests/7/changes', () => response(CHANGES)],
@@ -176,7 +185,7 @@ test('discussion pagination follows x-next-page', async () => {
 })
 
 test('request failures map to the GL_* vocabulary', async () => {
-  for (const [status, code] of [[401, 'GL_UNAUTHORIZED'], [404, 'GL_NOT_FOUND'], [500, 'GL_NETWORK']]) {
+  for (const [status, code] of [[401, 'GL_UNAUTHORIZED'], [404, 'GL_NOT_FOUND'], [500, 'GL_SERVER'], [503, 'GL_SERVER']]) {
     const { client } = makeClient([['/merge_requests?', () => response({ message: 'x' }, { status })]])
     await assert.rejects(
       () => client.listPullRequests({ limit: 1 }),
@@ -200,11 +209,64 @@ test('status reports the token owner and degrades on failure', async () => {
   assert.deepEqual(await bad.client.status(), { ok: false, provider: 'gitlab', viewer: '', error: 'GL_UNAUTHORIZED' })
 })
 
+test('a failing /changes read rejects instead of returning an empty diff', async () => {
+  const { client } = makeClient([
+    ['/merge_requests/7/changes', () => response({ message: 'boom' }, { status: 500 })],
+    ['/merge_requests/7/discussions', () => response([])],
+    ['/merge_requests/7/approvals', () => response({ approved: false })],
+    ['/merge_requests/7/pipelines', () => response([])],
+    ['/merge_requests/7', () => response(MR_DETAIL)],
+  ])
+  await assert.rejects(
+    () => client.getPull('mdesign/beijing/jinghang-project', 7),
+    (error) => error.code === 'GL_SERVER',
+  )
+})
+
+test('caller abort maps to GL_ABORTED and a big change list reports filesTruncated', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const aborted = new GitLabClient({
+    config: { gitlabBaseUrl: 'http://gitlab.local', gitlabToken: 'token' },
+    fetchImpl: async () => {
+      const error = new Error('aborted')
+      error.name = 'AbortError'
+      throw error
+    },
+  })
+  await assert.rejects(
+    () => aborted.listPullRequests({ limit: 1, signal: controller.signal }),
+    (error) => error.code === 'GL_ABORTED',
+  )
+
+  const manyChanges = Array.from({ length: 301 }, (_, index) => ({
+    old_path: `src/f${index}.ts`,
+    new_path: `src/f${index}.ts`,
+    new_file: false,
+    deleted_file: false,
+    renamed_file: false,
+    diff: '@@ -1 +1 @@\n-old\n+new',
+  }))
+  const { client } = makeClient([
+    ['/merge_requests/7/changes', () => response({ changes: manyChanges })],
+    ['/merge_requests/7/discussions', () => response([])],
+    ['/merge_requests/7/approvals', () => response({ approved: false })],
+    ['/merge_requests/7/pipelines', () => response([])],
+    ['/merge_requests/7', () => response(MR_DETAIL)],
+  ])
+  const detail = await client.getPull('mdesign/beijing/jinghang-project', 7)
+  assert.equal(detail.filesTruncated, true)
+})
+
 test('normalization helpers handle nested paths, drafts and pipeline states', () => {
   assert.equal(GITLAB_REPO_RE.test('mdesign/beijing/graphics-library-v2'), true)
   assert.equal(GITLAB_REPO_RE.test('mdesign'), true)
   assert.equal(GITLAB_REPO_RE.test('a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u'), false)
   assert.equal(GITLAB_REPO_RE.test('bad path/repo'), false)
+  assert.equal(isValidGitlabRepo('mdesign/beijing/graphics-library-v2'), true)
+  assert.equal(isValidGitlabRepo('mdesign/../secret'), false)
+  assert.equal(isValidGitlabRepo('mdesign/./secret'), false)
+  assert.equal(isValidGitlabRepo('mdesign/-secret'), false)
 
   const summary = normalizeGitLabSummary({ ...MR_LIST_ITEM, work_in_progress: false, draft: true })
   assert.equal(summary.isDraft, true)
@@ -215,6 +277,7 @@ test('normalization helpers handle nested paths, drafts and pipeline states', ()
   assert.equal(file.deletions, 1)
 
   assert.deepEqual(countDiffLines('+++ b\n--- a\n+one\n-two\n context'), { additions: 1, deletions: 1 })
+  assert.deepEqual(countDiffLines('+++ b/f\n--- a/f\n++foo\n--bar'), { additions: 1, deletions: 1 })
   assert.equal(normalizeGitLabChecks([{ id: 1, status: 'failed' }]).state, 'failure')
   assert.equal(normalizeGitLabChecks([{ id: 1, status: 'skipped' }]).state, 'neutral')
   assert.equal(normalizeGitLabChecks([]).state, 'none')
@@ -227,5 +290,5 @@ test('normalization helpers handle nested paths, drafts and pipeline states', ()
   assert.equal(httpStatusToGlCode(401), 'GL_UNAUTHORIZED')
   assert.equal(httpStatusToGlCode(404), 'GL_NOT_FOUND')
   assert.equal(httpStatusToGlCode(429), 'GL_RATE_LIMIT')
-  assert.equal(httpStatusToGlCode(503), 'GL_NETWORK')
+  assert.equal(httpStatusToGlCode(503), 'GL_SERVER')
 })

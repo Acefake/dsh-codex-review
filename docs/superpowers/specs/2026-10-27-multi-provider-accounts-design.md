@@ -28,7 +28,7 @@
 
 ### 3.1 阶段 1（0.12.0）：每个平台一个账号
 
-- `provider: 'github' | 'gitlab'`，默认 `github`。
+- `dataSource: 'github' | 'gitlab'`，默认 `github`。
 - GitHub：沿用 `gh auth token` / `GH_TOKEN`，无需新增字段。
 - GitLab：`gitlabBaseUrl`、`gitlabToken`、`viewerLogin`（用户名，展示用）。
 - 设置页提供“数据源”切换：GitHub / GitLab；选 GitLab 时填 baseUrl、token、用户名，并有“测试连接”按钮（调用 `/user` 校验）。
@@ -92,7 +92,7 @@ status()                             // 健康检查：{ ok, provider, viewer, e
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `provider` | string（枚举） | `github` | `github` / `gitlab` |
+| `dataSource` | string（枚举） | `github` | `github` / `gitlab`；非法值报 `BAD_REQUEST` |
 | `gitlabBaseUrl` | string | `''` | 例 `http://gitlab.mbse.design:8090` |
 | `gitlabToken` | string | `''` | PAT，建议 `read_api`（只读） |
 | `viewerLogin` | string | `''` | GitLab 用户名，展示用 |
@@ -102,7 +102,7 @@ status()                             // 健康检查：{ ok, provider, viewer, e
 ```yaml
 - id: dsh-codex-review
   config:
-    provider: gitlab
+    dataSource: gitlab
     gitlabBaseUrl: http://gitlab.mbse.design:8090
     gitlabToken: !!js >-
       (() => { try { return process.getBuiltinModule("node:fs")
@@ -131,14 +131,14 @@ status()                             // 健康检查：{ ok, provider, viewer, e
 
 ## 9. 测试
 
-- `test/config.test.js`：新字段默认值、provider 枚举。
-- `test/provider.test.js`：provider 选择、能力位、写路由拦截、health 形状。
+- `test/config.test.js`：新字段默认值、`dataSource` 枚举。
+- `test/provider.test.js`：`dataSource` 选择、能力位、写路由拦截、health 形状。
 - `test/gitlab.test.js`：12.9 响应 fixture 的归一化、`/changes` 分页、错误码。
 - 现有 GitHub 测试全绿；真实 GitLab 联调在 P3 做。
 
 ## 10. 里程碑
 
-1. **P0**：config 新字段 + provider 选择点 + health 能力位；GitHub 行为不变。
+1. **P0**：config 新字段 + dataSource 选择点 + health 能力位；GitHub 行为不变。
 2. **P1**：`lib/gitlab.js` 只读（12.9 兼容）+ fixture 单测。
 3. **P2**：设置页“数据源”表单 + 测试连接；客户端能力位/文案。
 4. **P3**：真实 GitLab 联调（当前网络已打通）。

@@ -18,7 +18,7 @@ import {
   MERGE_METHODS,
   REPO_RE,
 } from './lib/github.js'
-import { GITLAB_REPO_RE, GitLabClient } from './lib/gitlab.js'
+import { GITLAB_REPO_RE, GitLabClient, isValidGitlabRepo } from './lib/gitlab.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
 import { dirname, join } from 'node:path'
@@ -247,6 +247,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   }
 
   const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
+  const capabilities = providerCapabilities(dataSource)
   const github = deps.github ?? (dataSource === 'gitlab'
     ? new GitLabClient({ config, logger })
     : new GitHubClient({ config, logger }))
@@ -279,6 +280,15 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     },
   })
   if (typeof reviewer.setPublisher === 'function') reviewer.setPublisher(publisher)
+  // GitLab 只读：后台自动审查/自动发布不能绕过路由层的能力位。
+  if (!capabilities.autoReview && typeof reviewer.updateConfig === 'function') {
+    try {
+      reviewer.updateConfig({ enabled: false })
+    } catch {
+      // A test double or a persisted config that refuses the patch: the route
+      // guards below still reject explicit enable attempts.
+    }
+  }
   const routes = createRoutes({
     config,
     github,
@@ -486,6 +496,7 @@ export function createRoutes(wiring) {
    * @returns {void}
    */
   const autoPublishAfterReview = (jobId, repo, number) => {
+    if (!capabilities.publish) return
     if (typeof engine.waitForCompletion !== 'function' || typeof publisher?.publish !== 'function') return
     const isEnabled = () => {
       try {
@@ -545,7 +556,8 @@ export function createRoutes(wiring) {
    */
   const requirePullRef = (payload) => {
     const repo = requireString(payload, 'repo', 'repo')
-    if (!repoPattern.test(repo)) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
+    const validRepo = dataSource === 'gitlab' ? isValidGitlabRepo(repo) : repoPattern.test(repo)
+    if (!validRepo) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
@@ -593,12 +605,21 @@ export function createRoutes(wiring) {
     [PATHS.health]: async () => {
       /** @type {any} */
       let status
-      try {
-        status = typeof github.status === 'function'
-          ? await github.status()
-          : { ok: (await github.ghStatus()) === 'ok', viewer: '' }
-      } catch {
-        status = { ok: false, viewer: '' }
+      if (dataSource === 'github') {
+        // Keep the three-state answer: missing vs not-logged-in is actionable.
+        let gh = 'missing'
+        try {
+          gh = await github.ghStatus()
+        } catch {
+          gh = 'not-logged-in'
+        }
+        status = { ok: gh === 'ok', viewer: '', gh }
+      } else {
+        try {
+          status = await github.status()
+        } catch {
+          status = { ok: false, viewer: '', error: 'GL_NETWORK' }
+        }
       }
       /** @type {Record<string, unknown>} */
       const value = {
@@ -610,7 +631,7 @@ export function createRoutes(wiring) {
         capabilities,
         labels,
       }
-      if (dataSource === 'github') value.gh = status.ok === true ? 'ok' : 'not-logged-in'
+      if (dataSource === 'github') value.gh = status.gh
       if (typeof status.error === 'string') value.error = status.error
       return value
     },
@@ -746,6 +767,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewConfig]: async (payload) => {
+      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       if (payload.patch === undefined) return reviewer.status()
       if (payload.patch === null || typeof payload.patch !== 'object' || Array.isArray(payload.patch)) {
@@ -755,6 +777,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewRun]: async (payload) => {
+      if (!capabilities.autoReview) throw new AppError('PROVIDER_UNSUPPORTED')
       if (reviewer === undefined) throw new AppError('INTERNAL', '自动审查未初始化')
       return reviewer.runOnce({ force: payload.force === true })
     },
