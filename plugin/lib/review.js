@@ -699,7 +699,7 @@ export class ReviewEngine {
     this.fileCache = new LruCache(this.fileCacheMax)
     this.statePath = options.statePath
     /** Account that owns jobs persisted before account-scoped keys existed. */
-    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : 'github'
     this.loadResults()
   }
 
@@ -954,11 +954,12 @@ export class ReviewEngine {
    * @returns {any | undefined} the job record.
    */
   findLatestForPull(repo, number, headSha, account) {
+    const scope = account === undefined ? this.legacyAccount : account
     /** @type {any} */
     let found
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number && job.headSha === headSha &&
-          (account === undefined || (job.account ?? '') === account)) found = job
+          (job.account ?? '') === scope) found = job
     }
     return found
   }
@@ -971,9 +972,10 @@ export class ReviewEngine {
    * @returns {boolean} true when a live job exists for the PR.
    */
   hasActiveJob(repo, number, account) {
+    const scope = account === undefined ? this.legacyAccount : account
     for (const job of this.jobs.values()) {
       if (job.repo === repo && job.number === number &&
-          (account === undefined || (job.account ?? '') === account) &&
+          (job.account ?? '') === scope &&
           (job.state === 'queued' || job.state === 'running')) return true
     }
     return false
@@ -1000,21 +1002,18 @@ export class ReviewEngine {
    * @returns {number} number of jobs removed.
    */
   invalidate(repo, number, account) {
+    const scope = account === undefined ? this.legacyAccount : account
     let removed = 0
     for (const [id, job] of [...this.jobs.entries()]) {
       if (job.repo !== repo || job.number !== number) continue
-      if (account !== undefined && (job.account ?? '') !== account) continue
+      if ((job.account ?? '') !== scope) continue
       if (job.state === 'queued' || job.state === 'running') this.cancel(id)
       this.jobs.delete(id)
       removed += 1
     }
-    const exactPrefix = `${account === undefined || account === '' ? '' : `${account}|`}${repo}#${number}|`
-    const scopedSuffix = `|${repo}#${number}|`
+    const prefix = `${scope === '' ? '' : `${scope}|`}${repo}#${number}|`
     for (const key of [...this.fileCache.entries.keys()]) {
-      const matches = account === undefined
-        ? key.startsWith(`${repo}#${number}|`) || key.includes(scopedSuffix)
-        : key.startsWith(exactPrefix)
-      if (matches) this.fileCache.delete(key)
+      if (key.startsWith(prefix)) this.fileCache.delete(key)
     }
     this.persistResults()
     return removed

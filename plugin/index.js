@@ -141,7 +141,7 @@ function unavailableClient(reason) {
  * @returns {Record<string, any>} clients keyed by account id.
  */
 export function buildClients(config, logger, githubOverride, accounts) {
-  const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : legacyAccounts(config)
+  const list = Array.isArray(accounts) ? accounts : legacyAccounts(config)
   /** @type {Record<string, any>} */
   const clients = {}
   let githubOverrideUsed = false
@@ -465,6 +465,8 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     }
     if (publisher === undefined) publisher = makePublisher(client)
     else publisher.github = client
+    if (publisher !== null && typeof publisher === 'object') publisher.legacyAccount = primary.id
+    if (engine !== null && typeof engine === 'object') engine.legacyAccount = primary.id
     if (typeof reviewer?.setPublisher === 'function') reviewer.setPublisher(publisher)
   }
   const routes = createRoutes({
@@ -703,20 +705,46 @@ export function createRoutes(wiring) {
 
   /** Return the public account list (never includes tokens). */
   const accountListValue = () => ({
-    accounts: runtime.accounts.map((account) => ({
-      id: account.id,
-      type: account.type,
-      label: account.label,
-      baseUrl: account.baseUrl,
-      username: account.username,
-    })),
+    accounts: runtime.accounts.map((account) => {
+      const type = account.type === 'gitlab' ? 'gitlab' : 'github'
+      return {
+        id: account.id,
+        type: account.type,
+        label: account.label,
+        baseUrl: account.baseUrl,
+        username: account.username,
+        capabilities: providerCapabilities(type),
+        labels: PROVIDER_LABELS[type],
+      }
+    }),
     defaultAccount: runtime.defaultAccount,
   })
 
   /** Persist the current runtime accounts and default. */
   const persistAccounts = () => {
-    saveAccountStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
-    runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount }
+    try {
+      saveAccountStore({ accounts: runtime.accounts, defaultAccount: runtime.defaultAccount })
+      runtime.store = { accounts: runtime.accounts, defaultAccount: runtime.defaultAccount, present: true }
+    } catch (error) {
+      // A failed write must roll the in-memory account list back to disk.
+      const reloaded = loadAccountStore()
+      runtime.accounts = reloaded.accounts
+      runtime.defaultAccount = reloaded.defaultAccount
+      runtime.store = reloaded
+      runtime.rebuild()
+      throw error
+    }
+  }
+
+  /** Auto-review config is GitHub-backed; an explicitly non-GitHub account is rejected. */
+  const assertAutoReviewAccount = (payload) => {
+    const requested = payload !== null && typeof payload === 'object' && typeof payload.account === 'string'
+      ? payload.account.trim()
+      : ''
+    if (requested === '') return
+    const meta = runtime.accounts.find((account) => account.id === requested)
+    if (meta === undefined) throw badRequest(`未知账号：${requested}`)
+    if (meta.type !== 'github') throw new AppError('PROVIDER_UNSUPPORTED')
   }
 
   /**
@@ -1067,13 +1095,15 @@ export function createRoutes(wiring) {
       return result
     },
 
-    [PATHS.autoReviewStatus]: async () => {
+    [PATHS.autoReviewStatus]: async (payload) => {
+      assertAutoReviewAccount(payload)
       const reviewerNow = getReviewer()
       if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
       return reviewerNow.status()
     },
 
     [PATHS.autoReviewConfig]: async (payload) => {
+      assertAutoReviewAccount(payload)
       const reviewerNow = getReviewer()
       if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
       if (payload.patch === undefined) return reviewerNow.status()
@@ -1084,6 +1114,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.autoReviewRun]: async (payload) => {
+      assertAutoReviewAccount(payload)
       const reviewerNow = getReviewer()
       if (reviewerNow === undefined || currentPrimaryGithub() === undefined) throw new AppError('PROVIDER_UNSUPPORTED')
       return reviewerNow.runOnce({ force: payload.force === true })

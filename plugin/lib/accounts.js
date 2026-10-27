@@ -8,6 +8,7 @@
  * @module dsh-codex-review/lib/accounts
  */
 
+import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -43,13 +44,13 @@ export function accountsFilePath() {
   return join(profileDirectory(), '.codex-review', 'accounts.json')
 }
 
-/** Token file path for one account id, isolated per profile. */
+/** Token file path for one account id, isolated per full profile path. */
 export function accountTokenPath(id) {
   const raw = String(id ?? '')
   if (raw === '') throw new AppError('BAD_REQUEST', '账号 id 不能为空')
   const safe = encodeURIComponent(raw)
-  const profile = profileDirectory().replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'desktop'
-  return join(dshHome(), 'secrets', 'codex-review', profile, `${safe}.token`)
+  const profileKey = createHash('sha256').update(profileDirectory()).digest('hex').slice(0, 16)
+  return join(dshHome(), 'secrets', 'codex-review', profileKey, `${safe}.token`)
 }
 
 /** Read one account's token ('' when the file is missing). */
@@ -180,7 +181,7 @@ export function loadAccountStore() {
     } catch {
       /* a failed backup must not break startup */
     }
-    return { accounts: [], defaultAccount: '', present: true }
+    return { accounts: [], defaultAccount: '', present: false }
   }
 }
 

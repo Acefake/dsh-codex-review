@@ -63,7 +63,9 @@ export function isValidRepoPath(repo) {
   if (typeof repo !== 'string') return false
   const parts = repo.split('/')
   if (parts.length < 2 || parts.length > 20) return false
-  return parts.every((part) => part !== '' && part !== '.' && part !== '..' && part !== '-' && REPO_SEGMENT_PATTERN.test(part))
+  return parts.every((part) =>
+    part !== '' && part !== '.' && part !== '..' && !part.startsWith('-') && REPO_SEGMENT_PATTERN.test(part),
+  )
 }
 
 /** Marker appended to any truncated context block. */

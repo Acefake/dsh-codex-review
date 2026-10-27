@@ -216,7 +216,10 @@ test('validateChatRequest accepts a valid request and rejects every contract vio
   const twenty = Array.from({ length: 20 }, () => 'a').join('/')
   assert.equal(validateChatRequest({ repo: twenty, number: 1, messages: [message('user', 'q')] }).repo, twenty)
   assert.equal(validateChatRequest({ repo: 'a/b-c', number: 1, messages: [message('user', 'q')] }).repo, 'a/b-c')
-  assert.equal(validateChatRequest({ repo: 'a/-b', number: 1, messages: [message('user', 'q')] }).repo, 'a/-b')
+  assert.throws(
+    () => validateChatRequest({ repo: 'a/-b', number: 1, messages: [message('user', 'q')] }),
+    (error) => error.code === 'BAD_REQUEST',
+  )
 })
 
 test('SSE encoders emit the exact frame shapes of CONTRACT §5.2', () => {

@@ -418,6 +418,7 @@ const EMPTY_LIST = Object.freeze([])
       accountTestOk: 'Connected: ',
       accountTestFailed: 'Connection failed',
       accountError: 'Could not load accounts.',
+      accountRemoveConfirm: 'Click again to confirm removal',
       settingsSaving: 'Saving…',
       settingsIntervalHint: '60–3600 s, default 180 s.',
       settingsQueryHint: 'GitHub search syntax, default is:open author:@me.',
@@ -780,6 +781,7 @@ const EMPTY_LIST = Object.freeze([])
       accountTestOk: '连接成功：',
       accountTestFailed: '连接失败',
       accountError: '账号列表加载失败。',
+      accountRemoveConfirm: '再次点击确认删除',
       settingsSaving: '保存中…',
       settingsIntervalHint: '60–3600 秒，默认 180 秒。',
       settingsQueryHint: 'GitHub 搜索语法，默认 is:open author:@me。',
@@ -5989,6 +5991,7 @@ const EMPTY_LIST = Object.freeze([])
       const [form, setForm] = useState({ type: 'gitlab', label: '', baseUrl: '', username: '', token: '' })
       const [busy, setBusy] = useState(false)
       const [message, setMessage] = useState('')
+      const [pendingRemove, setPendingRemove] = useState('')
 
       const applyList = (value) => {
         setState({
@@ -6090,8 +6093,14 @@ const EMPTY_LIST = Object.freeze([])
                         type: 'button', className: 'cr-btn cr-btn--ghost', disabled: busy,
                         'data-action': 'account-remove', 'data-account-id': account.id,
                         onClick: () => {
-                          if (typeof window !== 'undefined' && typeof window.confirm === 'function' &&
-                              !window.confirm(tx(t, 'accountRemove') + ' ' + (account.label || account.id) + '?')) return
+                          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+                            if (!window.confirm(tx(t, 'accountRemove') + ' ' + (account.label || account.id) + '?')) return
+                          } else if (pendingRemove !== account.id) {
+                            setPendingRemove(account.id)
+                            setMessage(tx(t, 'accountRemoveConfirm'))
+                            return
+                          }
+                          setPendingRemove('')
                           mutate('/accounts-remove', { id: account.id })
                         },
                       }, tx(t, 'accountRemove')),
@@ -7900,19 +7909,24 @@ const EMPTY_LIST = Object.freeze([])
       const [account, setAccount] = useState('')
       const [listNonce, setListNonce] = useState(0)
       const accounts = health.state === 'ok' && Array.isArray(health.value?.accounts) ? health.value.accounts : []
-      const currentAccount = accounts.find((entry) => entry.id === account) ?? null
+      const activeAccount = account || health.value?.defaultAccount || ''
+      const currentAccount = accounts.find((entry) => entry.id === activeAccount) ?? null
       const multiAccount = accounts.length > 1
-      // Prefer the current account's explicit capability; fall back to its type,
-      // and only use the legacy provider rule when health has no accounts at all.
+      // Prefer the account's explicit capability; fall back to its type, and only
+      // use the legacy provider rule when health has no accounts at all.
       const hasAccounts = accounts.length > 0
       const legacyWriteAllowed = (health.value?.provider ?? 'github') !== 'gitlab'
       const writeAccount = currentAccount ?? accounts.find((entry) => entry.id === health.value?.defaultAccount) ?? accounts[0] ?? null
-      const currentWriteAllowed = writeAccount === null
-        ? (!hasAccounts && legacyWriteAllowed)
-        : (writeAccount.capabilities?.merge ?? writeAccount.type !== 'gitlab')
-      const writeEnabled = health.state === 'ok' && currentWriteAllowed
+      const capability = (name) => {
+        if (writeAccount === null) return !hasAccounts && legacyWriteAllowed
+        return writeAccount.capabilities?.[name] ?? writeAccount.type !== 'gitlab'
+      }
+      const canMerge = health.state === 'ok' && capability('merge')
+      const canPublish = health.state === 'ok' && capability('publish')
+      const canComment = health.state === 'ok' && capability('comment')
+      const writeEnabled = canMerge
       /** Detail cache key; includes the account only when several are configured. */
-      const detailKey = (summary) => (multiAccount && account !== '' ? account + '|' : '') + String(summary.repo) + '#' + String(summary.number)
+      const detailKey = (summary) => (multiAccount && activeAccount !== '' ? activeAccount + '|' : '') + String(summary.repo) + '#' + String(summary.number)
 
       const docRef = useRef(null)
       const listGeneration = useRef(0)
@@ -8982,7 +8996,7 @@ const EMPTY_LIST = Object.freeze([])
 
       const autoEnabled = Boolean(autoReview.status && autoReview.status.config.enabled)
       const autoPollDecision = autoReviewPollDecision({
-        supported: writeEnabled && autoReview.supported !== false,
+        supported: canPublish && autoReview.supported !== false,
         enabled: autoEnabled,
         visible: pageVisible,
         intervalMs: autoReviewPollMs,
@@ -9056,7 +9070,7 @@ const EMPTY_LIST = Object.freeze([])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
-        if (!writeEnabled) return {}
+        if (!canComment) return {}
         const finish = (result, doneKey, origin) => {
           if (result && result.ok) {
             showToast(tx(t, doneKey))
@@ -9094,7 +9108,7 @@ const EMPTY_LIST = Object.freeze([])
             }).then((result) => finish(result, 'resolveDone', current))
           },
         }
-      }, [account, writeEnabled, refreshDetail, showToast, t])
+      }, [account, canComment, refreshDetail, showToast, t])
 
       // -------------------------------------------------------------------
       // v2.2: publish the current review to GitHub (CONTRACT §7.3)
@@ -9256,7 +9270,7 @@ const EMPTY_LIST = Object.freeze([])
       )
       const publishConfig = autoStatus && autoStatus.publish ? autoStatus.publish : null
       const publishSupported =
-        writeEnabled && !publishUnsupported && autoReview.supported !== false && publishConfig !== null
+        canPublish && !publishUnsupported && autoReview.supported !== false && publishConfig !== null
       const reviewHeadSha = reviewValue.headSha || currentHeadSha
       const reviewPublishKey = publishRecordKey(summary.repo, summary.number, reviewHeadSha)
       const localPublished =
@@ -9313,7 +9327,7 @@ const EMPTY_LIST = Object.freeze([])
           h(PrHeader, {
             detail: detailValue || { summary },
             t,
-            onComment: selected && writeEnabled ? openCommentDialog : null,
+            onComment: selected && canComment ? openCommentDialog : null,
           }),
           selected
             ? h(ReviewCard, {
@@ -9395,7 +9409,7 @@ const EMPTY_LIST = Object.freeze([])
           h(PrList, {
             state: list,
             accounts,
-            account,
+            account: activeAccount,
             queryInput,
             selectedNumber: selected ? selected.number : null,
             t,
@@ -9443,8 +9457,8 @@ const EMPTY_LIST = Object.freeze([])
               onReview: startReview,
               onGear: () => setSettingsOpen(true),
               onRefresh: refreshView,
-              mergeEnabled: writeEnabled && mergeState.enabled,
-              mergeVisible: writeEnabled,
+              mergeEnabled: canMerge && mergeState.enabled,
+              mergeVisible: canMerge,
               mergeTitle,
               mergeOpen: mergeDialog.open,
               onMerge: openMerge,
@@ -9471,7 +9485,7 @@ const EMPTY_LIST = Object.freeze([])
                       review: reviewValue,
                       findingsByFile,
                       now: clock,
-                      autoReview: writeEnabled ? autoReview : { ...autoReview, supported: false },
+                      autoReview: canPublish ? autoReview : { ...autoReview, supported: false },
                       autoReviewOpen,
                       autoReviewRunBusy,
                       onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),

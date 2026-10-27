@@ -6,7 +6,7 @@ import {
   makeAccountId,
   normalizeAccountInput,
 } from '../lib/accounts.js'
-import { buildReviewJobKey, fileCacheKey } from '../lib/review.js'
+import { buildReviewJobKey, fileCacheKey, ReviewEngine } from '../lib/review.js'
 import { publishRecordKeys } from '../lib/publish.js'
 
 test('account-scoped cache and publish keys differ from legacy keys', () => {
@@ -46,6 +46,23 @@ test('normalizeAccountInput validates type and GitLab fields without returning t
   assert.equal(github.baseUrl, '')
   assert.equal('token' in github, false)
 })
+
+test('invalidate clears only the selected account jobs and file cache', () => {
+  const engine = new ReviewEngine({})
+  engine.jobs.set('gh', { id: 'gh', repo: 'r/x', number: 1, headSha: 's', account: 'github', state: 'done' })
+  engine.jobs.set('gl', { id: 'gl', repo: 'r/x', number: 1, headSha: 's', account: 'gitlab', state: 'done' })
+  engine.fileCache.set('github|r/x#1|f|h', [], Number.POSITIVE_INFINITY, 1)
+  engine.fileCache.set('gitlab|r/x#1|f|h', [], Number.POSITIVE_INFINITY, 1)
+  engine.invalidate('r/x', 1, 'github')
+  assert.equal(engine.jobs.has('gh'), false)
+  assert.equal(engine.jobs.has('gl'), true)
+  const keys = [...engine.fileCache.entries.keys()]
+  assert.equal(keys.includes('github|r/x#1|f|h'), false)
+  assert.equal(keys.includes('gitlab|r/x#1|f|h'), true)
+  engine.invalidate('r/x', 1, 'gitlab')
+  assert.equal(engine.jobs.has('gl'), false)
+})
+
 
 test('makeAccountId slugifies labels and avoids collisions', () => {
   assert.equal(makeAccountId('gitlab', 'Work GitLab', []), 'gitlab-work-gitlab')
