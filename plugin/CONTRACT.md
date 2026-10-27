@@ -39,7 +39,7 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 
 | pathname | 请求 | 响应 value |
 |---|---|---|
-| `/codex-review/health` | `{}` | `{ gh: "ok"\|"not-logged-in"\|"missing", llm: "ok"\|"unavailable", version: "0.1.0" }` |
+| `/codex-review/health` | `{}` | `{ provider: "github"\|"gitlab", ok: boolean, viewer: string, gh?: "ok"\|"not-logged-in"\|"missing", llm: "ok"\|"unavailable", version: "0.12.0", capabilities: { browse, review, chat, autoReview, publish, comment, reply, resolve, merge }, labels: { item, itemFull, reviewers, checks } }` |
 | `/codex-review/llm-info` | `{}` | `{ selection, reasoningEffort, efforts, transport, models?, pluginConfig }`（调试路由；LLM 不可用时报 `LLM_UNAVAILABLE`） |
 | `/codex-review/prs` | `{ query?: string, limit?: number }` | `{ query, totalCount, items: PrSummary[] }` |
 | `/codex-review/pr` | `{ repo, number }` | `PrDetail` |
@@ -47,7 +47,7 @@ export function apply(ctx, config) { /* 注册路由 + 缓存 + 审查引擎 */ 
 | `/codex-review/review-status` | `{ jobId }` | `ReviewStatus` |
 | `/codex-review/review-cancel` | `{ jobId }` | `{ cancelled: boolean }` |
 
-错误码（`code`）：`BAD_REQUEST`、`GH_MISSING`（gh 未安装）、`GH_NOT_LOGGED_IN`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_TIMEOUT`、`GH_NETWORK`、`LLM_UNAVAILABLE`、`LLM_ERROR`、`REVIEW_TIMEOUT`、`INTERNAL`。`message` 为面向用户的中文短句（可含恢复建议）。
+错误码（`code`）：`BAD_REQUEST`、`GH_MISSING`（gh 未安装）、`GH_NOT_LOGGED_IN`、`GH_FORBIDDEN`、`GH_NOT_FOUND`、`GH_RATE_LIMIT`、`GH_TIMEOUT`、`GH_NETWORK`、`GL_MISSING_CONFIG`、`GL_UNAUTHORIZED`、`GL_NOT_FOUND`、`GL_RATE_LIMIT`、`GL_TIMEOUT`、`GL_NETWORK`、`PROVIDER_UNSUPPORTED`、`LLM_UNAVAILABLE`、`LLM_ERROR`、`REVIEW_TIMEOUT`、`INTERNAL`。`message` 为面向用户的中文短句（可含恢复建议）。
 
 ### 1.2 数据模型（JSON）
 
@@ -165,6 +165,10 @@ export const Config = {
     maxJobs:             { type: 'number', default: 20 },
     requestTimeoutMs:    { type: 'number', default: 15000 },
     ghPath:              { type: 'string', default: 'gh' },
+    dataSource:          { type: 'string', default: 'github' },  // github | gitlab
+    gitlabBaseUrl:       { type: 'string', default: '' },
+    gitlabToken:         { type: 'string', default: '' },
+    viewerLogin:         { type: 'string', default: '' },
   },
 }
 ```

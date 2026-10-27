@@ -34,6 +34,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   maxJobs: 20,
   requestTimeoutMs: 15000,
   ghPath: 'gh',
+  dataSource: 'github',
+  gitlabBaseUrl: '',
+  gitlabToken: '',
+  viewerLogin: '',
 })
 
 /** Integer bounds for the numeric fields, used by both resolve paths. */
@@ -87,7 +91,7 @@ export function clampString(value, key) {
  * Code-level config resolution: defaults for absent fields, clamps for
  * numeric ones, trimmed strings. Unknown keys are ignored.
  * @param {Record<string, unknown> | undefined | null} raw - validated or raw config.
- * @returns {{ defaultQuery: string, limit: number, maxPatchChars: number, maxBodyChars: number, reviewChunkChars: number, maxChunks: number, maxOutputTokens: number, provider: string, model: string, maxJobs: number, requestTimeoutMs: number, ghPath: string }} resolved config.
+ * @returns {{ dataSource: 'github' | 'gitlab', defaultQuery: string, limit: number, maxPatchChars: number, maxBodyChars: number, reviewChunkChars: number, maxChunks: number, maxOutputTokens: number, provider: string, model: string, maxJobs: number, requestTimeoutMs: number, ghPath: string, gitlabBaseUrl: string, gitlabToken: string, viewerLogin: string }} resolved config.
  */
 export function resolveConfig(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
@@ -105,6 +109,10 @@ export function resolveConfig(raw) {
     maxJobs: clampInt(source.maxJobs, 'maxJobs'),
     requestTimeoutMs: clampInt(source.requestTimeoutMs, 'requestTimeoutMs'),
     ghPath: clampString(source.ghPath, 'ghPath'),
+    dataSource: source.dataSource === 'gitlab' ? 'gitlab' : 'github',
+    gitlabBaseUrl: typeof source.gitlabBaseUrl === 'string' ? source.gitlabBaseUrl.trim() : '',
+    gitlabToken: typeof source.gitlabToken === 'string' ? source.gitlabToken.trim() : '',
+    viewerLogin: typeof source.viewerLogin === 'string' ? source.viewerLogin.trim() : '',
   }
 }
 
@@ -202,6 +210,7 @@ export const configSchemaKind = z === undefined ? 'standard' : 'schemastery'
  */
 function buildSchemastery(library) {
   return library.object({
+    dataSource: library.string().default(DEFAULT_CONFIG.dataSource),
     defaultQuery: library.string().default(DEFAULT_CONFIG.defaultQuery),
     limit: library.number().step(1).min(1).max(100).default(DEFAULT_CONFIG.limit),
     maxPatchChars: library.number().step(1).min(1000).default(DEFAULT_CONFIG.maxPatchChars),
@@ -216,6 +225,9 @@ function buildSchemastery(library) {
     maxJobs: library.number().step(1).min(1).max(200).default(DEFAULT_CONFIG.maxJobs),
     requestTimeoutMs: library.number().step(1).min(1000).max(600_000).default(DEFAULT_CONFIG.requestTimeoutMs),
     ghPath: library.string().default(DEFAULT_CONFIG.ghPath),
+    gitlabBaseUrl: library.string().default(DEFAULT_CONFIG.gitlabBaseUrl),
+    gitlabToken: library.string().default(DEFAULT_CONFIG.gitlabToken),
+    viewerLogin: library.string().default(DEFAULT_CONFIG.viewerLogin),
   })
 }
 

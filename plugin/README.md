@@ -3,11 +3,32 @@
 把 Codex 桌面版「代码审查」窗口的核心体验搬进 DeepSeek Harness Web GUI：左栏 PR 列表、中间 Summary / Changes 与逐文件 unified diff、右栏 Changes / Stack / 评论 / Reviewers / Checks、以及用当前 DSH 模型跑的 **AI 审查**（P0/P1/P2 + 文件:行 + 原因 + 修复建议，可点击定位到 diff）。
 
 - **入口**：安装后左栏出现「代码审查」；点开即进入工作台（`main` 面板 key = `codex-review`）。
-- **数据**：Host 侧经 `gh` CLI 凭据读取 GitHub（只读），默认搜索 `is:open author:@me`，搜索框支持 GitHub 搜索语法。
+- **数据**：Host 侧经 `gh` CLI 凭据读取 GitHub，或经 GitLab REST v4 读取 GitLab（只读，见下文）。GitHub 默认搜索 `is:open author:@me`。
 - **AI 审查**：Host 侧走 DSH `ctx.llm`，使用当前默认模型（`agentDefaultModel`），失败/未配置时浏览功能不受影响。
 - **范围**：v1 只读 + AI 审查；合并、发评论、向 PR 提问、指派 reviewer 为禁用只读态（v2 计划）。
 
 > 本目录同时是 npm 包目录（`package.json` 双面声明：`dsh.bundle.patch` + `dsh.client`），可直接 `plugin_manager install_bundle` 安装。
+
+## GitLab 只读（0.12.0）
+
+新增 GitLab REST v4 只读通道（兼容 GitLab 12.9）。在 profile patch 里切换数据源：
+
+```yaml
+- id: dsh-codex-review
+  config:
+    dataSource: gitlab
+    gitlabBaseUrl: http://gitlab.mbse.design:8090
+    gitlabToken: !!js >-
+      (() => { try { return process.getBuiltinModule("node:fs")
+      .readFileSync(dshHomePath("secrets", "gitlab.token"), "utf8").trim(); }
+      catch { return ""; } })()
+    viewerLogin: shims
+```
+
+- 列表用 `scope=created_by_me`（GitLab 服务端解析，不需要本地登录名）；12.9 用 `/merge_requests/:iid/changes`，草稿字段是 `work_in_progress`。
+- 只读：合并、发布评论、回复、解决讨论在 GitLab 下返回 `PROVIDER_UNSUPPORTED`，界面隐藏对应按钮；自动审查仅 GitHub。
+- Token 建议 `read_api` 权限；自建 HTTP 实例只在内网使用。
+- GitHub 行为不变，默认 `dataSource: github`。
 
 ## 统一审查设置
 

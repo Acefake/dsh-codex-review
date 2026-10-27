@@ -3825,23 +3825,25 @@ const EMPTY_LIST = Object.freeze([])
             Icon('gear', 14),
           ),
         ),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'cr-btn cr-btn--merge',
-            'data-action': 'merge',
-            disabled: !props.mergeEnabled,
-            'aria-disabled': props.mergeEnabled ? 'false' : 'true',
-            'aria-haspopup': 'dialog',
-            'aria-expanded': props.mergeOpen ? 'true' : 'false',
-            title: props.mergeTitle || tx(t, 'merge'),
-            onClick: props.onMerge,
-          },
-          Icon('merge', 14),
-          h('span', null, tx(t, 'merge')),
-          Icon('chevronDown', 12, { strokeWidth: 2 }),
-        ),
+        props.mergeVisible === false
+          ? null
+          : h(
+              'button',
+              {
+                type: 'button',
+                className: 'cr-btn cr-btn--merge',
+                'data-action': 'merge',
+                disabled: !props.mergeEnabled,
+                'aria-disabled': props.mergeEnabled ? 'false' : 'true',
+                'aria-haspopup': 'dialog',
+                'aria-expanded': props.mergeOpen ? 'true' : 'false',
+                title: props.mergeTitle || tx(t, 'merge'),
+                onClick: props.onMerge,
+              },
+              Icon('merge', 14),
+              h('span', null, tx(t, 'merge')),
+              Icon('chevronDown', 12, { strokeWidth: 2 }),
+            ),
       )
     }
 
@@ -6269,7 +6271,7 @@ const EMPTY_LIST = Object.freeze([])
             'div',
             { className: 'cr-set-status' },
             statusRow(tx(t, 'settingsPluginVersion'), health ? health.version : ''),
-            statusRow(tx(t, 'settingsHealthGh'), health ? health.gh : ''),
+            statusRow(tx(t, 'settingsHealthGh'), health ? (health.provider === 'gitlab' ? (health.viewer || 'GitLab') : health.gh) : ''),
             statusRow(tx(t, 'settingsHealthLlm'), health ? health.llm : ''),
           ),
         ),
@@ -7467,6 +7469,8 @@ const EMPTY_LIST = Object.freeze([])
     function Workbench(props) {
       const t = props && props.t
       const [health, setHealth] = useState({ state: 'loading', value: null })
+      const providerValue = health.state === 'ok' ? health.value : null
+      const writeEnabled = !providerValue || providerValue.provider !== 'gitlab'
       const [queryInput, setQueryInput] = useState(DEFAULT_QUERY)
       const [query, setQuery] = useState(DEFAULT_QUERY)
       const [list, setList] = useState({ state: 'loading', items: [], totalCount: 0, error: null })
@@ -8538,7 +8542,7 @@ const EMPTY_LIST = Object.freeze([])
 
       const autoEnabled = Boolean(autoReview.status && autoReview.status.config.enabled)
       const autoPollDecision = autoReviewPollDecision({
-        supported: autoReview.supported !== false,
+        supported: writeEnabled && autoReview.supported !== false,
         enabled: autoEnabled,
         visible: pageVisible,
         intervalMs: autoReviewPollMs,
@@ -8611,6 +8615,7 @@ const EMPTY_LIST = Object.freeze([])
 
       /** Reply / resolve helpers handed down to the inline comment cards. */
       const writeActions = useMemo(() => {
+        if (!writeEnabled) return undefined
         const finish = (result, doneKey, origin) => {
           if (result && result.ok) {
             showToast(tx(t, doneKey))
@@ -8646,7 +8651,7 @@ const EMPTY_LIST = Object.freeze([])
             }).then((result) => finish(result, 'resolveDone', current))
           },
         }
-      }, [refreshDetail, showToast, t])
+      }, [writeEnabled, refreshDetail, showToast, t])
 
       // -------------------------------------------------------------------
       // v2.2: publish the current review to GitHub (CONTRACT §7.3)
@@ -8808,7 +8813,7 @@ const EMPTY_LIST = Object.freeze([])
       )
       const publishConfig = autoStatus && autoStatus.publish ? autoStatus.publish : null
       const publishSupported =
-        !publishUnsupported && autoReview.supported !== false && publishConfig !== null
+        writeEnabled && !publishUnsupported && autoReview.supported !== false && publishConfig !== null
       const reviewHeadSha = reviewValue.headSha || currentHeadSha
       const reviewPublishKey = publishRecordKey(summary.repo, summary.number, reviewHeadSha)
       const localPublished =
@@ -8865,7 +8870,7 @@ const EMPTY_LIST = Object.freeze([])
           h(PrHeader, {
             detail: detailValue || { summary },
             t,
-            onComment: selected ? openCommentDialog : null,
+            onComment: selected && writeEnabled ? openCommentDialog : null,
           }),
           selected
             ? h(ReviewCard, {
@@ -8991,7 +8996,8 @@ const EMPTY_LIST = Object.freeze([])
               onGithub: openGithub,
               onReview: startReview,
               onGear: () => setSettingsOpen(true),
-              mergeEnabled: mergeState.enabled,
+              mergeEnabled: writeEnabled && mergeState.enabled,
+              mergeVisible: writeEnabled,
               mergeTitle,
               mergeOpen: mergeDialog.open,
               onMerge: openMerge,
@@ -9018,7 +9024,7 @@ const EMPTY_LIST = Object.freeze([])
                       review: reviewValue,
                       findingsByFile,
                       now: clock,
-                      autoReview,
+                      autoReview: writeEnabled ? autoReview : { ...autoReview, supported: false },
                       autoReviewOpen,
                       autoReviewRunBusy,
                       onAutoReviewToggle: () => setAutoReviewOpen((previous) => !previous),

@@ -18,6 +18,7 @@ import {
   MERGE_METHODS,
   REPO_RE,
 } from './lib/github.js'
+import { GITLAB_REPO_RE, GitLabClient } from './lib/gitlab.js'
 import { ReviewEngine, resolveReviewOptions } from './lib/review.js'
 import { AutoReviewer, resolveAutoReviewStatePath } from './lib/auto-review.js'
 import { dirname, join } from 'node:path'
@@ -49,7 +50,34 @@ export const name = 'dsh-codex-review'
 export const inject = ['webServer']
 
 /** Plugin version reported by `/codex-review/health`. */
-export const VERSION = '0.10.0'
+export const VERSION = '0.12.0'
+
+/**
+ * Capabilities of one data source. This release keeps write operations on
+ * GitHub only; GitLab is read-only.
+ * @param {'github' | 'gitlab'} dataSource - active data source.
+ * @returns {{ browse: boolean, review: boolean, chat: boolean, autoReview: boolean, publish: boolean, comment: boolean, reply: boolean, resolve: boolean, merge: boolean }} capability flags.
+ */
+export function providerCapabilities(dataSource) {
+  const gitlab = dataSource === 'gitlab'
+  return {
+    browse: true,
+    review: true,
+    chat: true,
+    autoReview: !gitlab,
+    publish: !gitlab,
+    comment: !gitlab,
+    reply: !gitlab,
+    resolve: !gitlab,
+    merge: !gitlab,
+  }
+}
+
+/** Provider-specific UI labels; the client renders these instead of hard-coded GitHub wording. */
+export const PROVIDER_LABELS = Object.freeze({
+  github: Object.freeze({ item: 'PR', itemFull: 'Pull Request', reviewers: 'Reviewers', checks: 'Checks' }),
+  gitlab: Object.freeze({ item: 'MR', itemFull: 'Merge Request', reviewers: 'Approvals', checks: 'Pipelines' }),
+})
 
 /** Loader-facing configuration schema (Schemastery, Standard-Schema compatible). */
 export { Config }
@@ -218,7 +246,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
     return llmFace.info()
   }
 
-  const github = deps.github ?? new GitHubClient({ config, logger })
+  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
+  const github = deps.github ?? (dataSource === 'gitlab'
+    ? new GitLabClient({ config, logger })
+    : new GitHubClient({ config, logger }))
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
@@ -428,6 +459,21 @@ export function createRoutes(wiring) {
   /** jobId → PR ref, so `/review-status` can attach the persisted publish record. @type {Map<string, { repo: string, number: number }>} */
   const jobRefs = new Map()
 
+  const dataSource = config.dataSource === 'gitlab' ? 'gitlab' : 'github'
+  const capabilities = providerCapabilities(dataSource)
+  const labels = PROVIDER_LABELS[dataSource]
+  const repoPattern = dataSource === 'gitlab' ? GITLAB_REPO_RE : REPO_RE
+
+  /**
+   * Reject a write operation the active data source cannot perform.
+   * @param {keyof ReturnType<typeof providerCapabilities>} capability - capability flag.
+   * @returns {void}
+   * @throws {AppError} PROVIDER_UNSUPPORTED when the flag is off.
+   */
+  const requireWrite = (capability) => {
+    if (!capabilities[capability]) throw new AppError('PROVIDER_UNSUPPORTED')
+  }
+
   /**
    * Publish a manually started review once it finishes, when the user enabled
    * automatic publishing. Fire-and-forget: the review route must not block on a
@@ -499,7 +545,7 @@ export function createRoutes(wiring) {
    */
   const requirePullRef = (payload) => {
     const repo = requireString(payload, 'repo', 'repo')
-    if (!REPO_RE.test(repo)) throw badRequest('repo 必须是 owner/name 形式')
+    if (!repoPattern.test(repo)) throw badRequest(dataSource === 'gitlab' ? 'repo 必须是 GitLab 项目路径（group/project）' : 'repo 必须是 owner/name 形式')
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
@@ -545,14 +591,28 @@ export function createRoutes(wiring) {
 
   return {
     [PATHS.health]: async () => {
-      /** @type {'ok' | 'not-logged-in' | 'missing'} */
-      let gh
+      /** @type {any} */
+      let status
       try {
-        gh = await github.ghStatus()
+        status = typeof github.status === 'function'
+          ? await github.status()
+          : { ok: (await github.ghStatus()) === 'ok', viewer: '' }
       } catch {
-        gh = 'not-logged-in'
+        status = { ok: false, viewer: '' }
       }
-      return { gh, llm: llmAvailable() ? 'ok' : 'unavailable', version }
+      /** @type {Record<string, unknown>} */
+      const value = {
+        provider: dataSource,
+        ok: status.ok === true,
+        viewer: status.viewer || config.viewerLogin || '',
+        llm: llmAvailable() ? 'ok' : 'unavailable',
+        version,
+        capabilities,
+        labels,
+      }
+      if (dataSource === 'github') value.gh = status.ok === true ? 'ok' : 'not-logged-in'
+      if (typeof status.error === 'string') value.error = status.error
+      return value
     },
 
     [PATHS.llmInfo]: async () => {
@@ -650,6 +710,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.merge]: async (payload) => {
+      requireWrite('merge')
       const { repo, number } = requirePullRef(payload)
       // Guard 1: a write operation always needs an explicit confirmation.
       if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
@@ -699,6 +760,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.reviewPublish]: async (payload, context) => {
+      requireWrite('publish')
       const { repo, number } = requirePullRef(payload)
       // Writing a GitHub review always needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发布审查到 GitHub 需要 confirm: true')
@@ -733,6 +795,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.comment]: async (payload) => {
+      requireWrite('comment')
       const { repo, number } = requirePullRef(payload)
       // Every comment write needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
@@ -740,6 +803,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.reply]: async (payload) => {
+      requireWrite('reply')
       const { repo, number } = requirePullRef(payload)
       if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
       const commentId = Number(payload.commentId)
@@ -748,6 +812,7 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.resolve]: async (payload) => {
+      requireWrite('resolve')
       const { repo, number } = requirePullRef(payload)
       if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
