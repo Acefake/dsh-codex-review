@@ -274,17 +274,23 @@ test('repo validation follows the selected account provider and segment rules', 
     (error) => error.code === 'BAD_REQUEST',
   )
   await assert.rejects(
-    () => routes['/codex-review/pr']({ repo: 'single', number: 1 }),
-    (error) => error.code === 'BAD_REQUEST',
-  )
-  await assert.rejects(
     () => routes['/codex-review/pr']({ repo: Array.from({ length: 21 }, () => 'a').join('/'), number: 1 }),
     (error) => error.code === 'BAD_REQUEST',
   )
+  const single = await routes['/codex-review/pr']({ repo: 'single', number: 1 })
+  assert.equal(single.summary !== undefined, true)
   const answer = await routes['/codex-review/pr']({ repo: 'mdesign/beijing/graphics-library-v2', number: 1 })
   assert.equal(answer.summary !== undefined, true)
   const twenty = Array.from({ length: 20 }, () => 'a').join('/')
   assert.equal((await routes['/codex-review/pr']({ repo: twenty, number: 1 })).summary !== undefined, true)
+})
+
+test('adding a GitHub account without its own token is rejected', async () => {
+  const { routes } = buildRoutes()
+  await assert.rejects(
+    () => routes['/codex-review/accounts-add']({ type: 'github', label: 'Work', confirm: true }),
+    (error) => error.code === 'BAD_REQUEST',
+  )
 })
 
 test('buildClients marks non-primary GitHub/GitLab accounts without a token unavailable', () => {  const config = resolveConfig({})

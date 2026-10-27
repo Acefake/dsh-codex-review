@@ -400,7 +400,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: 'Writes finished reviews to GitHub: one summary review per pull request, updated in place. This is a write operation.',
       settingsPluginVersion: 'Plugin version',
       accountsTitle: 'Accounts',
-      accountsDesc: 'GitHub / GitLab accounts. The first GitHub account may use the gh login; additional accounts and every GitLab account need their own token.',
+      accountsDesc: 'GitHub / GitLab accounts. Every added account needs its own token; the built-in GitHub account may use the gh login.',
       accountAdd: 'Add account',
       accountTest: 'Test connection',
       accountDefault: 'Set as default',
@@ -762,7 +762,7 @@ const EMPTY_LIST = Object.freeze([])
       settingsPublishDesc: '把完成的审查写入 GitHub：每个 PR 保留一条汇总 review，后续原地更新。这是写操作。',
       settingsPluginVersion: '插件版本',
       accountsTitle: '账号',
-      accountsDesc: 'GitHub / GitLab 账号；第一个 GitHub 账号可留空 Token 使用 gh 登录态，其他账号需要自己的 Token。',
+      accountsDesc: 'GitHub / GitLab 账号；新增账号必须填自己的 Token，内置默认 GitHub 账号可用 gh 登录态。',
       accountAdd: '添加账号',
       accountTest: '测试连接',
       accountDefault: '设为默认',
@@ -6003,8 +6003,10 @@ const EMPTY_LIST = Object.freeze([])
         post(ROUTE + '/accounts', {}).then((result) => {
           if (result.ok) applyList(result.value || {})
           else setState((previous) => ({ ...previous, loading: false, error: result.error || null }))
+        }).catch(() => {
+          setState((previous) => ({ ...previous, loading: false, error: { code: 'INTERNAL', message: tx(t, 'accountTestFailed') } }))
         })
-      }, [])
+      }, [t])
 
       useEffect(() => {
         refresh()
@@ -6036,10 +6038,7 @@ const EMPTY_LIST = Object.freeze([])
       }
 
       const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
-      const hasGithubAccount = (state.accounts || []).some((entry) => entry.type === 'github')
-      const canAdd = form.type === 'gitlab'
-        ? form.baseUrl.trim() !== '' && form.token.trim() !== ''
-        : (form.token.trim() !== '' || !hasGithubAccount)
+      const canAdd = !state.loading && form.token.trim() !== '' && (form.type !== 'gitlab' || form.baseUrl.trim() !== '')
 
       return h(
         SettingsSection,
@@ -6125,7 +6124,7 @@ const EMPTY_LIST = Object.freeze([])
               : null,
             h('input', {
               type: 'password', className: 'cr-set-input cr-set-input--wide',
-              placeholder: form.type === 'github' ? tx(t, 'accountTokenGhPlaceholder') : tx(t, 'accountToken'),
+              placeholder: tx(t, 'accountToken'),
               value: form.token, 'aria-label': tx(t, 'accountToken'),
               onChange: (event) => update({ token: event.target.value }),
             }),
@@ -7951,7 +7950,13 @@ const EMPTY_LIST = Object.freeze([])
         detailGeneration.current += 1
         reviewGeneration.current += 1
         listGeneration.current += 1
-        detailCache.current.clear()
+        if (multiAccount) {
+          for (const key of [...detailCache.current.keys()]) {
+            if (key.startsWith(account + '|')) detailCache.current.delete(key)
+          }
+        } else {
+          detailCache.current.clear()
+        }
         detailInflight.current.clear()
         setList({ state: 'loading', items: [], totalCount: 0, error: null })
         chatGeneration.current += 1

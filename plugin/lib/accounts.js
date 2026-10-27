@@ -171,6 +171,12 @@ export function loadAccountStore() {
       : (accounts[0]?.id ?? '')
     return { accounts, defaultAccount }
   } catch {
+    // Keep the unreadable file as a backup instead of silently overwriting it.
+    try {
+      renameSync(file, `${file}.broken-${Date.now()}`)
+    } catch {
+      /* a failed backup must not break startup */
+    }
     return { accounts: [], defaultAccount: '' }
   }
 }

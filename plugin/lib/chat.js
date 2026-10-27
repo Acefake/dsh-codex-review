@@ -53,15 +53,16 @@ const CONTEXT_FILE_LIST_MAX = 40
 const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/
 
 /**
- * Validate a repo path shared by both providers: 2–20 segments, no empty,
- * `.`/`..` or leading-`-` segment. GitHub accepts 2; GitLab allows nested groups.
+ * Validate a repo path shared by both providers: 1–20 safe segments; `.`/`..`
+ * and leading-`-` segments are rejected. GitHub's stricter 2-segment rule is
+ * enforced by the chat flow once the account type is known.
  * @param {unknown} repo - candidate path.
  * @returns {boolean} true when every segment is safe.
  */
 export function isValidRepoPath(repo) {
   if (typeof repo !== 'string') return false
   const parts = repo.split('/')
-  if (parts.length < 2 || parts.length > 20) return false
+  if (parts.length < 1 || parts.length > 20) return false
   return parts.every((part) =>
     part !== '' && part !== '.' && part !== '..' && !part.startsWith('-') && REPO_SEGMENT_PATTERN.test(part),
   )

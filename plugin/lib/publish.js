@@ -480,6 +480,8 @@ export class ReviewPublisher {
   constructor(options = {}) {
     this.github = options.github
     this.engine = options.engine
+    /** Account that may read pre-account publish records. */
+    this.legacyAccount = typeof options.legacyAccount === 'string' ? options.legacyAccount : ''
     this.store = options.store ?? { get: () => undefined, set: () => {} }
     this.logger = options.logger
     this.now = options.now ?? Date.now
@@ -649,7 +651,8 @@ export class ReviewPublisher {
     // performs no GitHub read at all (CONTRACT §7.2 #6). The check runs before
     // the marker read on purpose: a double click must not pay for a round trip.
     // Read the account-scoped key first, then a pre-account upgrade record.
-    const recorded = this.store.get(headKey) ?? (account !== '' ? this.store.get(`${repo}#${number}@${headSha}`) : undefined)
+    const recorded = this.store.get(headKey) ??
+      (account !== '' && account === this.legacyAccount ? this.store.get(`${repo}#${number}@${headSha}`) : undefined)
     if (isReplayableHead(recorded, requestKey)) {
       const replay = filterPublishableFindings(review.findings, { minSeverity, maxComments })
       return replayResult(recorded, replay.selected.length + replay.overLimit, headSha, 'unchanged')
@@ -678,7 +681,8 @@ export class ReviewPublisher {
 
     // The new head produced exactly the content already on GitHub: keep the
     // head↔review pointer fresh but do not touch GitHub (CONTRACT §7.2 #6).
-    const rolling = this.store.get(prKey) ?? (account !== '' ? this.store.get(`${repo}#${number}`) : undefined)
+    const rolling = this.store.get(prKey) ??
+      (account !== '' && account === this.legacyAccount ? this.store.get(`${repo}#${number}`) : undefined)
     if (isReplayable(rolling, fingerprint)) {
       this.persistRecords([{ key: headKey, record: { publishedAt: this.now(), reviewId: rolling.reviewId, url: rolling.url, fingerprint, request: requestKey } }])
       return replayResult(rolling, prepared.selected.length + prepared.overLimit, headSha, 'unchanged')
