@@ -551,6 +551,7 @@ export class ReviewPublisher {
       review = typeof this.engine.existing === 'function' ? this.engine.existing(repo, number, headSha) : undefined
     }
     if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')
+    if (input.review !== null && typeof input.review === 'object') review = input.review
     if (review === undefined || review === null || review.state !== 'done') throw new AppError('REVIEW_NOT_READY')
     if (typeof review.headSha === 'string' && review.headSha !== '' && review.headSha !== headSha) throw new AppError('REVIEW_NOT_READY')
     if (review.partial === true) throw new AppError('REVIEW_PARTIAL')

@@ -20,6 +20,15 @@ import { dirname } from 'node:path'
 import { AppError, USER_MESSAGES } from './errors.js'
 import { LruCache, truncateText } from './github.js'
 
+/** Fixed review policy shipped with the plugin; highest-priority prompt constraint. */
+export const REVIEW_POLICY_TEXT = (() => {
+  try {
+    return readFileSync(new URL('../REVIEW_POLICY.md', import.meta.url), 'utf8').trim()
+  } catch {
+    return ''
+  }
+})()
+
 /** Fixed system prompt (CONTRACT §1.5). */
 export const REVIEW_SYSTEM_PROMPT = [
   '你是资深代码审查者。只报告本次 diff 引入的真实缺陷：正确性、安全、数据一致性、并发、边界条件、API 契约破坏、性能回归、测试缺失导致的回归风险。',
@@ -314,6 +323,11 @@ export function buildUserPrompt(input) {
     lines.push(file.patch)
   }
   lines.push('')
+  if (REVIEW_POLICY_TEXT !== '') {
+    lines.push('## 固定审查策略（最高优先级，必须遵守）')
+    lines.push(REVIEW_POLICY_TEXT)
+    lines.push('')
+  }
   lines.push('## 输出要求')
   lines.push('只输出一个 JSON 对象，不要 markdown 代码围栏，不要思考过程，不要额外解释。结构：')
   lines.push('{"findings":[{"severity":"P0"|"P1"|"P2","file":"路径","line":新文件行号,"lineEnd":可选,"title":"≤80字","why":"触发条件→后果","fix":"具体动作","category":"correctness|security|data|concurrency|performance|api|test","evidence":"支持结论的 diff 行原文（≤200字，可含 + / - 前缀）","confidence":"high"|"medium"|"low"}]}')

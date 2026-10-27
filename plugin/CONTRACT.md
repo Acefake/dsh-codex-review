@@ -487,12 +487,18 @@ type AutoReviewFile = {
     severityThreshold: 'P0' | 'P1' | 'P2' // 默认 'P2'
     includeDrafts: boolean      // 默认 false
     maxPerCycle: number         // 默认 2，范围 1–5
+    onlySeverities: ('P0'|'P1'|'P2')[] // 默认全部；自动发布只保留这些严重度
+    maxFindingsPerRound: number // 默认 10，范围 1–20
+    stopOnLowConfidence: boolean // 默认 true；confidence=low 的发现不自动发布
   }
   seen: Record<string, { headSha: string, at: number }>  // key = repo#number
+  reviewedFindings: Record<string, number> // 已发布发现指纹（repo#number|fingerprint），用于跨轮去重
   lastCycleAt?: number
 }
 ```
 - `enabled` 变更立即生效（不需重载插件）；`intervalSeconds` 变更在当前计时结束后生效。
+- 自动审查的 findings 会先经过策略过滤：严重度白名单 → 丢弃低置信度 → 跨轮指纹去重 → 按 P0→P1→P2 截断到 `maxFindingsPerRound`；过滤后为空则不自动发布。
+- 审查 prompt 固定注入 `plugin/REVIEW_POLICY.md`，策略优先级高于仓库指引与模型偏好。
 
 ### 6.2 调度器（Host）
 
