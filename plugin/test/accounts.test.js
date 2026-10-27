@@ -6,6 +6,16 @@ import {
   makeAccountId,
   normalizeAccountInput,
 } from '../lib/accounts.js'
+import { buildReviewJobKey, fileCacheKey } from '../lib/review.js'
+import { publishRecordKeys } from '../lib/publish.js'
+
+test('account-scoped cache and publish keys differ from legacy keys', () => {
+  const options = { depth: 'standard', severityThreshold: 'P1', includeGuidelines: true }
+  assert.notEqual(buildReviewJobKey('a/b', 1, 'sha', options, 'github'), buildReviewJobKey('a/b', 1, 'sha', options))
+  assert.notEqual(fileCacheKey('a/b', 1, 'x.js', 'patch', 'github'), fileCacheKey('a/b', 1, 'x.js', 'patch'))
+  assert.deepEqual(publishRecordKeys('', 'a/b', 1, 'sha'), { prKey: 'a/b#1', headKey: 'a/b#1@sha' })
+  assert.deepEqual(publishRecordKeys(' github ', 'a/b', 1, 'sha'), { prKey: 'github|a/b#1', headKey: 'github|a/b#1@sha' })
+})
 
 test('normalizeAccountInput validates type and GitLab fields without returning the token', () => {
   const gitlab = normalizeAccountInput({

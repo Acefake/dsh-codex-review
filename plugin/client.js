@@ -6029,13 +6029,17 @@ const EMPTY_LIST = Object.freeze([])
             return
           }
           setMessage((result.error && result.error.message) || '')
+        }).catch(() => {
+          setBusy(false)
+          setMessage(tx(t, 'accountTestFailed'))
         })
       }
 
       const update = (patch) => setForm((previous) => Object.assign({}, previous, patch))
+      const hasGithubAccount = (state.accounts || []).some((entry) => entry.type === 'github')
       const canAdd = form.type === 'gitlab'
         ? form.baseUrl.trim() !== '' && form.token.trim() !== ''
-        : true
+        : (form.token.trim() !== '' || !hasGithubAccount)
 
       return h(
         SettingsSection,
@@ -6141,6 +6145,9 @@ const EMPTY_LIST = Object.freeze([])
                     } else {
                       setMessage((result.error && result.error.message) || tx(t, 'accountTestFailed'))
                     }
+                  }).catch(() => {
+                    setBusy(false)
+                    setMessage(tx(t, 'accountTestFailed'))
                   })
                 },
               }, tx(t, 'accountTest')),

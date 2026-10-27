@@ -51,12 +51,15 @@ export function accountTokenPath(id) {
 
 /** Read one account's token ('' when the file is missing). */
 export function readAccountToken(id) {
+  const file = accountTokenPath(id)
+  let raw
   try {
-    return readFileSync(accountTokenPath(id), 'utf8').trim()
+    raw = readFileSync(file, 'utf8')
   } catch (error) {
     if (error?.code === 'ENOENT') return ''
     throw new AppError('INTERNAL', '读取账号 Token 失败')
   }
+  return raw.trim()
 }
 
 /** Persist one account's token with owner-only permissions. */
@@ -75,8 +78,9 @@ export function writeAccountToken(id, token) {
 
 /** Remove one account's token file. */
 export function removeAccountToken(id) {
+  const file = accountTokenPath(id)
   try {
-    rmSync(accountTokenPath(id), { force: true })
+    rmSync(file, { force: true })
   } catch {
     /* a missing token file is already the desired state */
   }
@@ -192,12 +196,13 @@ export function saveAccountStore(store) {
  */
 export function legacyAccounts(config) {
   const accounts = [{ id: 'github', type: 'github', label: 'GitHub', baseUrl: '', username: '' }]
-  if (text(config?.gitlabBaseUrl) !== '' && text(config?.gitlabToken) !== '') {
+  const baseUrl = normalizeGitlabBaseUrl(config?.gitlabBaseUrl)
+  if (baseUrl !== '' && text(config?.gitlabToken) !== '') {
     accounts.push({
       id: 'gitlab',
       type: 'gitlab',
       label: 'GitLab',
-      baseUrl: normalizeGitlabBaseUrl(config.gitlabBaseUrl),
+      baseUrl,
       username: '',
     })
   }

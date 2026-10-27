@@ -378,6 +378,10 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
       const next = buildClients(config, logger, undefined, accountRuntime.accounts)
       for (const key of Object.keys(accountRuntime.clients)) delete accountRuntime.clients[key]
       Object.assign(accountRuntime.clients, next)
+      const current = accountRuntime.accounts.find((account) => account.id === accountRuntime.defaultAccount)
+      const saved = accountRuntime.accounts.find((account) => account.id === accountRuntime.store?.defaultAccount)
+      const first = accountRuntime.accounts.find((account) => accountRuntime.clients[account.id] !== undefined)
+      accountRuntime.defaultAccount = (current ?? saved ?? first)?.id ?? ''
       accountRuntime.onRebuild?.()
     },
     onRebuild: undefined,
@@ -389,7 +393,7 @@ export function applyWithDeps(ctx, rawConfig, deps = {}) {
   const engine = deps.engine ?? new ReviewEngine({
     streamLlm, resolveSelection, config, logger,
     statePath: deps.reviewStatePath,
-    legacyAccount: primaryGithubAccount?.id ?? '',
+    legacyAccount: primaryGithubAccount?.id ?? defaultAccount,
   })
   /** Concurrent chat streams allowed by CONTRACT §5.2. */
   const chatLimiter = deps.chatLimiter ?? createChatLimiter(CHAT_CONCURRENCY)
@@ -786,7 +790,7 @@ export function createRoutes(wiring) {
     const rawNumber = payload.number
     const number = typeof rawNumber === 'number' ? rawNumber : typeof rawNumber === 'string' ? Number(rawNumber) : Number.NaN
     if (!Number.isInteger(number) || number <= 0) throw badRequest('number 必须是正整数')
-    return { ...account, repo, number }
+    return { id: account.id, type: account.type, repo, number }
   }
 
   /**
@@ -837,6 +841,15 @@ export function createRoutes(wiring) {
         if (client === undefined) continue
         const accountCapabilities = providerCapabilities(type)
         const accountLabels = PROVIDER_LABELS[type]
+        const primary = currentPrimaryGithub()
+        const capabilities = type === 'github'
+          ? {
+              ...accountCapabilities,
+              // Publishing/auto-review are bound to the primary GitHub client.
+              publish: primary?.id === id,
+              autoReview: primary?.id === id,
+            }
+          : accountCapabilities
         /** @type {Record<string, unknown>} */
         const entry = {
           id,
@@ -847,7 +860,7 @@ export function createRoutes(wiring) {
           baseUrl: meta.baseUrl,
           ok: false,
           viewer: '',
-          capabilities: accountCapabilities,
+          capabilities,
           labels: accountLabels,
         }
         if (client.unavailable === true) {
@@ -925,25 +938,27 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.pr]: async (payload) => {
-      const { id: accountId, client, repo, number } = requirePullRef(payload)
-      const detail = await client.getPull(repo, number)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      const detail = await account.client.getPull(repo, number)
       return withReview(repo, number, detail, accountId)
     },
 
     [PATHS.reviewStart]: async (payload, context) => {
-      const { id: accountId, client, repo, number } = requirePullRef(payload)
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
       if (!engine.available()) throw new AppError('LLM_UNAVAILABLE')
       // Resolve the v1.1 options here as well so the guideline fetch happens
       // only when requested; the engine resolves the same values internally.
       const shared = reviewer?.status?.()?.config ?? {}
       const options = resolveReviewOptions({ ...shared, ...(payload.options ?? {}) }, config)
-      const detail = await client.getPull(repo, number)
+      const detail = await account.client.getPull(repo, number)
       const headSha = typeof detail?.headSha === 'string' ? detail.headSha : ''
       if (headSha === '') throw new AppError('GH_NOT_FOUND', '无法确定该 PR 的 head commit')
       let guidelines
-      if (options.includeGuidelines && typeof client.getGuidelines === 'function') {
+      if (options.includeGuidelines && typeof account.client.getGuidelines === 'function') {
         try {
-          guidelines = await client.getGuidelines(repo, { signal: context?.signal })
+          guidelines = await account.client.getGuidelines(repo, { signal: context?.signal })
         } catch {
           // Guidelines are an enhancement: never let them block the review.
           guidelines = undefined
@@ -996,8 +1011,9 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.merge]: async (payload) => {
-      const { id: accountId, client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
-      requireWrite(accountCapabilities, 'merge')
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'merge')
       // Guard 1: a write operation always needs an explicit confirmation.
       if (payload.confirm !== true) throw badRequest('合并操作需要 confirm: true')
       const method = typeof payload.method === 'string' ? payload.method.trim().toLowerCase() : ''
@@ -1011,7 +1027,7 @@ export function createRoutes(wiring) {
         if (typeof payload.deleteBranch !== 'boolean') throw badRequest('deleteBranch 必须是布尔值')
         deleteBranch = payload.deleteBranch
       }
-      const result = await client.mergePull({
+      const result = await account.client.mergePull({
         repo,
         number,
         method,
@@ -1046,8 +1062,9 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.reviewPublish]: async (payload, context) => {
-      const { id: accountId, client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
-      requireWrite(accountCapabilities, 'publish')
+      const account = resolveAccount(payload)
+      const { id: accountId, repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'publish')
       const primary = currentPrimaryGithub()
       if (primary === undefined || accountId !== primary.id) {
         throw new AppError('PROVIDER_UNSUPPORTED')
@@ -1086,29 +1103,32 @@ export function createRoutes(wiring) {
     },
 
     [PATHS.comment]: async (payload) => {
-      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
-      requireWrite(accountCapabilities, 'comment')
+      const account = resolveAccount(payload)
+      const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'comment')
       // Every comment write needs the explicit confirmation flag.
       if (payload.confirm !== true) throw badRequest('发表评论需要 confirm: true')
-      return client.createIssueComment({ repo, number, body: payload.body })
+      return account.client.createIssueComment({ repo, number, body: payload.body })
     },
 
     [PATHS.reply]: async (payload) => {
-      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
-      requireWrite(accountCapabilities, 'reply')
+      const account = resolveAccount(payload)
+      const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'reply')
       if (payload.confirm !== true) throw badRequest('回复评论需要 confirm: true')
       const commentId = Number(payload.commentId)
       if (!Number.isInteger(commentId) || commentId <= 0) throw badRequest('commentId 必须是正整数')
-      return client.replyToReviewComment({ repo, number, commentId, body: payload.body })
+      return account.client.replyToReviewComment({ repo, number, commentId, body: payload.body })
     },
 
     [PATHS.resolve]: async (payload) => {
-      const { client, capabilities: accountCapabilities, repo, number } = requirePullRef(payload)
-      requireWrite(accountCapabilities, 'resolve')
+      const account = resolveAccount(payload)
+      const { repo, number } = requirePullRef(payload)
+      requireWrite(account.capabilities, 'resolve')
       if (payload.confirm !== true) throw badRequest('解决讨论需要 confirm: true')
       const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : ''
       if (threadId === '' || threadId.length > 200) throw badRequest('threadId 不合法')
-      return client.resolveReviewThread({ repo, number, threadId })
+      return account.client.resolveReviewThread({ repo, number, threadId })
     },
 
     [PATHS.accounts]: async () => accountListValue(),
