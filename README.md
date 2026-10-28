@@ -23,3 +23,20 @@ npm pack
 ```
 
 详细功能、宿主生效方式与配置见 [插件说明](plugin/README.md)。
+
+## 开发机同步（避免安装副本被旧版本覆盖）
+
+DSH 插件管理器可能按 `github:Acefake/dsh-codex-review` 的旧提交重装，把 profile 里的安装副本降级（表现为界面报“列表加载失败，宿主返回非 JSON 响应”）。在仓库根目录运行：
+
+```sh
+npm run sync:install -- --url http://127.0.0.1:<当前 GUI 端口>
+```
+
+脚本会：
+
+1. 把 `package.json`、`README.md`、`plugin/**` 复制到 `~/.dsh/profiles/<profile>/node_modules/dsh-codex-review`；
+2. 校验安装后的版本与根包一致、关键文件存在；
+3. 若宿主报告的版本落后（或传 `--force-reload`），切换一次 profile patch 的真实配置值触发重载；
+4. 校验 `/codex-review/health` 与 `/codex-review/accounts` 返回 JSON。
+
+常用参数：`--profile work`（其他 profile）、`--target <dir>`（自定义安装目录）、`--dry-run`（只看路径/版本）、`--no-reload`（只同步）。

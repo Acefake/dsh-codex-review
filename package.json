@@ -38,5 +38,9 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "scripts": {
+    "sync:install": "node tools/sync-install.mjs",
+    "sync:check": "node tools/sync-install.mjs --dry-run"
   }
 }
